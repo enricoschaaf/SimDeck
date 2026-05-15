@@ -296,6 +296,36 @@ fn service_touch_sequence(server_url: &str, udid: &str, events: Vec<Value>) -> a
     )
 }
 
+fn service_camera_request_json(
+    server_url: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> anyhow::Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        match http_request_json(server_url, method, path, body) {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if Instant::now() < deadline
+                    && service_camera_error_is_retryable(&error.to_string()) =>
+            {
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn service_camera_error_is_retryable(message: &str) -> bool {
+    let message = message.to_lowercase();
+    message.contains("parse simdeck service json response")
+        || message.contains("connect to simdeck service")
+        || message.contains("connection reset")
+        || message.contains("broken pipe")
+        || message.contains("unexpected eof")
+}
+
 fn service_key(server_url: &str, udid: &str, key_code: u16, modifiers: u32) -> anyhow::Result<()> {
     service_action_ok(
         server_url,

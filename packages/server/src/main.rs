@@ -3881,7 +3881,13 @@ fn main() -> anyhow::Result<()> {
         },
         Command::Camera { command } => match command {
             CameraCommand::Sources => {
-                println_json(&camera::list_webcams_value()?)?;
+                let service_url = command_service_url(explicit_server_url.as_deref())?;
+                println_json(&service_camera_request_json(
+                    &service_url,
+                    "GET",
+                    "/api/camera/webcams",
+                    None,
+                )?)?;
                 Ok(())
             }
             CameraCommand::Start {
@@ -3893,13 +3899,18 @@ fn main() -> anyhow::Result<()> {
                 let (udid, bundle_id) =
                     parse_optional_udid_value_args("camera start", args, "BUNDLE_ID")?;
                 let udid = resolve_device_udid(udid.as_deref())?;
+                let service_url = command_service_url(explicit_server_url.as_deref())?;
                 let source = camera_source_from_args(file, webcam, false)?;
-                let status = camera::start_camera(camera::CameraStartOptions {
-                    udid,
-                    bundle_id: Some(bundle_id),
-                    source,
-                    mirror: Some(mirror),
-                })?;
+                let status = service_camera_request_json(
+                    &service_url,
+                    "POST",
+                    &format!("/api/simulators/{}/camera", url_path_component(&udid)),
+                    Some(&serde_json::json!({
+                        "bundleId": bundle_id,
+                        "source": source,
+                        "mirror": mirror,
+                    })),
+                )?;
                 println_json(&status)?;
                 Ok(())
             }
@@ -3911,19 +3922,43 @@ fn main() -> anyhow::Result<()> {
                 mirror,
             } => {
                 let udid = resolve_device_udid(udid.as_deref())?;
+                let service_url = command_service_url(explicit_server_url.as_deref())?;
                 let source = camera_source_from_args(file, webcam, placeholder)?;
-                let status = camera::switch_camera(&udid, source, mirror)?;
+                let status = service_camera_request_json(
+                    &service_url,
+                    "POST",
+                    &format!(
+                        "/api/simulators/{}/camera/source",
+                        url_path_component(&udid)
+                    ),
+                    Some(&serde_json::json!({
+                        "source": source,
+                        "mirror": mirror,
+                    })),
+                )?;
                 println_json(&status)?;
                 Ok(())
             }
             CameraCommand::Status { udid } => {
                 let udid = resolve_device_udid(udid.as_deref())?;
-                println_json(&camera::camera_status(&udid)?)?;
+                let service_url = command_service_url(explicit_server_url.as_deref())?;
+                println_json(&service_camera_request_json(
+                    &service_url,
+                    "GET",
+                    &format!("/api/simulators/{}/camera", url_path_component(&udid)),
+                    None,
+                )?)?;
                 Ok(())
             }
             CameraCommand::Stop { udid } => {
                 let udid = resolve_device_udid(udid.as_deref())?;
-                println_json(&camera::stop_camera(&udid)?)?;
+                let service_url = command_service_url(explicit_server_url.as_deref())?;
+                println_json(&service_camera_request_json(
+                    &service_url,
+                    "DELETE",
+                    &format!("/api/simulators/{}/camera", url_path_component(&udid)),
+                    None,
+                )?)?;
                 Ok(())
             }
         },

@@ -16,9 +16,11 @@ fn main() {
     }
 
     let cli = root.join("native");
+    let camera = cli.join("camera");
     let native = cli.join("bridge");
 
     let files = [
+        camera.join("SimDeckCameraService.m"),
         cli.join("DFPrivateSimulatorDisplayBridge.m"),
         cli.join("XCWH264Encoder.m"),
         cli.join("XCWProcessRunner.m"),
@@ -35,6 +37,7 @@ fn main() {
     let x264_flags = pkg_config_flags("x264", true);
     build
         .files(files.iter())
+        .include(&camera)
         .include(&cli)
         .include(&native)
         .flag("-fobjc-arc")
@@ -49,6 +52,14 @@ fn main() {
     println!(
         "cargo:rerun-if-changed={}",
         cli.join("DFPrivateSimulatorDisplayBridge.h").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        camera.join("SimDeckCameraShared.h").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        camera.join("SimDeckCameraInfo.plist").display()
     );
     println!(
         "cargo:rerun-if-changed={}",
@@ -90,6 +101,7 @@ fn main() {
         "Foundation",
         "Accelerate",
         "AppKit",
+        "AVFoundation",
         "CoreImage",
         "CoreGraphics",
         "CoreMedia",
@@ -100,6 +112,10 @@ fn main() {
     ] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
+    println!(
+        "cargo:rustc-link-arg=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+        camera.join("SimDeckCameraInfo.plist").display()
+    );
 }
 
 fn pkg_config_flags(package: &str, static_link: bool) -> Vec<String> {

@@ -70,8 +70,6 @@ chmod +x "$OUTPUT"
 echo "Built $OUTPUT"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  "$CAMERA_SOURCE_DIR/build-helper.sh" "$CAMERA_DIR" >/dev/null
   "$CAMERA_SOURCE_DIR/build-injector.sh" "$CAMERA_DIR" >/dev/null
-  echo "Built $CAMERA_DIR/SimDeckCameraHelper.app"
   echo "Built $CAMERA_DIR/libSimDeckCameraInjector.dylib"
 fi

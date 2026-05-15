@@ -92,11 +92,11 @@ simdeck camera status
 simdeck camera stop
 ```
 
-`camera start` is iOS-simulator-only. It starts the local camera helper,
+`camera start` is iOS-simulator-only. It starts the daemon-owned camera feed,
 relaunches the target bundle with the SimDeck camera injector, and makes
 `AVCaptureDevice`, `AVCaptureVideoDataOutput`, `AVCapturePhotoOutput`, and
 `AVCaptureVideoPreviewLayer` consume the simulated feed. `camera switch` changes
-the running helper source without relaunching the app. Media files must use
+the running daemon source without relaunching the app. Media files must use
 absolute paths; URL sources are treated as video streams.
 
 ## Inspect UI
