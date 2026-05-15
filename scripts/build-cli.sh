@@ -7,6 +7,8 @@ OUTPUT="$BUILD_DIR/simdeck"
 OUTPUT_BIN="$BUILD_DIR/simdeck-bin"
 MANIFEST_PATH="$ROOT_DIR/packages/server/Cargo.toml"
 SERVER_TARGET_DIR="$ROOT_DIR/packages/server/target"
+CAMERA_DIR="$BUILD_DIR/camera"
+CAMERA_SOURCE_DIR="$ROOT_DIR/packages/server/native/camera"
 
 # SimDeck's full iOS bridge is macOS-only. Non-macOS builds compile a native
 # stub so Android-only integration tests can run on Linux CI.
@@ -66,3 +68,10 @@ EOF
 chmod +x "$OUTPUT"
 
 echo "Built $OUTPUT"
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  "$CAMERA_SOURCE_DIR/build-helper.sh" "$CAMERA_DIR" >/dev/null
+  "$CAMERA_SOURCE_DIR/build-injector.sh" "$CAMERA_DIR" >/dev/null
+  echo "Built $CAMERA_DIR/SimDeckCameraHelper.app"
+  echo "Built $CAMERA_DIR/libSimDeckCameraInjector.dylib"
+fi

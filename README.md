@@ -44,6 +44,7 @@ view inside the editor.
 - Real-time screen `describe` command using accessibility view tree - available in token-efficient format for agents
 - Profiling built-in: CPU, memory, disk writes, network throughput, hang signals, and stack sampling
 - CoreSimulator chrome asset rendering for device bezels
+- iOS Simulator camera simulation from a generated pattern, local media file or stream URL, or a Mac camera source
 - NativeScript, React Native, Flutter, UIKit and SwiftUI runtime inspector plugins to debug app's view hierarchy live
 - `simdeck/test` for fast JS-based app tests that can query accessibility state and drive simulator controls
 
@@ -118,6 +119,11 @@ simdeck install android:<avd-name> /path/to/app.apk
 simdeck uninstall com.example.App
 simdeck open-url https://example.com
 simdeck launch com.apple.Preferences
+simdeck camera sources
+simdeck camera start com.example.App --file /absolute/path/to/camera.mov
+simdeck camera start com.example.App --webcam
+simdeck camera switch --placeholder
+simdeck camera stop
 simdeck toggle-appearance
 simdeck pasteboard set "hello"
 simdeck pasteboard get
@@ -178,6 +184,13 @@ metadata.
 directory. Most device commands accept `[<udid>]`; when it is omitted, SimDeck
 uses `--device`, `SIMDECK_DEVICE`, `SIMDECK_UDID`, the saved project default,
 or the only booted simulator, in that order.
+
+`camera start` runs a local camera helper, injects the SimDeck camera shim into
+the target iOS simulator app, and relaunches that bundle. The source can be a
+generated pattern, an absolute image or video path, an `http://`, `https://`, or
+`file://` video URL, or a Mac camera selected with `--webcam [id-or-name]`.
+Use the browser menu item **Camera Simulation...** for the same flow from the UI.
+Camera simulation is iOS-simulator-only and requires a booted simulator.
 
 ## JS/TS Tests
 

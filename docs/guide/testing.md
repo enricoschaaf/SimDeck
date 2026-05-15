@@ -64,6 +64,21 @@ simdeck maestro test flow.yaml --artifacts-dir artifacts/maestro
 
 Supported commands include `launchApp`, `openLink`, `tapOn`, `inputText`, `eraseText`, `pressKey`, `assertVisible`, `assertNotVisible`, `scrollUntilVisible`, `swipe`, `takeScreenshot`, and `waitForAnimationToEnd`. Unsupported Maestro commands fail clearly so the flow can be adjusted or the compatibility layer can be expanded.
 
+## Camera Apps
+
+For iOS apps that use `AVFoundation`, start camera simulation before running the
+camera workflow:
+
+```sh
+simdeck camera start com.example.App --file /absolute/path/to/feed.mov --mirror off
+simdeck camera switch --placeholder
+simdeck camera stop
+```
+
+The browser UI exposes the same controls from **Camera Simulation...** in the
+simulator menu. Webcam forwarding is available with `--webcam` when macOS has an
+available camera and has granted the helper permission.
+
 ## Repository tests
 
 Normal unit and client tests:
@@ -79,6 +94,7 @@ npm run build:cli
 npm run build:client
 npm run test:integration:fixture
 npm run test:integration:cli
+npm run test:integration:camera
 ```
 
 Verbose iOS run:

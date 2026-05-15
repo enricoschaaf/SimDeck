@@ -88,6 +88,15 @@ button label.
 | `pasteboard set` | `--stdin`, `--file`                                  |
 | `batch`          | `--step`, `--file`, `--stdin`, `--continue-on-error` |
 
+## Camera Simulation
+
+| Command         | Flags                                                                              |
+| --------------- | ---------------------------------------------------------------------------------- |
+| `camera start`  | `--file <path-or-url>`, `--webcam [id]`, `--mirror auto\|on\|off`                  |
+| `camera switch` | `--file <path-or-url>`, `--webcam [id]`, `--placeholder`, `--mirror auto\|on\|off` |
+| `camera status` | none                                                                               |
+| `camera stop`   | none                                                                               |
+
 ## Exit codes
 
 | Code | Meaning                    |

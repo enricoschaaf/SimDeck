@@ -82,6 +82,12 @@ simdeck uninstall com.example.App
 simdeck open-url myapp://route
 simdeck open-url https://example.com
 simdeck toggle-appearance
+simdeck camera sources
+simdeck camera start com.example.App --file /absolute/path/to/camera.mov
+simdeck camera start com.example.App --webcam
+simdeck camera switch --placeholder
+simdeck camera status
+simdeck camera stop
 ```
 
 `simdeck list` defaults to compact JSON for token-efficient agent selection.
@@ -266,6 +272,25 @@ simdeck sample --seconds 3
 ```
 
 Use screenshots for still evidence, `--with-bezel` when the device frame matters, and `record` for short MP4 screen recordings. Use `stats` for simulator app CPU, memory, disk write, network receive/send rates, connections, hang, and crash/termination signals. Use `sample` only when a short CPU stack capture is worth the extra pause. Prefer describe for token-efficient state dumps, if they have enough context.
+
+## Camera Simulation
+
+Use `camera start` when a booted iOS simulator app needs a deterministic camera
+feed. It starts the local helper, injects the camera shim into the app with
+`simctl launch`, and relaunches the bundle. Use `camera switch` to swap between
+placeholder, media, and webcam sources without relaunching while the helper is
+alive.
+
+```bash
+simdeck camera sources
+simdeck camera start com.example.App --file /absolute/path/to/feed.mov --mirror off
+simdeck camera switch --placeholder
+simdeck camera start com.example.App --webcam "FaceTime HD Camera"
+simdeck camera stop
+```
+
+Media paths must be absolute. URLs are treated as video streams. Webcam support
+depends on macOS camera availability and permission for the helper process.
 
 ## Default loop
 

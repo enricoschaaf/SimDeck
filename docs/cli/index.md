@@ -43,6 +43,8 @@ simdeck install /path/to/App.app
 simdeck install /path/to/App.ipa
 simdeck launch com.example.App
 simdeck open-url https://example.com
+simdeck camera start com.example.App --file /absolute/path/to/feed.mov
+simdeck camera stop
 simdeck tap --label "Continue" --wait-timeout-ms 5000
 simdeck tap --id com.apple.settings.screenTime --expect-id BackButton
 simdeck tap "Continue"

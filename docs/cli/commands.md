@@ -80,6 +80,25 @@ simdeck open-url https://example.com
 simdeck toggle-appearance
 ```
 
+## Camera Simulation
+
+```sh
+simdeck camera sources
+simdeck camera start com.example.App --file /absolute/path/to/feed.mov --mirror off
+simdeck camera start com.example.App --webcam
+simdeck camera switch --placeholder
+simdeck camera switch --file /absolute/path/to/frame.png
+simdeck camera status
+simdeck camera stop
+```
+
+`camera start` is iOS-simulator-only. It starts the local camera helper,
+relaunches the target bundle with the SimDeck camera injector, and makes
+`AVCaptureDevice`, `AVCaptureVideoDataOutput`, `AVCapturePhotoOutput`, and
+`AVCaptureVideoPreviewLayer` consume the simulated feed. `camera switch` changes
+the running helper source without relaunching the app. Media files must use
+absolute paths; URL sources are treated as video streams.
+
 ## Inspect UI
 
 ```sh
