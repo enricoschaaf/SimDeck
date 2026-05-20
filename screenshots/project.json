@@ -7,6 +7,11 @@
       "name": "iphone-6.9-portrait",
       "size": "1284x2778",
       "device": "iphone-17-pro-iphone18-1"
+    },
+    {
+      "name": "ipad-13-portrait",
+      "size": "2064x2752",
+      "device": "ipad-pro-13-inch-m5-ipad17-4"
     }
   ]
 }
