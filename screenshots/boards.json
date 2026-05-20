@@ -1,0 +1,45 @@
+{
+  "boards": [
+    {
+      "id": "iphone-portrait",
+      "name": "iPhone Portrait Deck",
+      "screens": [
+        {
+          "name": "01-pocket-console",
+          "x": 0,
+          "y": 0
+        },
+        {
+          "name": "02-pair-fast",
+          "x": 1444,
+          "y": 0
+        },
+        {
+          "name": "03-device-fleet",
+          "x": 2888,
+          "y": 0
+        },
+        {
+          "name": "04-live-control",
+          "x": 4332,
+          "y": 0
+        },
+        {
+          "name": "05-switch-simulators",
+          "x": 5776,
+          "y": 0
+        },
+        {
+          "name": "06-every-platform",
+          "x": 7220,
+          "y": 0
+        },
+        {
+          "name": "07-create-pairs",
+          "x": 8664,
+          "y": 0
+        }
+      ]
+    }
+  ]
+}

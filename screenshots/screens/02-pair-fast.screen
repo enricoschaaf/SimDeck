@@ -1,0 +1,38 @@
+<Screen size="1284x2778">
+  <Background color="#111312" />
+  <VStack
+    padding="120"
+    paddingTop="200"
+    gap="40"
+    alignItems="center"
+    width="100%">
+    <Text
+      size="124"
+      weight="800"
+      color="#ffffff"
+      align="center"
+      tracking="-4"
+      lineHeight="1"
+      maxWidth="1080">
+      Pair once.\nConnect fast.
+    </Text>
+    <Text
+      size="38"
+      weight="500"
+      color="#a8aea4"
+      align="center"
+      lineHeight="1.32"
+      maxWidth="900">
+      Two commands. Infinite productivity.
+    </Text>
+    <Device
+      model="iphone-17-pro-iphone18-1"
+      width="1021"
+      marginTop="80"
+      screenshot="../shots/IMG_5161.PNG"
+      height="2038"
+      position="absolute"
+      x="131"
+      y="539" />
+  </VStack>
+</Screen>

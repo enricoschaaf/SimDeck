@@ -1,0 +1,31 @@
+<Screen size="1284x2778">
+  <Background color="#111312" />
+  <VStack
+    padding="120"
+    paddingTop="200"
+    gap="40"
+    alignItems="center"
+    width="100%">
+    <Text
+      size="124"
+      weight="800"
+      color="#ffffff"
+      align="center"
+      tracking="-4"
+      lineHeight="1"
+      maxWidth="1080"
+      position="absolute"
+      x="102"
+      y="255">
+      Switch simulators\nwithout losing flow
+    </Text>
+    <Device
+      model="iphone-15-pro-iphone16-1"
+      width="980"
+      marginTop="80"
+      screenshot="../shots/IMG_5165.PNG"
+      position="absolute"
+      x="152"
+      y="561" />
+  </VStack>
+</Screen>

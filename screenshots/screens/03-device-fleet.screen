@@ -1,0 +1,43 @@
+<Screen size="1284x2778">
+  <Background color="#f4f1e8" />
+  <VStack
+    padding="120"
+    paddingTop="200"
+    gap="40"
+    alignItems="center"
+    width="100%">
+    <Text
+      size="124"
+      weight="800"
+      color="#111312"
+      align="center"
+      tracking="-4"
+      lineHeight="1"
+      maxWidth="1080"
+      width="902"
+      height="248">
+      All simulators
+    </Text>
+    <Text
+      size="38"
+      weight="500"
+      color="#5b5a52"
+      align="center"
+      lineHeight="1.32"
+      maxWidth="900"
+      position="absolute"
+      x="192"
+      y="367">
+      Browse iPhone, iPad, Watch, TV, Vision, Android targets
+    </Text>
+    <Device
+      model="iphone-17-pro-iphone18-1"
+      width="1027"
+      marginTop="80"
+      screenshot="../shots/IMG_5162.PNG"
+      position="absolute"
+      x="129"
+      y="490"
+      height="2049" />
+  </VStack>
+</Screen>

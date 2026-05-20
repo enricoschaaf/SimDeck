@@ -1,0 +1,32 @@
+<Screen size="1284x2778">
+  <Background color="#f4f1e8" />
+  <VStack
+    padding="120"
+    paddingTop="200"
+    gap="40"
+    alignItems="center"
+    width="100%">
+    <Text
+      size="124"
+      weight="800"
+      color="#111312"
+      align="center"
+      tracking="-4"
+      lineHeight="1"
+      maxWidth="1080"
+      position="absolute"
+      x="110"
+      y="118">
+      Simulators, in your pocket
+    </Text>
+    <Device
+      model="iphone-17-pro-iphone18-1"
+      width="1052"
+      marginTop="80"
+      screenshot="../shots/IMG_5163.PNG"
+      position="absolute"
+      x="116"
+      y="400"
+      height="2099" />
+  </VStack>
+</Screen>
