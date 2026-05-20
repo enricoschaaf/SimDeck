@@ -50,6 +50,30 @@ static NSString * const XCWChromeRendererErrorDomain = @"SimDeck.ChromeRenderer"
     return [self profileForChromeInfo:chromeInfo error:error];
 }
 
++ (CGSize)displayPixelSizeForDeviceName:(NSString *)deviceName
+                                   error:(NSError * _Nullable __autoreleasing *)error {
+    NSDictionary *chromeInfo = [self chromeInfoForDeviceName:deviceName error:error];
+    if (chromeInfo == nil) {
+        return CGSizeZero;
+    }
+
+    NSDictionary *plist = chromeInfo[@"plist"];
+    CGFloat width = [self numberValue:plist[@"mainScreenWidth"]];
+    CGFloat height = [self numberValue:plist[@"mainScreenHeight"]];
+    if (width <= 0.0 || height <= 0.0) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:XCWChromeRendererErrorDomain
+                                         code:16
+                                     userInfo:@{
+                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"The device profile for %@ did not specify a framebuffer size.", deviceName ?: @""],
+            }];
+        }
+        return CGSizeZero;
+    }
+
+    return CGSizeMake(width, height);
+}
+
 + (nullable NSData *)PNGDataForDeviceName:(NSString *)deviceName
                                     error:(NSError * _Nullable __autoreleasing *)error {
     return [self PNGDataForDeviceName:deviceName includeButtons:YES error:error];

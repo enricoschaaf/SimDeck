@@ -20,6 +20,8 @@ NS_ASSUME_NONNULL_BEGIN
                                               error:(NSError * _Nullable * _Nullable)error;
 + (nullable NSDictionary<NSString *, id> *)profileForDeviceName:(NSString *)deviceName
                                                           error:(NSError * _Nullable * _Nullable)error;
++ (CGSize)displayPixelSizeForDeviceName:(NSString *)deviceName
+                                   error:(NSError * _Nullable * _Nullable)error;
 
 @end
 

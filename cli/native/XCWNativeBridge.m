@@ -648,6 +648,16 @@ static DFPrivateSimulatorDisplayBridge *XCWInputBridgeForUDID(const char *udid, 
                                                                                               error:&error];
     if (bridge == nil) {
         XCWSetErrorMessage(errorMessage, error);
+        return nil;
+    }
+
+    NSDictionary *simulator = XCWSimulatorRecordForUDID(udid, NULL);
+    NSString *deviceName = simulator[@"deviceTypeName"] ?: simulator[@"name"] ?: @"";
+    NSError *displaySizeError = nil;
+    CGSize displaySize = [XCWChromeRenderer displayPixelSizeForDeviceName:deviceName
+                                                                    error:&displaySizeError];
+    if (displaySize.width > 0.0 && displaySize.height > 0.0) {
+        [bridge updateInputDisplaySize:displaySize];
     }
     return bridge;
 }

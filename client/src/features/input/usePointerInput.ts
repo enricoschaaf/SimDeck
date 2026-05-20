@@ -43,6 +43,7 @@ type ActiveGesture =
     };
 
 const TWO_FINGER_SPREAD = 0.16;
+const PINCH_MINIMUM_SPREAD = 0.16;
 const BOTTOM_EDGE_GESTURE_START_Y = 0.93;
 
 export function usePointerInput({
@@ -78,8 +79,25 @@ export function usePointerInput({
     };
   }
 
-  function mirrorAroundCenter(point: Point): Point {
-    return clampPoint({ x: 1 - point.x, y: 1 - point.y });
+  function pinchPointsAroundCenter(
+    anchor: Point,
+    previousFirst?: Point,
+  ): [Point, Point] {
+    let dx = anchor.x - 0.5;
+    let dy = anchor.y - 0.5;
+    const halfMinimumSpread = PINCH_MINIMUM_SPREAD / 2;
+    const distance = Math.hypot(dx, dy);
+    if (distance < halfMinimumSpread) {
+      const fallbackDx = previousFirst ? previousFirst.x - 0.5 : 1;
+      const fallbackDy = previousFirst ? previousFirst.y - 0.5 : 0;
+      const fallbackDistance = Math.hypot(fallbackDx, fallbackDy) || 1;
+      dx = (fallbackDx / fallbackDistance) * halfMinimumSpread;
+      dy = (fallbackDy / fallbackDistance) * halfMinimumSpread;
+    }
+    return [
+      clampPoint({ x: 0.5 + dx, y: 0.5 + dy }),
+      clampPoint({ x: 0.5 - dx, y: 0.5 - dy }),
+    ];
   }
 
   function previewMultiTouch(phase: TouchPhase, first: Point, second: Point) {
@@ -193,8 +211,7 @@ export function usePointerInput({
         return;
       }
 
-      const first = clampPoint(coords);
-      const second = mirrorAroundCenter(first);
+      const [first, second] = pinchPointsAroundCenter(coords);
       activeGestureRef.current = {
         kind: "pinch",
         pointerId: event.pointerId,
@@ -226,8 +243,7 @@ export function usePointerInput({
     }
 
     if (active.kind === "pinch") {
-      const first = clampPoint(coords);
-      const second = mirrorAroundCenter(first);
+      const [first, second] = pinchPointsAroundCenter(coords, active.first);
       activeGestureRef.current = { ...active, first, second };
       sendMultiTouch("moved", first, second);
       return;
@@ -280,8 +296,9 @@ export function usePointerInput({
     );
 
     if (active.kind === "pinch") {
-      const first = coords ? clampPoint(coords) : active.first;
-      const second = coords ? mirrorAroundCenter(first) : active.second;
+      const [first, second] = coords
+        ? pinchPointsAroundCenter(coords, active.first)
+        : [active.first, active.second];
       sendMultiTouch(phase, first, second);
       return;
     }

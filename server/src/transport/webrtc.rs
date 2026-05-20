@@ -1,9 +1,9 @@
 use crate::android;
 use crate::api::routes::{
     apply_stream_client_foreground_from_stats, apply_stream_quality_payload,
-    run_bridge_input_control_message, run_control_message, run_toggle_appearance_control,
-    run_tvos_control_message, AppState, ControlMessage, StreamQualityPayload,
-    TvosControlTouchGesture,
+    bridge_input_session_for_control, run_bridge_multitouch_control_message, run_control_message,
+    run_toggle_appearance_control, run_tvos_control_message, AppState, ControlMessage,
+    StreamQualityPayload, TvosControlTouchGesture,
 };
 use crate::error::AppError;
 use crate::metrics::counters::ClientStreamStats;
@@ -60,6 +60,7 @@ const WEBRTC_REALTIME_KEYFRAME_WRITE_TIMEOUT: Duration = Duration::from_millis(9
 const WEBRTC_INITIAL_KEYFRAME_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBRTC_FAST_ICE_GATHER_TIMEOUT: Duration = Duration::from_millis(250);
 const WEBRTC_FULL_ICE_GATHER_TIMEOUT: Duration = Duration::from_secs(3);
+const WEBRTC_MULTITOUCH_INPUT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBRTC_RTP_OUTBOUND_MTU: usize = 1200;
 const WEBRTC_PEER_DISCONNECTED_TIMEOUT: Duration = Duration::from_secs(12);
 const ANDROID_WEBRTC_FRAME_BROADCAST_CAPACITY: usize = 128;
@@ -986,13 +987,29 @@ async fn run_webrtc_control_queue(
 ) {
     let mut pending = VecDeque::new();
     let mut tvos_touch = TvosControlTouchGesture::default();
+    let mut multitouch_input_session = None;
     loop {
         let mut message = match pending.pop_front() {
             Some(message) => message,
-            None => match receiver.recv().await {
-                Some(message) => message,
-                None => break,
-            },
+            None => {
+                if multitouch_input_session.is_some() {
+                    tokio::select! {
+                        message = receiver.recv() => match message {
+                            Some(message) => message,
+                            None => break,
+                        },
+                        _ = time::sleep(WEBRTC_MULTITOUCH_INPUT_IDLE_TIMEOUT) => {
+                            multitouch_input_session = None;
+                            continue;
+                        }
+                    }
+                } else {
+                    match receiver.recv().await {
+                        Some(message) => message,
+                        None => break,
+                    }
+                }
+            }
         };
         if webrtc_control_message_is_move(&message) {
             while let Ok(next_message) = receiver.try_recv() {
@@ -1004,7 +1021,11 @@ async fn run_webrtc_control_queue(
                 }
             }
         }
-
+        if multitouch_input_session.is_some()
+            && !matches!(message, ControlMessage::MultiTouch { .. })
+        {
+            multitouch_input_session = None;
+        }
         match message {
             ControlMessage::ToggleAppearance => {
                 let bridge = state.registry.bridge().clone();
@@ -1014,13 +1035,22 @@ async fn run_webrtc_control_queue(
                     warn!("WebRTC control message failed for {udid}: {error}");
                 }
             }
-            message @ (ControlMessage::Touch { .. }
-            | ControlMessage::EdgeTouch { .. }
-            | ControlMessage::MultiTouch { .. })
-                if !session.is_tvos() =>
-            {
+            message @ ControlMessage::MultiTouch { .. } if !session.is_tvos() => {
+                let should_clear_input = webrtc_control_message_ends_touch(&message);
                 let bridge = state.registry.bridge().clone();
-                let result = run_bridge_input_control_message(bridge, udid.clone(), message).await;
+                let result = match bridge_input_session_for_control(
+                    &mut multitouch_input_session,
+                    bridge,
+                    &udid,
+                )
+                .await
+                {
+                    Ok(input) => run_bridge_multitouch_control_message(input, message).await,
+                    Err(error) => Err(error),
+                };
+                if should_clear_input {
+                    multitouch_input_session = None;
+                }
                 if let Err(error) = result {
                     warn!("WebRTC control message failed for {udid}: {error}");
                 }
@@ -1069,8 +1099,17 @@ fn webrtc_control_message_is_move(message: &ControlMessage) -> bool {
         message,
         ControlMessage::Touch { phase, .. }
             | ControlMessage::EdgeTouch { phase, .. }
-            | ControlMessage::MultiTouch { phase, .. }
             if phase == "moved"
+    )
+}
+
+fn webrtc_control_message_ends_touch(message: &ControlMessage) -> bool {
+    matches!(
+        message,
+        ControlMessage::Touch { phase, .. }
+            | ControlMessage::EdgeTouch { phase, .. }
+            | ControlMessage::MultiTouch { phase, .. }
+            if phase == "ended" || phase == "cancelled"
     )
 }
 

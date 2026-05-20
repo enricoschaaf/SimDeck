@@ -9,7 +9,7 @@ use crate::logs::LogRegistry;
 use crate::metrics::counters::{ClientStreamStats, Metrics};
 use crate::native::bridge::{
     tvos_remote_key_for_touch_motion, tvos_remote_key_for_touch_phase, LogFilters, NativeBridge,
-    NativePairedWatchSpec, HID_KEY_ENTER,
+    NativeInputSession, NativePairedWatchSpec, HID_KEY_ENTER,
 };
 use crate::performance::{
     sample_stack, DisplaySignal, ForegroundProcess, PerformanceQuery, PerformanceRegistry,
@@ -58,6 +58,7 @@ const H264_WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const H264_WS_KEYFRAME_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 const STREAM_CLIENT_FOREGROUND_TTL: Duration = Duration::from_secs(30);
 const CHROME_DEVTOOLS_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(900);
+const MULTITOUCH_INPUT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const FOREGROUND_APP_CACHE_TTL: Duration = Duration::from_secs(3);
 const FOREGROUND_APP_STALE_TTL: Duration = Duration::from_secs(30);
 const FOREGROUND_APP_ROUTE_TIMEOUT: Duration = Duration::from_millis(1200);
@@ -3419,13 +3420,29 @@ async fn run_control_queue(
 ) {
     let mut pending = VecDeque::new();
     let mut tvos_touch = TvosControlTouchGesture::default();
+    let mut multitouch_input_session: Option<Arc<NativeInputSession>> = None;
     loop {
         let mut message = match pending.pop_front() {
             Some(message) => message,
-            None => match receiver.recv().await {
-                Some(message) => message,
-                None => break,
-            },
+            None => {
+                if multitouch_input_session.is_some() {
+                    tokio::select! {
+                        message = receiver.recv() => match message {
+                            Some(message) => message,
+                            None => break,
+                        },
+                        _ = tokio::time::sleep(MULTITOUCH_INPUT_IDLE_TIMEOUT) => {
+                            multitouch_input_session = None;
+                            continue;
+                        }
+                    }
+                } else {
+                    match receiver.recv().await {
+                        Some(message) => message,
+                        None => break,
+                    }
+                }
+            }
         };
         if control_message_is_move(&message) {
             while let Ok(next_message) = receiver.try_recv() {
@@ -3437,6 +3454,11 @@ async fn run_control_queue(
                 }
             }
         }
+        if multitouch_input_session.is_some()
+            && !matches!(message, ControlMessage::MultiTouch { .. })
+        {
+            multitouch_input_session = None;
+        }
         let result = match message {
             ControlMessage::ToggleAppearance => {
                 run_toggle_appearance_control(bridge.clone(), udid.clone()).await
@@ -3444,10 +3466,22 @@ async fn run_control_queue(
             message if session.is_tvos() => {
                 run_tvos_control_message(session.clone(), message, &mut tvos_touch).await
             }
-            message @ (ControlMessage::Touch { .. }
-            | ControlMessage::EdgeTouch { .. }
-            | ControlMessage::MultiTouch { .. }) => {
-                run_bridge_input_control_message(bridge.clone(), udid.clone(), message).await
+            message @ ControlMessage::MultiTouch { .. } => {
+                let should_clear_input = control_message_ends_touch(&message);
+                let result = match bridge_input_session_for_control(
+                    &mut multitouch_input_session,
+                    bridge.clone(),
+                    &udid,
+                )
+                .await
+                {
+                    Ok(input) => run_bridge_multitouch_control_message(input, message).await,
+                    Err(error) => Err(error),
+                };
+                if should_clear_input {
+                    multitouch_input_session = None;
+                }
+                result
             }
             message => run_control_message(session.clone(), message).await,
         };
@@ -3462,7 +3496,6 @@ fn control_message_is_move(message: &ControlMessage) -> bool {
         message,
         ControlMessage::Touch { phase, .. }
             | ControlMessage::EdgeTouch { phase, .. }
-            | ControlMessage::MultiTouch { phase, .. }
             if phase == "moved"
     )
 }
@@ -3477,6 +3510,16 @@ fn edge_name_to_hid_value(edge: &str) -> Option<u32> {
         "none" => Some(0),
         _ => None,
     }
+}
+
+fn control_message_ends_touch(message: &ControlMessage) -> bool {
+    matches!(
+        message,
+        ControlMessage::Touch { phase, .. }
+            | ControlMessage::EdgeTouch { phase, .. }
+            | ControlMessage::MultiTouch { phase, .. }
+            if phase == "ended" || phase == "cancelled"
+    )
 }
 
 pub(crate) async fn run_control_message(
@@ -3563,41 +3606,33 @@ pub(crate) async fn run_control_message(
     .map_err(|error| AppError::internal(format!("Failed to join control task: {error}")))?
 }
 
-pub(crate) async fn run_bridge_input_control_message(
+pub(crate) async fn bridge_input_session_for_control(
+    input_session: &mut Option<Arc<NativeInputSession>>,
     bridge: NativeBridge,
-    udid: String,
+    udid: &str,
+) -> Result<Arc<NativeInputSession>, AppError> {
+    if let Some(input) = input_session {
+        return Ok(input.clone());
+    }
+
+    let udid = udid.to_string();
+    let input = task::spawn_blocking(move || bridge.create_input_session(&udid))
+        .await
+        .map_err(|error| {
+            AppError::internal(format!(
+                "Failed to join bridge input creation task: {error}"
+            ))
+        })??;
+    let input = Arc::new(input);
+    *input_session = Some(input.clone());
+    Ok(input)
+}
+
+pub(crate) async fn run_bridge_multitouch_control_message(
+    input: Arc<NativeInputSession>,
     message: ControlMessage,
 ) -> Result<(), AppError> {
     task::spawn_blocking(move || match message {
-        ControlMessage::Touch { x, y, phase } => {
-            if !x.is_finite() || !y.is_finite() {
-                return Err(AppError::bad_request(
-                    "`x` and `y` must be finite normalized numbers.",
-                ));
-            }
-            if bridge_simulator_is_tvos(&bridge, &udid) {
-                return handle_tvos_touch_phase(&bridge, &udid, &phase);
-            }
-            let input = bridge.create_input_session(&udid)?;
-            input.send_touch(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0), &phase)
-        }
-        ControlMessage::EdgeTouch { x, y, phase, edge } => {
-            if !x.is_finite() || !y.is_finite() {
-                return Err(AppError::bad_request(
-                    "`x` and `y` must be finite normalized numbers.",
-                ));
-            }
-            if bridge_simulator_is_tvos(&bridge, &udid) {
-                return Err(AppError::bad_request(
-                    "Edge touch input is not supported for tvOS simulators.",
-                ));
-            }
-            let edge = edge_name_to_hid_value(edge.as_str()).ok_or_else(|| {
-                AppError::bad_request("`edge` must be `left`, `top`, `bottom`, `right`, or `none`.")
-            })?;
-            let input = bridge.create_input_session(&udid)?;
-            input.send_edge_touch(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0), &phase, edge)
-        }
         ControlMessage::MultiTouch {
             x1,
             y1,
@@ -3610,12 +3645,6 @@ pub(crate) async fn run_bridge_input_control_message(
                     "`x1`, `y1`, `x2`, and `y2` must be finite normalized numbers.",
                 ));
             }
-            if bridge_simulator_is_tvos(&bridge, &udid) {
-                return Err(AppError::bad_request(
-                    "Multi-touch input is not supported for tvOS simulators.",
-                ));
-            }
-            let input = bridge.create_input_session(&udid)?;
             input.send_multitouch(
                 x1.clamp(0.0, 1.0),
                 y1.clamp(0.0, 1.0),
@@ -3625,7 +3654,7 @@ pub(crate) async fn run_bridge_input_control_message(
             )
         }
         _ => Err(AppError::bad_request(
-            "Bridge input control only supports touch messages.",
+            "Bridge input control only supports multi-touch messages.",
         )),
     })
     .await

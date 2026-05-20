@@ -1228,6 +1228,17 @@ static uint32_t DFIndigoMouseEventTypeForPhase(DFPrivateSimulatorTouchPhase phas
     }
 }
 
+static uint32_t DFIndigoMultiTouchMouseEventTypeForPhase(DFPrivateSimulatorTouchPhase phase) {
+    switch (phase) {
+    case DFPrivateSimulatorTouchPhaseBegan:
+    case DFPrivateSimulatorTouchPhaseMoved:
+        return DFIndigoMouseEventDown;
+    case DFPrivateSimulatorTouchPhaseEnded:
+    case DFPrivateSimulatorTouchPhaseCancelled:
+        return DFIndigoMouseEventUp;
+    }
+}
+
 static IndigoHIDMessage *DFCreateIndigoTouchMessageDirect(CGPoint normalizedPoint,
                                                           NSSize displaySize,
                                                           DFPrivateSimulatorTouchPhase phase,
@@ -1238,11 +1249,11 @@ static IndigoHIDMessage *DFCreateIndigoTouchMessageDirect(CGPoint normalizedPoin
         return NULL;
     }
 
-    CGPoint ratioPoint = CGPointMake(
-        fmax(0.0, fmin(1.0, normalizedPoint.x)),
-        fmax(0.0, fmin(1.0, normalizedPoint.y))
+    CGPoint pixelPoint = CGPointMake(
+        fmax(0.0, fmin(1.0, normalizedPoint.x)) * displaySize.width,
+        fmax(0.0, fmin(1.0, normalizedPoint.y)) * displaySize.height
     );
-    return mouseMessage(&ratioPoint,
+    return mouseMessage(&pixelPoint,
                         NULL,
                         target,
                         (NSEventType)DFIndigoMouseEventTypeForPhase(phase),
@@ -1260,18 +1271,18 @@ static IndigoHIDMessage *DFCreateIndigoMultiTouchMessageDirect(CGPoint normalize
         return NULL;
     }
 
-    CGPoint ratioPoint = CGPointMake(
-        fmax(0.0, fmin(1.0, normalizedPoint1.x)),
-        fmax(0.0, fmin(1.0, normalizedPoint1.y))
+    CGPoint pixelPoint = CGPointMake(
+        fmax(0.0, fmin(1.0, normalizedPoint1.x)) * displaySize.width,
+        fmax(0.0, fmin(1.0, normalizedPoint1.y)) * displaySize.height
     );
-    CGPoint secondRatioPoint = CGPointMake(
-        fmax(0.0, fmin(1.0, normalizedPoint2.x)),
-        fmax(0.0, fmin(1.0, normalizedPoint2.y))
+    CGPoint secondPixelPoint = CGPointMake(
+        fmax(0.0, fmin(1.0, normalizedPoint2.x)) * displaySize.width,
+        fmax(0.0, fmin(1.0, normalizedPoint2.y)) * displaySize.height
     );
-    return mouseMessage(&ratioPoint,
-                        &secondRatioPoint,
+    return mouseMessage(&pixelPoint,
+                        &secondPixelPoint,
                         target,
-                        (NSEventType)DFIndigoMouseEventTypeForPhase(phase),
+                        (NSEventType)DFIndigoMultiTouchMouseEventTypeForPhase(phase),
                         displaySize,
                         DFIndigoHIDEdgeNone);
 }
@@ -1449,7 +1460,7 @@ static DFIndigoMessage *DFCreateIndigoMultiTouchMessage(CGPoint normalizedPoint1
         return NULL;
     }
 
-    NSEventType eventType = (NSEventType)DFIndigoMouseEventTypeForPhase(phase);
+    NSEventType eventType = (NSEventType)DFIndigoMultiTouchMouseEventTypeForPhase(phase);
     CGPoint ratioPoint = CGPointMake(
         fmax(0.0, fmin(1.0, normalizedPoint1.x)),
         fmax(0.0, fmin(1.0, normalizedPoint1.y))
@@ -3845,6 +3856,25 @@ static BOOL DFOpenAppSwitcherViaHIDClient(id hidClient, NSError **error) {
     return turns;
 }
 
+- (void)updateInputDisplaySize:(CGSize)displaySize {
+    if (displaySize.width <= 0.0 || displaySize.height <= 0.0 ||
+        !isfinite(displaySize.width) || !isfinite(displaySize.height)) {
+        return;
+    }
+
+    dispatch_block_t work = ^{
+        self->_displayPixelSize = displaySize;
+        DFReconcileRotationWithDisplaySize(&self->_deviceRotationDegrees, self->_displayPixelSize);
+        DFLog(@"Configured private HID display size %.0fx%.0f", displaySize.width, displaySize.height);
+    };
+
+    if (dispatch_get_specific(DFPrivateSimulatorCallbackQueueKey) != NULL) {
+        work();
+    } else {
+        dispatch_sync(_callbackQueue, work);
+    }
+}
+
 - (BOOL)sendTouchAtNormalizedX:(double)normalizedX
                    normalizedY:(double)normalizedY
                          phase:(DFPrivateSimulatorTouchPhase)phase
@@ -4101,7 +4131,9 @@ static BOOL DFOpenAppSwitcherViaHIDClient(id hidClient, NSError **error) {
                                                                           displaySize,
                                                                           phase,
                                                                           target);
+        NSString *messageSource = @"direct";
         if (message == NULL) {
+            messageSource = @"manual";
             const NSUInteger maxAttempts = phase == DFPrivateSimulatorTouchPhaseMoved ? 12 : 3;
             for (NSUInteger attempt = 0; attempt < maxAttempts; attempt++) {
                 message = (IndigoHIDMessage *)DFCreateIndigoMultiTouchMessage(CGPointMake(x1, y1),
@@ -4130,7 +4162,7 @@ static BOOL DFOpenAppSwitcherViaHIDClient(id hidClient, NSError **error) {
         }
 
         if (phase != DFPrivateSimulatorTouchPhaseMoved) {
-            DFLog(@"Sending %@ Indigo HID multi-touch target=0x%x p1=(%.4f, %.4f) p2=(%.4f, %.4f) within %.0fx%.0f", phaseLabel, target, x1, y1, x2, y2, displaySize.width, displaySize.height);
+            DFLog(@"Sending %@ Indigo HID multi-touch (%@) target=0x%x p1=(%.4f, %.4f) p2=(%.4f, %.4f) within %.0fx%.0f", phaseLabel, messageSource, target, x1, y1, x2, y2, displaySize.width, displaySize.height);
         }
         success = YES;
     };

@@ -48,6 +48,8 @@ NS_SWIFT_NAME(PrivateSimulatorDisplayBridge)
 @property (nonatomic, readonly) CGSize displaySize;
 @property (nonatomic, readonly) NSInteger rotationQuarterTurns;
 
+- (void)updateInputDisplaySize:(CGSize)displaySize;
+
 - (nullable CVPixelBufferRef)copyPixelBuffer CF_RETURNS_RETAINED;
 
 - (BOOL)sendTouchAtNormalizedX:(double)normalizedX

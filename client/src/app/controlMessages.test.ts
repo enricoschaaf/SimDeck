@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { isMoveControlMessage } from "./controlMessages";
 
 describe("controlMessages", () => {
-  it("marks all continuous touch moves as coalescible", () => {
+  it("marks single-touch moves as coalescible", () => {
     expect(
       isMoveControlMessage({ type: "touch", x: 0.4, y: 0.5, phase: "moved" }),
     ).toBe(true);
@@ -16,6 +16,12 @@ describe("controlMessages", () => {
         edge: "bottom",
       }),
     ).toBe(true);
+  });
+
+  it("does not coalesce multi-touch, gesture boundaries, or discrete controls", () => {
+    expect(
+      isMoveControlMessage({ type: "touch", x: 0.4, y: 0.5, phase: "began" }),
+    ).toBe(false);
     expect(
       isMoveControlMessage({
         type: "multiTouch",
@@ -25,12 +31,6 @@ describe("controlMessages", () => {
         y2: 0.5,
         phase: "moved",
       }),
-    ).toBe(true);
-  });
-
-  it("does not coalesce gesture boundaries or discrete controls", () => {
-    expect(
-      isMoveControlMessage({ type: "touch", x: 0.4, y: 0.5, phase: "began" }),
     ).toBe(false);
     expect(
       isMoveControlMessage({

@@ -2050,19 +2050,6 @@ export function AppShell({
     return state;
   }, []);
 
-  useEffect(() => {
-    if (!selectedSimulator?.isBooted) {
-      closeControlSocket();
-      return;
-    }
-    ensureControlSocket(selectedSimulator.udid);
-  }, [
-    closeControlSocket,
-    ensureControlSocket,
-    selectedSimulator?.isBooted,
-    selectedSimulator?.udid,
-  ]);
-
   function sendControl(udid: string, message: ControlMessage): boolean {
     if (isMoveControlMessage(message)) {
       pendingControlMoveRef.current = { message, udid };
