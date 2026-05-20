@@ -18,6 +18,8 @@ packages/flutter-inspector/.dart_tool/
 packages/flutter-inspector/pubspec.lock
 docs/.vitepress/dist/
 docs/.vitepress/cache/
+ios/*
+!ios/PRIVACY.md
 ios/DerivedData/
 cloud/
 .cache/
