@@ -71,5 +71,6 @@ Common next steps:
 - [Open a simulator in the browser](/guide/quick-start).
 - [Drive a simulator from the CLI](/cli/commands).
 - [Troubleshoot startup, stream, or inspector issues](/guide/troubleshooting).
+- [Contact support](/support).
 
 </div>
