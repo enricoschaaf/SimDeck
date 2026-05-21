@@ -103,6 +103,10 @@ function isDocumentForeground(): boolean {
   return document.visibilityState === "visible";
 }
 
+function isViewerForeground(canvasVisible: boolean): boolean {
+  return isDocumentForeground() && canvasVisible;
+}
+
 export function useLiveStream({
   canvasElement,
   paused = false,
@@ -122,6 +126,7 @@ export function useLiveStream({
   const retainedFrameRef = useRef(false);
   const previousSimulatorUdidRef = useRef<string | undefined>(simulator?.udid);
   const connectedStreamTargetKeyRef = useRef("");
+  const canvasVisibleRef = useRef(true);
   const latestVisualArtifactRef = useRef<VisualArtifactSample | null>(null);
   const latestVisualArtifactSampleCountRef = useRef(0);
   const lastVisualArtifactSampleAtRef = useRef(0);
@@ -222,6 +227,40 @@ export function useLiveStream({
       connectedStreamTargetKeyRef.current = "";
     };
   }, []);
+
+  useEffect(() => {
+    if (!canvasElement || !simulator?.udid || paused) {
+      return;
+    }
+
+    const sendCanvasForegroundState = () => {
+      workerClientRef.current?.sendStreamControl({
+        clientId: clientTelemetryIdRef.current,
+        foreground: isViewerForeground(canvasVisibleRef.current),
+      });
+    };
+
+    if (typeof IntersectionObserver !== "function") {
+      canvasVisibleRef.current = true;
+      sendCanvasForegroundState();
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[entries.length - 1];
+        canvasVisibleRef.current = Boolean(
+          entry?.isIntersecting && entry.intersectionRatio > 0,
+        );
+        sendCanvasForegroundState();
+      },
+      { threshold: [0, 0.01] },
+    );
+    observer.observe(canvasElement);
+    return () => {
+      observer.disconnect();
+    };
+  }, [canvasElement, paused, simulator?.udid]);
 
   useEffect(() => {
     latestDecodedFramesRef.current = stats.decodedFrames;
@@ -355,7 +394,9 @@ export function useLiveStream({
       return;
     }
 
-    const sendForegroundState = (foreground = isDocumentForeground()) => {
+    const sendForegroundState = (
+      foreground = isViewerForeground(canvasVisibleRef.current),
+    ) => {
       workerClientRef.current?.sendStreamControl({
         clientId: clientTelemetryIdRef.current,
         foreground,
@@ -449,7 +490,7 @@ export function useLiveStream({
       };
       workerClientRef.current?.sendStreamControl({
         clientId: clientTelemetryIdRef.current,
-        foreground: isDocumentForeground(),
+        foreground: isViewerForeground(canvasVisibleRef.current),
       });
       if (
         sendStreamClientStats(payload) ||

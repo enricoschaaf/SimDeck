@@ -100,3 +100,15 @@ Include simulator refresh traffic:
 ```sh
 npm run test:stress -- --udid <udid> --iterations 2000 --concurrency 16
 ```
+
+## Stress Test Daemon Cleanup
+
+```sh
+npm run build:cli
+npm run test:stress:daemon -- --iterations 30 --concurrency 3
+```
+
+This starts isolated temporary project daemons, hits health and metrics, stops
+them through the CLI, and verifies the process group, listener port, and daemon
+status are cleaned up. Use `--binary /path/to/simdeck` to test an installed or
+packaged binary.

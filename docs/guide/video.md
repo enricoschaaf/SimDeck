@@ -4,6 +4,17 @@ SimDeck streams live device video to the browser. Local sessions default to high
 
 iOS simulator H.264 uses VideoToolbox for hardware encoding and x264 for software encoding.
 
+## When Encoding Runs
+
+SimDeck starts encoding when a browser stream needs H.264 frames. The server
+requests an initial keyframe to answer the WebRTC or H.264 WebSocket viewer,
+then keeps a shared refresh pump active while frame subscribers exist.
+
+The browser reports whether the page and stream canvas are foreground. When all
+known viewers are hidden or the last frame subscriber disconnects, the native
+session pauses encoder input and releases the active compression session. A
+visible viewer, explicit refresh, or stream reconnect asks for a fresh keyframe.
+
 ## Pick A Stream Quality
 
 Start with the default:

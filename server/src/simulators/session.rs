@@ -67,12 +67,16 @@ impl FrameSubscription {
 
 impl Drop for FrameSubscription {
     fn drop(&mut self) {
-        self.inner
+        let previous = self
+            .inner
             .active_frame_subscribers
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 Some(value.saturating_sub(1))
             })
-            .ok();
+            .unwrap_or(0);
+        if previous <= 1 {
+            self.inner.native.set_client_foreground(false);
+        }
     }
 }
 
@@ -167,9 +171,13 @@ impl SimulatorSession {
 
     pub fn subscribe(&self) -> FrameSubscription {
         *self.inner.state.lock().unwrap() = SessionState::Streaming;
-        self.inner
+        let previous = self
+            .inner
             .active_frame_subscribers
             .fetch_add(1, Ordering::Relaxed);
+        if previous == 0 {
+            self.inner.native.set_client_foreground(true);
+        }
         self.inner.start_refresh_pump();
         FrameSubscription {
             inner: self.inner.clone(),
@@ -182,6 +190,7 @@ impl SimulatorSession {
     }
 
     pub async fn wait_for_keyframe(&self, timeout_duration: Duration) -> Option<SharedFrame> {
+        self.inner.native.set_client_foreground(true);
         let deadline = Instant::now() + timeout_duration;
         let baseline_sequence = self
             .latest_keyframe()

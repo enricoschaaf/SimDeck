@@ -80,6 +80,7 @@
     "test:studio-provider": "node --test scripts/studio-provider-bridge.test.mjs scripts/studio-host-provider.test.mjs",
     "test:github-actions": "node --test scripts/github-actions.test.mjs",
     "test:stress": "node scripts/stress/simdeck.mjs",
+    "test:stress:daemon": "node scripts/stress/daemon-cleanup.mjs",
     "bench:encoder:build": "scripts/bench/build-encoder-benchmark.sh",
     "codex:setup": "node scripts/codex-setup.mjs",
     "codex:cache:save": "node scripts/codex-worktree-cache.mjs save --best-effort",
