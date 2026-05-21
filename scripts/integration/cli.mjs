@@ -4,6 +4,10 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import {
+  activationRecoveryReason,
+  shouldRecycleSimulatorForFixtureLaunch,
+} from "./activation-recovery.mjs";
 import { buildCachedFixtureApp } from "./fixture.mjs";
 import { selectIntegrationSimulator } from "./simulator-selection.mjs";
 
@@ -764,7 +768,10 @@ async function cliStep(label, args, commandOptions = {}, verifyOptions = {}) {
 }
 
 async function ensureFixtureForeground(label, options = {}) {
+  const recoveryCount = options.recoveryCount ?? 0;
+  const maxRecoveries = options.maxLaunchRecoveries ?? 1;
   let launchError = null;
+  let launchVerifyError = null;
   try {
     await retrySimdeckJson(
       cliArgs(["launch", simulatorUDID, fixtureBundleId]),
@@ -792,9 +799,24 @@ async function ensureFixtureForeground(label, options = {}) {
     if (launchError === null) {
       throw verifyError;
     }
+    launchVerifyError = verifyError;
+    if (
+      shouldRecycleSimulatorForFixtureLaunch({
+        launchError,
+        verifyError: launchVerifyError,
+        recoveryCount,
+        maxRecoveries,
+      })
+    ) {
+      return recycleFixtureLaunchAndRetry(label, {
+        ...options,
+        reason: activationRecoveryReason({ launchError }),
+      });
+    }
     logStep(`${label}: opening fixture URL after launch timeout`);
   }
 
+  let urlError = null;
   try {
     await retrySimdeckJson(
       cliArgs(["open-url", simulatorUDID, fixtureUrl]),
@@ -810,7 +832,21 @@ async function ensureFixtureForeground(label, options = {}) {
       attempts: options.fallbackVerifyAttempts ?? 12,
       delayMs: options.fallbackVerifyDelayMs ?? 1_500,
     });
-  } catch (urlError) {
+  } catch (error) {
+    urlError = error;
+    if (
+      shouldRecycleSimulatorForFixtureLaunch({
+        launchError,
+        urlError,
+        recoveryCount,
+        maxRecoveries,
+      })
+    ) {
+      return recycleFixtureLaunchAndRetry(label, {
+        ...options,
+        reason: activationRecoveryReason({ launchError, urlError }),
+      });
+    }
     logStep(
       `${label}: fixture URL fallback failed: ${summarizeError(urlError)}`,
     );
@@ -841,6 +877,53 @@ async function ensureFixtureForeground(label, options = {}) {
     attempts: options.fallbackVerifyAttempts ?? 12,
     delayMs: options.fallbackVerifyDelayMs ?? 1_500,
   });
+}
+
+async function recycleFixtureLaunchAndRetry(label, options = {}) {
+  const recoveryCount = options.recoveryCount ?? 0;
+  const nextRecoveryCount = recoveryCount + 1;
+  logStep(
+    `${label}: recycling simulator after ${options.reason ?? "simulator app activation timeout"}`,
+  );
+  await restartSimulatorForFixtureLaunch(label);
+  return ensureFixtureForeground(label, {
+    ...options,
+    recoveryCount: nextRecoveryCount,
+    launchAttempts: Math.max(options.launchAttempts ?? 1, 2),
+    verifyAttempts: Math.max(options.verifyAttempts ?? 8, 10),
+    waitTimeoutMs: Math.max(options.waitTimeoutMs ?? 5_000, 10_000),
+  });
+}
+
+async function restartSimulatorForFixtureLaunch(label) {
+  await measuredStep(
+    `${label} recovery shutdown`,
+    () => shutdownSimulatorIfNeeded(simulatorUDID),
+    { phase: phaseSetup },
+  );
+  await measuredStep(
+    `${label} recovery boot`,
+    () =>
+      retrySimdeckJson(["boot", simulatorUDID], `${label} recovery boot`, {
+        attempts: 3,
+        delayMs: 3_000,
+        timeoutMs: 180_000,
+      }),
+    { phase: phaseSetup },
+  );
+  await measuredStep(
+    `${label} recovery bootstatus`,
+    () =>
+      runText("xcrun", ["simctl", "bootstatus", simulatorUDID, "-b"], {
+        timeoutMs: 600_000,
+      }),
+    { phase: phaseSetup },
+  );
+  await measuredStep(
+    `${label} recovery fixture registration`,
+    waitForFixtureRegistration,
+    { phase: phaseSetup },
+  );
 }
 
 async function waitForFixtureRegistration() {
