@@ -2742,6 +2742,25 @@ mod tests {
     }
 
     #[test]
+    fn clearing_webrtc_stream_is_scoped_and_idempotent() {
+        let udid = format!("test-clear-{}", std::process::id());
+        super::reset_webrtc_media_streams_for_test(&udid);
+        let (first_token, mut first_rx) = super::register_webrtc_media_stream_for_test(&udid);
+        let (second_token, mut second_rx) = super::register_webrtc_media_stream_for_test(&udid);
+
+        super::clear_webrtc_media_stream_for_test(&udid, &first_token);
+        super::clear_webrtc_media_stream_for_test(&udid, &first_token);
+
+        assert!(first_rx.try_recv().is_err());
+        assert!(second_rx.try_recv().is_err());
+        assert_eq!(super::active_webrtc_media_stream_count(&udid), 1);
+        assert!(super::has_media_stream(&udid));
+
+        super::clear_webrtc_media_stream_for_test(&udid, &second_token);
+        assert!(!super::has_media_stream(&udid));
+    }
+
+    #[test]
     fn registering_same_client_webrtc_stream_replaces_old_stream() {
         let udid = format!("test-client-cap-{}", std::process::id());
         super::reset_webrtc_media_streams_for_test(&udid);

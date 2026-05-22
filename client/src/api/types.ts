@@ -2,6 +2,7 @@ export interface EncoderStats {
   activeEncoderMode?: string;
   averageEncodeLatencyUs?: number;
   averageEncoderLoadPercent?: number;
+  autoHardwareSlot?: boolean;
   autoHardwareRetries?: number;
   autoSoftwareFallbackActive?: boolean;
   autoSoftwareFallbackRemainingUs?: number;

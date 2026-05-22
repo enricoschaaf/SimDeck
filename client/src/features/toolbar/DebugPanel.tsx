@@ -90,6 +90,15 @@ export function DebugPanel({
               : "no"
             : "—",
       },
+      {
+        label: "Auto HW Slot",
+        value:
+          typeof encoder.autoHardwareSlot === "boolean"
+            ? encoder.autoHardwareSlot
+              ? "yes"
+              : "no"
+            : "—",
+      },
       { label: "Encoder State", value: encoder.overloadState ?? "—" },
       {
         label: "Encoder Load",

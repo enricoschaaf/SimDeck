@@ -58,6 +58,11 @@ simdeck daemon restart --video-codec software
 | `hardware` | Dedicated local machines where VideoToolbox hardware H.264 is reliable.             |
 | `software` | x264 software H.264 for CI, screen recording conflicts, or hardware encoder stalls. |
 
+When multiple simulator streams run at the same time, `auto` keeps one active
+stream on the hardware encoder path and routes additional active auto streams to
+software encoding. This avoids saturating the shared VideoToolbox hardware
+encoder while preserving explicit `--video-codec hardware` behavior.
+
 For very constrained software sessions:
 
 ```sh
