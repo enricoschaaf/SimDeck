@@ -891,7 +891,7 @@ function createInspectorSocket(
   url: string,
   handlers: InspectorSocketHandlers,
 ): InspectorSocket {
-  if (isBrowserWebSocket(WebSocket)) {
+  if (typeof WebSocket !== "undefined" && isBrowserWebSocket(WebSocket)) {
     const socket = new WebSocket(url) as any;
     socket.onmessage = (event: { data: string }) => {
       handlers.onMessage(String(event.data));
