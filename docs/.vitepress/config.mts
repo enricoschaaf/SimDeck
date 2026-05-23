@@ -114,16 +114,10 @@ export default defineConfig({
     nav: [
       { text: "Guide", link: "/guide/", activeMatch: "/guide/" },
       { text: "CLI", link: "/cli/", activeMatch: "/cli/" },
-      { text: "API", link: "/api/rest", activeMatch: "/api/" },
       {
         text: "Inspectors",
         link: "/inspector/",
         activeMatch: "/inspector/",
-      },
-      {
-        text: "Extensions",
-        link: "/extensions/vscode",
-        activeMatch: "/extensions/",
       },
       { text: "Support", link: "/support" },
       {
@@ -176,17 +170,6 @@ export default defineConfig({
         },
       ],
 
-      "/api/": [
-        {
-          text: "API",
-          items: [
-            { text: "REST", link: "/api/rest" },
-            { text: "Health & Metrics", link: "/api/health" },
-            { text: "Inspector Protocol", link: "/api/inspector-protocol" },
-          ],
-        },
-      ],
-
       "/inspector/": [
         {
           text: "Inspectors",
@@ -197,16 +180,6 @@ export default defineConfig({
             { text: "NativeScript", link: "/inspector/nativescript" },
             { text: "React Native", link: "/inspector/react-native" },
             { text: "Flutter", link: "/inspector/flutter" },
-          ],
-        },
-      ],
-
-      "/extensions/": [
-        {
-          text: "Extensions",
-          items: [
-            { text: "VS Code", link: "/extensions/vscode" },
-            { text: "Browser Client", link: "/extensions/browser-client" },
           ],
         },
       ],
