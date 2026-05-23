@@ -138,19 +138,25 @@ async function main() {
     phase: phaseSetup,
   });
   await measuredStep(
+    "CLI use default simulator",
+    () => {
+      const selection = simdeckJson(["use", simulatorUDID]);
+      if (selection.udid !== simulatorUDID) {
+        throw new Error(`simdeck use selected ${JSON.stringify(selection)}`);
+      }
+    },
+    { phase: phaseSetup },
+  );
+  await measuredStep(
     "CLI chrome-profile",
-    () =>
-      assertJson(
-        simdeckJson(["chrome-profile", simulatorUDID]),
-        "chrome-profile",
-      ),
+    () => assertJson(simdeckJson(["chrome-profile"]), "chrome-profile"),
     { phase: phaseSetup },
   );
   await measuredStep(
     "CLI logs",
     () =>
       assertJson(
-        simdeckJson(["logs", simulatorUDID, "--seconds", "1", "--limit", "1"]),
+        simdeckJson(["logs", "--seconds", "1", "--limit", "1"]),
         "logs",
       ),
     { phase: phaseSetup },
@@ -159,7 +165,7 @@ async function main() {
   await measuredStep(
     "CLI install fixture",
     async () => {
-      simdeckJson(["install", simulatorUDID, fixture.appPath]);
+      simdeckJson(["install", fixture.appPath]);
       preapproveFixtureUrlScheme();
     },
     { phase: phaseSetup },
@@ -177,7 +183,6 @@ async function main() {
   const agentTree = await measuredStep("server describe agent", () =>
     simdeckText([
       "describe",
-      simulatorUDID,
       "--source",
       "native-ax",
       "--format",
@@ -189,6 +194,28 @@ async function main() {
   if (!agentTree.includes("source:") || !agentTree.includes("- ")) {
     throw new Error("agent describe output did not look like a hierarchy");
   }
+  const interactiveTree = await measuredStep(
+    "server describe agent interactive",
+    () =>
+      simdeckText([
+        "describe",
+        "--source",
+        "native-ax",
+        "--format",
+        "agent",
+        "--max-depth",
+        "8",
+        "--interactive",
+      ]),
+  );
+  if (
+    !interactiveTree.includes("source:") ||
+    !interactiveTree.includes("Continue")
+  ) {
+    throw new Error(
+      "interactive agent describe did not include fixture controls",
+    );
+  }
   await runRestControls();
   await runCliControls();
 
@@ -196,7 +223,7 @@ async function main() {
   await measuredStep(
     "CLI screenshot file",
     async () => {
-      simdeckJson(["screenshot", simulatorUDID, "--output", screenshotPath]);
+      simdeckJson(["screenshot", "--output", screenshotPath]);
       assertPng(screenshotPath);
     },
     { phase: phaseCommandSmoke },
@@ -209,10 +236,11 @@ async function main() {
         stdoutPng,
         runBuffer(
           simdeck,
-          ["--server-url", serverUrl, "screenshot", simulatorUDID, "--stdout"],
+          ["--server-url", serverUrl, "screenshot", "--stdout"],
           {
             timeoutMs: 300_000,
             maxBuffer: 64 * 1024 * 1024,
+            env: { HOME: tempRoot },
           },
         ),
       );
@@ -226,7 +254,6 @@ async function main() {
     async () => {
       simdeckJson([
         "screenshot",
-        simulatorUDID,
         "--with-bezel",
         "--output",
         bezeledScreenshotPath,
@@ -239,14 +266,7 @@ async function main() {
   await measuredStep(
     "CLI screen recording",
     async () => {
-      simdeckJson([
-        "record",
-        simulatorUDID,
-        "--seconds",
-        "1",
-        "--output",
-        recordingPath,
-      ]);
+      simdeckJson(["record", "--seconds", "1", "--output", recordingPath]);
       assertMp4(recordingPath);
     },
     { phase: phaseCommandSmoke },
@@ -255,14 +275,14 @@ async function main() {
   await measuredStep(
     "CLI pasteboard set",
     async () => {
-      simdeckJson(["pasteboard", "set", simulatorUDID, "simdeck integration"]);
+      simdeckJson(["pasteboard", "set", "simdeck integration"]);
     },
     { phase: phaseCommandSmoke },
   );
   await measuredStep(
     "CLI pasteboard get",
     async () => {
-      const pasteboard = simdeckJson(["pasteboard", "get", simulatorUDID]);
+      const pasteboard = simdeckJson(["pasteboard", "get"]);
       if (pasteboard.text !== "simdeck integration") {
         throw new Error(
           `pasteboard round-trip failed: ${JSON.stringify(pasteboard)}`,
@@ -277,14 +297,14 @@ async function main() {
   await measuredStep(
     "CLI type file",
     async () => {
-      simdeckJson(["type", simulatorUDID, "--file", fileInput]);
+      simdeckJson(["type", "--file", fileInput]);
     },
     { phase: phaseCommandSmoke },
   );
   await measuredStep(
     "CLI type stdin",
     async () => {
-      simdeckJson(["type", simulatorUDID, "--stdin"], {
+      simdeckJson(["type", "--stdin"], {
         input: "stdin input",
       });
     },
@@ -296,7 +316,6 @@ async function main() {
     async () => {
       const batch = simdeckJson([
         "batch",
-        simulatorUDID,
         "--step",
         "button home",
         "--step",
@@ -316,7 +335,7 @@ async function main() {
 
   await measuredStep(
     "CLI uninstall fixture",
-    () => simdeckJson(["uninstall", simulatorUDID, fixtureBundleId]),
+    () => simdeckJson(["uninstall", fixtureBundleId]),
     { phase: phaseSimulatorLifecycle },
   );
   await measuredStep(
@@ -483,6 +502,15 @@ async function runCliControls() {
     { expectFixture: true, expectText: "URL Opened" },
   );
   await cliStep(
+    "CLI tap label shorthand",
+    ["tap", "Continue", "--wait-timeout-ms", "15000", "--duration-ms", "30"],
+    {
+      timeoutMs: 180_000,
+      maxElapsedMs: 60_000,
+    },
+    { expectFixture: true, expectText: "Continue Tapped", attempts: 8 },
+  );
+  await cliStep(
     "CLI tap fixture text field",
     [
       "tap",
@@ -497,7 +525,7 @@ async function runCliControls() {
     { timeoutMs: 180_000, maxElapsedMs: 60_000 },
     {
       expectFixture: true,
-      expectText: "URL Opened",
+      expectText: "Continue Tapped",
       attempts: 6,
       delayMs: 1_500,
     },
@@ -620,6 +648,31 @@ async function runRestControls() {
         ),
         "REST accessibility-tree",
       );
+    },
+    { phase: phaseSetup },
+  );
+  await measuredStep(
+    "REST accessibility-tree interactive",
+    async () => {
+      const fullTree = await httpJson(
+        "GET",
+        `/api/simulators/${simulatorUDID}/accessibility-tree?source=native-ax&maxDepth=8`,
+      );
+      const tree = await httpJson(
+        "GET",
+        `/api/simulators/${simulatorUDID}/accessibility-tree?source=native-ax&maxDepth=8&interactiveOnly=true`,
+      );
+      assertRoots(tree, "REST accessibility-tree interactive");
+      if (tree.interactiveOnly !== true) {
+        throw new Error("interactive tree did not report interactiveOnly=true");
+      }
+      const fullCount = countAccessibilityNodes(fullTree);
+      const interactiveCount = countAccessibilityNodes(tree);
+      if (interactiveCount <= 0 || interactiveCount > fullCount) {
+        throw new Error(
+          `interactive tree node count ${interactiveCount} was not a pruned subset of full count ${fullCount}`,
+        );
+      }
     },
     { phase: phaseSetup },
   );
@@ -1068,8 +1121,9 @@ async function verifyUiWithDescribe(label, options = {}) {
 async function queryUi(label, body) {
   return retryHttpJson(
     "POST",
-    `/api/simulators/${simulatorUDID}/query`,
+    `/api/simulators/${simulatorUDID}/action`,
     {
+      action: "query",
       source: "native-ax",
       maxDepth: body.maxDepth ?? 8,
       ...body,
@@ -1085,8 +1139,9 @@ async function queryUi(label, body) {
 async function waitForUiElement(label, selector, options = {}) {
   return retryHttpJson(
     "POST",
-    `/api/simulators/${simulatorUDID}/wait-for`,
+    `/api/simulators/${simulatorUDID}/action`,
     {
+      action: "waitFor",
       source: "native-ax",
       maxDepth: options.maxDepth ?? 3,
       timeoutMs: options.waitTimeoutMs ?? 5_000,
@@ -1157,8 +1212,9 @@ async function resolveKnownSystemPromptsWithQueries(label) {
     logStep(`handling system ${prompt.kind} prompt after ${label}`);
     await retryHttpJson(
       "POST",
-      `/api/simulators/${simulatorUDID}/tap`,
+      `/api/simulators/${simulatorUDID}/action`,
       {
+        action: "tap",
         source: "native-ax",
         maxDepth: 6,
         waitTimeoutMs: 2_000,
@@ -1183,8 +1239,9 @@ async function resolveKnownSystemPromptsWithQueries(label) {
   logStep(`handling system keyboard-tip prompt after ${label}`);
   await retryHttpJson(
     "POST",
-    `/api/simulators/${simulatorUDID}/tap`,
+    `/api/simulators/${simulatorUDID}/action`,
     {
+      action: "tap",
       source: "native-ax",
       maxDepth: 8,
       waitTimeoutMs: 2_000,
@@ -1640,6 +1697,7 @@ function simdeckText(args, options = {}) {
     timeoutMs: options.timeoutMs ?? 120_000,
     maxElapsedMs: options.maxElapsedMs,
     input: options.input,
+    env: { HOME: tempRoot, ...(options.env ?? {}) },
   });
 }
 
@@ -1654,6 +1712,7 @@ function runText(command, args, options = {}) {
     cwd: root,
     encoding: "utf8",
     input: options.input,
+    env: options.env ? { ...process.env, ...options.env } : process.env,
     timeout: options.timeoutMs ?? 120_000,
   });
   if (result.status !== 0) {
@@ -1679,6 +1738,7 @@ function runBuffer(command, args, options = {}) {
     cwd: root,
     encoding: "buffer",
     maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
+    env: options.env ? { ...process.env, ...options.env } : process.env,
     timeout: options.timeoutMs ?? 120_000,
   });
   if (result.status !== 0) {
@@ -1860,6 +1920,24 @@ function assertRoots(payload, label) {
   if (!Array.isArray(payload.roots) || payload.roots.length === 0) {
     throw new Error(`${label} returned no roots: ${JSON.stringify(payload)}`);
   }
+}
+
+function countAccessibilityNodes(snapshot) {
+  const roots = Array.isArray(snapshot?.roots) ? snapshot.roots : [];
+  let count = 0;
+  const visit = (node) => {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+    count += 1;
+    for (const child of Array.isArray(node.children) ? node.children : []) {
+      visit(child);
+    }
+  };
+  for (const root of roots) {
+    visit(root);
+  }
+  return count;
 }
 
 function assertJson(payload, label) {

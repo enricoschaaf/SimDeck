@@ -94,131 +94,89 @@ CLI commands automatically use the same warm daemon:
 
 ```sh
 simdeck list
-simdeck tap <udid> 0.5 0.5 --normalized
-simdeck describe <udid> --format agent --max-depth 2
-```
-
-## Daemon
-
-Manage the project daemon explicitly when needed:
-
-```sh
-simdeck daemon start
-simdeck daemon restart
-simdeck daemon status
-simdeck daemon stop
-simdeck daemon killall
-```
-
-`simdeck daemon` manages the normal per-project warm process. `daemon killall`
-stops SimDeck daemons across all workspaces.
-
-Use software H.264 when the hardware encoder is unavailable, busy, or starved
-by screen recording:
-
-```sh
-simdeck daemon start --video-codec software
-```
-
-Restart the CoreSimulator service layer when `simctl` reports a stale service
-version or the live display gets stuck before the first frame:
-
-```sh
-simdeck core-simulator restart
-```
-
-You can also start or stop the CoreSimulator service layer explicitly:
-
-```sh
-simdeck core-simulator start
-simdeck core-simulator shutdown
+simdeck use <udid>
+simdeck tap 0.5 0.5 --normalized
+simdeck tap "Continue"
+simdeck describe --format agent --max-depth 2 --interactive
+simdeck press @e3
+simdeck snapshot --format agent --max-depth 2 -i
+simdeck --device <other-udid> describe --format agent --max-depth 2
 ```
 
 ## CLI
 
 ```sh
 simdeck list
+simdeck use <udid>
 simdeck boot <udid>
-simdeck shutdown <udid>
-simdeck erase <udid>
-simdeck install <udid> /path/to/App.app
-simdeck install <udid> /path/to/App.ipa
+simdeck shutdown
+simdeck erase
+simdeck install /path/to/App.app
+simdeck install /path/to/App.ipa
 simdeck install android:<avd-name> /path/to/app.apk
-simdeck uninstall <udid> com.example.App
-simdeck open-url <udid> https://example.com
-simdeck launch <udid> com.apple.Preferences
-simdeck toggle-appearance <udid>
-simdeck pasteboard set <udid> "hello"
-simdeck pasteboard get <udid>
-simdeck screenshot <udid> --output screen.png
-simdeck screenshot <udid> --with-bezel --output screen-bezel.png
-simdeck record <udid> --seconds 5 --output screen-recording.mp4
-simdeck stream <udid> --frames 120 > stream.h264
-simdeck describe <udid>
-simdeck describe <udid> --format agent --max-depth 4
-simdeck describe <udid> --point 120,240
-simdeck wait-for <udid> --label "Welcome" --timeout-ms 5000
-simdeck assert <udid> --id login.button --source auto --max-depth 8
-simdeck tap <udid> 120 240
-simdeck tap <udid> --label "Continue" --wait-timeout-ms 5000
-simdeck swipe <udid> 200 700 200 200
-simdeck gesture <udid> scroll-down
-simdeck pinch <udid> --start-distance 160 --end-distance 80
-simdeck rotate-gesture <udid> --radius 100 --degrees 90
-simdeck touch <udid> 0.5 0.5 --phase began --normalized
-simdeck touch <udid> 120 240 --down --up --delay-ms 800
-simdeck key <udid> enter
-simdeck key-sequence <udid> --keycodes h,e,l,l,o
-simdeck key-combo <udid> --modifiers cmd --key a
-simdeck type <udid> "hello"
-simdeck type <udid> --file message.txt
-simdeck button <udid> lock --duration-ms 1000
-simdeck button <udid> volume-up
-simdeck button <udid> action --duration-ms 1000
-simdeck button <udid> digital-crown
-simdeck crown <udid> --delta 50
-simdeck button <udid> left-side-button
-simdeck batch <udid> --step "tap --label Continue" --step "type 'hello'" --step "wait-for --label hello"
-simdeck dismiss-keyboard <udid>
-simdeck button <udid> software-keyboard
-simdeck home <udid>
-simdeck app-switcher <udid>
-simdeck rotate-left <udid>
-simdeck rotate-right <udid>
-simdeck chrome-profile <udid>
-simdeck logs <udid> --seconds 30 --limit 200
-simdeck processes <udid>
-simdeck stats <udid> --watch
-simdeck sample <udid> --seconds 3
+simdeck uninstall com.example.App
+simdeck open-url https://example.com
+simdeck launch com.apple.Preferences
+simdeck toggle-appearance
+simdeck pasteboard set "hello"
+simdeck pasteboard get
+simdeck screenshot --output screen.png
+simdeck screenshot --with-bezel --output screen-bezel.png
+simdeck record --seconds 5 --output screen-recording.mp4
+simdeck stream --frames 120 > stream.h264
+simdeck describe
+simdeck describe --format agent --max-depth 4
+simdeck describe --format agent --max-depth 4 --interactive
+simdeck snapshot --format agent --max-depth 4 -i
+simdeck describe --point 120,240
+simdeck wait-for --label "Welcome" --timeout-ms 5000
+simdeck wait --label "Welcome" --timeout-ms 5000
+simdeck assert --id login.button --source auto --max-depth 8
+simdeck tap 120 240
+simdeck tap --label "Continue" --wait-timeout-ms 5000
+simdeck tap --id com.apple.settings.screenTime --expect-id BackButton
+simdeck tap "Continue"
+simdeck press @e3
+simdeck back
+simdeck swipe 200 700 200 200
+simdeck gesture scroll-down
+simdeck pinch --start-distance 160 --end-distance 80
+simdeck rotate-gesture --radius 100 --degrees 90
+simdeck touch 0.5 0.5 --phase began --normalized
+simdeck touch 120 240 --down --up --delay-ms 800
+simdeck key enter
+simdeck key-sequence --keycodes h,e,l,l,o
+simdeck key-combo --modifiers cmd --key a
+simdeck type "hello"
+simdeck type --file message.txt
+simdeck button lock --duration-ms 1000
+simdeck button volume-up
+simdeck button action --duration-ms 1000
+simdeck button digital-crown
+simdeck crown --delta 50
+simdeck button left-side-button
+simdeck batch --step "tap --label Continue --expect-label Done" --step "type 'hello'" --step "back"
+simdeck dismiss-keyboard
+simdeck button software-keyboard
+simdeck home
+simdeck app-switcher
+simdeck rotate-left
+simdeck rotate-right
+simdeck chrome-profile
+simdeck logs --seconds 30 --limit 200
+simdeck processes
+simdeck stats --watch
+simdeck sample --seconds 3
 ```
 
 `simdeck list` defaults to compact JSON for agent-friendly device selection.
 Use `simdeck list --format json` for the full inventory with paths and display
 metadata.
 
-`boot` uses SimDeck's private CoreSimulator boot path so it can start devices
-without launching Simulator.app. If that private path is unavailable, the
-command returns the CoreSimulator error instead of falling back to
-`xcrun simctl boot`.
-
-Android emulators appear in `simdeck list` with IDs like
-`android:SimDeck_Pixel_8_API_36`. For Android IDs, lifecycle, install, launch,
-URL, screenshot, logs, UIAutomator `describe`, tap, swipe, text, key, home, app
-switcher, rotation, pasteboard, and browser live view route through the Android
-SDK tools (`emulator` and `adb`) plus the emulator gRPC screenshot stream for
-live video. `simdeck stream` remains iOS-only because it writes the iOS H.264
-transport stream.
-
-`stream` writes an Annex B H.264 elementary stream to stdout for diagnostics or
-external tools such as `ffplay`.
-
-`describe` uses the project daemon to prefer React Native, NativeScript,
-Flutter, or UIKit in-app inspectors, then falls back to the built-in private
-CoreSimulator accessibility bridge. Use `--format agent` or
-`--format compact-json` for
-lower-token hierarchy dumps. Coordinate commands accept screen coordinates from
-the accessibility tree by default; pass `--normalized` to send `0.0..1.0`
-coordinates directly.
+`simdeck use <udid>` stores a default simulator for the current project
+directory. Most device commands accept `[<udid>]`; when it is omitted, SimDeck
+uses `--device`, `SIMDECK_DEVICE`, `SIMDECK_UDID`, the saved project default,
+or the only booted simulator, in that order.
 
 ## JS/TS Tests
 
@@ -240,7 +198,11 @@ try {
 `connect()` starts the project daemon when needed, reuses it when it is already
 healthy, and only stops daemons it started itself. Pass `udid` to `connect()`
 to make it the default for session methods; each method still accepts an
-explicit UDID as the first argument when needed.
+explicit UDID as the first argument when needed. Query helpers such as
+`tree()`, `query()`, `waitFor()`, `assert()`, and selector `tapElement()`
+default to `source: "native-ax"` for fast agent control; pass
+`source: "auto"` when a test intentionally wants richer framework inspector
+trees first.
 
 ## NativeScript Inspector
 
@@ -296,13 +258,6 @@ void main() {
   runApp(const App());
 }
 ```
-
-## VS Code
-
-Install the `nativescript.simdeck-vscode` extension from the VS Code Marketplace, then
-run `SimDeck: Open Simulator View` from the Command Palette. The extension
-opens the simulator inside a VS Code panel and auto-starts the local daemon
-when it is not already reachable.
 
 ## Contributing
 

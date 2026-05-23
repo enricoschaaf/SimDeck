@@ -1,3 +1,4 @@
+mod accessibility;
 mod android;
 mod api;
 mod auth;
@@ -17,6 +18,7 @@ mod static_files;
 mod transport;
 mod webkit;
 
+use accessibility::{interactive_accessibility_snapshot, AccessibilitySource};
 use anyhow::Context;
 use api::routes::{router, AppState};
 use axum::Router;
@@ -35,6 +37,7 @@ use performance::PerformanceRegistry;
 use qrcode::{render::unicode, QrCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_yaml::Value as YamlValue;
 use simulators::registry::SessionRegistry;
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::env;
@@ -79,6 +82,13 @@ const DAEMON_PORT_START: u16 = 4311;
 struct Cli {
     #[arg(long, global = true, hide = true)]
     server_url: Option<String>,
+    #[arg(
+        long,
+        global = true,
+        value_name = "SIMULATOR_NAME_OR_UDID",
+        help = "Override the simulator target for this command"
+    )]
+    device: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -140,6 +150,10 @@ enum Command {
         #[command(subcommand)]
         command: ProviderCommand,
     },
+    Maestro {
+        #[command(subcommand)]
+        command: MaestroCommand,
+    },
     #[command(hide = true)]
     Serve {
         #[arg(long, default_value_t = SERVICE_PORT)]
@@ -178,50 +192,54 @@ enum Command {
         #[arg(long, value_enum, default_value_t = ListFormat::CompactJson)]
         format: ListFormat,
     },
-    Boot {
+    Use {
+        #[arg(value_name = "UDID")]
         udid: String,
+    },
+    Boot {
+        udid: Option<String>,
     },
     Shutdown {
-        udid: String,
+        udid: Option<String>,
     },
     OpenUrl {
-        udid: String,
-        url: String,
+        #[arg(value_name = "UDID_OR_URL", num_args = 1..=2)]
+        args: Vec<String>,
     },
     Launch {
-        udid: String,
-        bundle_id: String,
+        #[arg(value_name = "UDID_OR_BUNDLE_ID", num_args = 1..=2)]
+        args: Vec<String>,
     },
     ToggleAppearance {
-        udid: String,
+        udid: Option<String>,
     },
     Erase {
-        udid: String,
+        udid: Option<String>,
     },
     Install {
-        udid: String,
-        app_path: String,
+        #[arg(value_name = "UDID_OR_APP_PATH", num_args = 1..=2)]
+        args: Vec<String>,
     },
     Uninstall {
-        udid: String,
-        bundle_id: String,
+        #[arg(value_name = "UDID_OR_BUNDLE_ID", num_args = 1..=2)]
+        args: Vec<String>,
     },
     Pasteboard {
         #[command(subcommand)]
         command: PasteboardCommand,
     },
     Logs {
-        udid: String,
+        udid: Option<String>,
         #[arg(long, default_value_t = 30.0)]
         seconds: f64,
         #[arg(long, default_value_t = 200)]
         limit: usize,
     },
     Processes {
-        udid: String,
+        udid: Option<String>,
     },
     Stats {
-        udid: String,
+        udid: Option<String>,
         #[arg(long)]
         pid: Option<i32>,
         #[arg(long)]
@@ -230,14 +248,14 @@ enum Command {
         interval: f64,
     },
     Sample {
-        udid: String,
+        udid: Option<String>,
         #[arg(long)]
         pid: Option<i32>,
         #[arg(long, default_value_t = 3)]
         seconds: u64,
     },
     Screenshot {
-        udid: String,
+        udid: Option<String>,
         #[arg(short, long)]
         output: Option<PathBuf>,
         #[arg(long)]
@@ -246,7 +264,7 @@ enum Command {
         with_bezel: bool,
     },
     Record {
-        udid: String,
+        udid: Option<String>,
         #[arg(short, long)]
         output: Option<PathBuf>,
         #[arg(long)]
@@ -255,30 +273,31 @@ enum Command {
         seconds: f64,
     },
     Stream {
-        udid: String,
+        udid: Option<String>,
         #[arg(long, default_value_t = 0)]
         frames: u64,
     },
-    #[command(name = "describe")]
+    #[command(name = "describe", visible_alias = "snapshot")]
     DescribeUi {
-        udid: String,
+        udid: Option<String>,
         #[arg(long, value_parser = parse_point)]
         point: Option<(f64, f64)>,
         #[arg(long, value_enum, default_value_t = DescribeUiFormat::Json)]
         format: DescribeUiFormat,
-        #[arg(long, value_enum, default_value_t = DescribeUiSource::Auto)]
-        source: DescribeUiSource,
+        #[arg(long, value_enum, default_value_t = AccessibilitySource::NativeAX)]
+        source: AccessibilitySource,
         #[arg(long)]
         max_depth: Option<usize>,
         #[arg(long)]
         include_hidden: bool,
+        #[arg(short = 'i', long = "interactive", visible_alias = "interactive-only")]
+        interactive_only: bool,
         #[arg(long)]
         direct: bool,
     },
     Touch {
-        udid: String,
-        x: f64,
-        y: f64,
+        #[arg(value_name = "UDID_OR_POINT", num_args = 2..=3)]
+        args: Vec<String>,
         #[arg(long, default_value = "began")]
         phase: String,
         #[arg(long)]
@@ -290,10 +309,10 @@ enum Command {
         #[arg(long, default_value_t = 100)]
         delay_ms: u64,
     },
+    #[command(visible_alias = "press")]
     Tap {
-        udid: String,
-        x: Option<f64>,
-        y: Option<f64>,
+        #[arg(value_name = "UDID_OR_TARGET", num_args = 0..)]
+        args: Vec<String>,
         #[arg(long)]
         id: Option<String>,
         #[arg(long)]
@@ -302,6 +321,22 @@ enum Command {
         value: Option<String>,
         #[arg(long)]
         element_type: Option<String>,
+        #[arg(long)]
+        expect_id: Option<String>,
+        #[arg(long)]
+        expect_label: Option<String>,
+        #[arg(long)]
+        expect_value: Option<String>,
+        #[arg(long, alias = "expect-type")]
+        expect_element_type: Option<String>,
+        #[arg(long)]
+        expect_index: Option<usize>,
+        #[arg(long, default_value_t = 5_000)]
+        expect_timeout_ms: u64,
+        #[arg(long, default_value_t = 8)]
+        expect_max_depth: usize,
+        #[arg(long)]
+        expect_include_hidden: bool,
         #[arg(long, default_value_t = 0)]
         wait_timeout_ms: u64,
         #[arg(long, default_value_t = 100)]
@@ -315,12 +350,22 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         post_delay_ms: u64,
     },
+    Back {
+        udid: Option<String>,
+        #[arg(long, default_value_t = 5_000)]
+        timeout_ms: u64,
+        #[arg(long, default_value_t = 100)]
+        poll_interval_ms: u64,
+        #[arg(long = "no-fallback-swipe", default_value_t = true, action = ArgAction::SetFalse)]
+        fallback_swipe: bool,
+    },
+    #[command(visible_alias = "wait")]
     WaitFor {
-        udid: String,
+        udid: Option<String>,
         #[command(flatten)]
         selector: SelectorArgs,
-        #[arg(long, value_enum, default_value_t = DescribeUiSource::Auto)]
-        source: DescribeUiSource,
+        #[arg(long, value_enum, default_value_t = AccessibilitySource::NativeAX)]
+        source: AccessibilitySource,
         #[arg(long)]
         max_depth: Option<usize>,
         #[arg(long)]
@@ -331,11 +376,11 @@ enum Command {
         poll_interval_ms: u64,
     },
     Assert {
-        udid: String,
+        udid: Option<String>,
         #[command(flatten)]
         selector: SelectorArgs,
-        #[arg(long, value_enum, default_value_t = DescribeUiSource::Auto)]
-        source: DescribeUiSource,
+        #[arg(long, value_enum, default_value_t = AccessibilitySource::NativeAX)]
+        source: AccessibilitySource,
         #[arg(long)]
         max_depth: Option<usize>,
         #[arg(long)]
@@ -346,11 +391,8 @@ enum Command {
         poll_interval_ms: u64,
     },
     Swipe {
-        udid: String,
-        start_x: f64,
-        start_y: f64,
-        end_x: f64,
-        end_y: f64,
+        #[arg(value_name = "UDID_OR_POINTS", num_args = 4..=5)]
+        args: Vec<String>,
         #[arg(long)]
         normalized: bool,
         #[arg(long, default_value_t = 350)]
@@ -363,8 +405,8 @@ enum Command {
         post_delay_ms: u64,
     },
     Gesture {
-        udid: String,
-        preset: String,
+        #[arg(value_name = "UDID_OR_PRESET", num_args = 1..=2)]
+        args: Vec<String>,
         #[arg(long)]
         screen_width: Option<f64>,
         #[arg(long)]
@@ -381,9 +423,8 @@ enum Command {
         post_delay_ms: u64,
     },
     Pinch {
-        udid: String,
-        center_x: Option<f64>,
-        center_y: Option<f64>,
+        #[arg(value_name = "UDID_OR_CENTER", num_args = 0..=3)]
+        args: Vec<String>,
         #[arg(long, default_value_t = 160.0)]
         start_distance: f64,
         #[arg(long, default_value_t = 80.0)]
@@ -398,9 +439,8 @@ enum Command {
         steps: u32,
     },
     RotateGesture {
-        udid: String,
-        center_x: Option<f64>,
-        center_y: Option<f64>,
+        #[arg(value_name = "UDID_OR_CENTER", num_args = 0..=3)]
+        args: Vec<String>,
         #[arg(long, default_value_t = 100.0)]
         radius: f64,
         #[arg(long, default_value_t = 90.0)]
@@ -413,8 +453,8 @@ enum Command {
         steps: u32,
     },
     Key {
-        udid: String,
-        key: String,
+        #[arg(value_name = "UDID_OR_KEY", num_args = 1..=2)]
+        args: Vec<String>,
         #[arg(long, default_value_t = 0)]
         modifiers: u32,
         #[arg(long, default_value_t = 0)]
@@ -425,22 +465,22 @@ enum Command {
         post_delay_ms: u64,
     },
     KeySequence {
-        udid: String,
+        udid: Option<String>,
         #[arg(long = "keycodes", alias = "keys")]
         keycodes: String,
         #[arg(long, default_value_t = 100)]
         delay_ms: u64,
     },
     KeyCombo {
-        udid: String,
+        udid: Option<String>,
         #[arg(long)]
         modifiers: String,
         #[arg(long)]
         key: String,
     },
     Type {
-        udid: String,
-        text: Option<String>,
+        #[arg(value_name = "UDID_OR_TEXT", num_args = 0..=2)]
+        args: Vec<String>,
         #[arg(long)]
         stdin: bool,
         #[arg(long)]
@@ -449,18 +489,18 @@ enum Command {
         delay_ms: u64,
     },
     Button {
-        udid: String,
-        button: String,
+        #[arg(value_name = "UDID_OR_BUTTON", num_args = 1..=2)]
+        args: Vec<String>,
         #[arg(long, default_value_t = 0)]
         duration_ms: u32,
     },
     Crown {
-        udid: String,
+        udid: Option<String>,
         #[arg(long, default_value_t = 50.0)]
         delta: f64,
     },
     Batch {
-        udid: String,
+        udid: Option<String>,
         #[arg(long = "step")]
         steps: Vec<String>,
         #[arg(long)]
@@ -471,22 +511,22 @@ enum Command {
         continue_on_error: bool,
     },
     DismissKeyboard {
-        udid: String,
+        udid: Option<String>,
     },
     Home {
-        udid: String,
+        udid: Option<String>,
     },
     AppSwitcher {
-        udid: String,
+        udid: Option<String>,
     },
     RotateLeft {
-        udid: String,
+        udid: Option<String>,
     },
     RotateRight {
-        udid: String,
+        udid: Option<String>,
     },
     ChromeProfile {
-        udid: String,
+        udid: Option<String>,
     },
 }
 
@@ -624,6 +664,18 @@ enum ProviderCommand {
 }
 
 #[derive(Subcommand)]
+enum MaestroCommand {
+    Test {
+        #[arg(value_name = "UDID_OR_FLOW", num_args = 1..=2)]
+        args: Vec<String>,
+        #[arg(long)]
+        artifacts_dir: Option<PathBuf>,
+        #[arg(long)]
+        continue_on_error: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ServiceCommand {
     On {
         #[arg(long, default_value_t = SERVICE_PORT)]
@@ -698,11 +750,11 @@ enum CoreSimulatorCommand {
 #[derive(Subcommand)]
 enum PasteboardCommand {
     Get {
-        udid: String,
+        udid: Option<String>,
     },
     Set {
-        udid: String,
-        text: Option<String>,
+        #[arg(value_name = "UDID_OR_TEXT", num_args = 0..=2)]
+        args: Vec<String>,
         #[arg(long)]
         stdin: bool,
         #[arg(long)]
@@ -720,6 +772,8 @@ struct SelectorArgs {
     value: Option<String>,
     #[arg(long, alias = "type")]
     element_type: Option<String>,
+    #[arg(long)]
+    index: Option<usize>,
 }
 
 impl SelectorArgs {
@@ -728,6 +782,7 @@ impl SelectorArgs {
             && self.label.is_none()
             && self.value.is_none()
             && self.element_type.is_none()
+            && self.index.is_none()
     }
 
     fn to_json(&self) -> Value {
@@ -736,6 +791,7 @@ impl SelectorArgs {
             "label": self.label.as_deref(),
             "value": self.value.as_deref(),
             "elementType": self.element_type.as_deref(),
+            "index": self.index,
         })
     }
 }
@@ -809,17 +865,6 @@ enum DescribeUiFormat {
     Agent,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum DescribeUiSource {
-    Auto,
-    Nativescript,
-    ReactNative,
-    Flutter,
-    Uikit,
-    NativeAx,
-    AndroidUiautomator,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DaemonMetadata {
@@ -851,6 +896,18 @@ struct DaemonMetadata {
     stream_quality_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     local_stream_fps: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectDeviceSelection {
+    project_root: PathBuf,
+    udid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_name: Option<String>,
+    selected_at: u64,
 }
 
 fn default_daemon_port() -> u16 {
@@ -1780,7 +1837,7 @@ fn daemon_is_healthy(metadata: &DaemonMetadata) -> bool {
 }
 
 fn daemon_matches_launch_options(metadata: &DaemonMetadata, options: &DaemonLaunchOptions) -> bool {
-    metadata.port == options.port
+    daemon_port_matches_launch_options(metadata.port, options.port)
         && metadata.bind == options.bind
         && metadata.advertise_host == options.advertise_host
         && metadata.client_root == options.client_root
@@ -1793,6 +1850,11 @@ fn daemon_matches_launch_options(metadata: &DaemonMetadata, options: &DaemonLaun
             == (options.realtime_stream || options.stream_quality_profile.is_some())
         && metadata.stream_quality_profile == options.stream_quality_profile
         && metadata.local_stream_fps == options.local_stream_fps
+}
+
+fn daemon_port_matches_launch_options(actual: u16, preferred: u16) -> bool {
+    let start = preferred.max(1024);
+    actual >= start && actual < start.saturating_add(200)
 }
 
 fn read_daemon_metadata() -> anyhow::Result<Option<DaemonMetadata>> {
@@ -1833,6 +1895,47 @@ fn daemon_log_path_for_root(root: &Path) -> anyhow::Result<PathBuf> {
     Ok(env::temp_dir()
         .join("simdeck")
         .join(format!("{:016x}.log", hasher.finish())))
+}
+
+fn read_project_device_selection() -> anyhow::Result<Option<ProjectDeviceSelection>> {
+    let root = project_root()?;
+    let path = project_device_selection_path_for_root(&root)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let selection = serde_json::from_str::<ProjectDeviceSelection>(&data)
+        .with_context(|| format!("parse simulator selection {}", path.display()))?;
+    if selection.project_root != root {
+        return Ok(None);
+    }
+    Ok(Some(selection))
+}
+
+fn write_project_device_selection(selection: &ProjectDeviceSelection) -> anyhow::Result<PathBuf> {
+    let path = project_device_selection_path_for_root(&selection.project_root)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, serde_json::to_vec_pretty(selection)?)
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(path)
+}
+
+fn project_device_selection_path_for_root(root: &Path) -> anyhow::Result<PathBuf> {
+    let mut hasher = DefaultHasher::new();
+    root.to_string_lossy().hash(&mut hasher);
+    Ok(simdeck_user_state_dir()
+        .join("default-devices")
+        .join(format!("{:016x}.json", hasher.finish())))
+}
+
+fn simdeck_user_state_dir() -> PathBuf {
+    env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|home| home.join(".simdeck"))
+        .unwrap_or_else(|| env::temp_dir().join("simdeck"))
 }
 
 fn daemon_metadata_paths() -> anyhow::Result<Vec<PathBuf>> {
@@ -1931,10 +2034,12 @@ fn is_known_command(value: &str) -> bool {
         value,
         "ui" | "pair"
             | "daemon"
+            | "maestro"
             | "service"
             | "core-simulator"
             | "simctl-service"
             | "list"
+            | "use"
             | "boot"
             | "shutdown"
             | "open-url"
@@ -1952,6 +2057,7 @@ fn is_known_command(value: &str) -> bool {
             | "describe"
             | "touch"
             | "tap"
+            | "back"
             | "swipe"
             | "gesture"
             | "pinch"
@@ -1975,7 +2081,15 @@ fn is_known_command(value: &str) -> bool {
 
 fn run_no_command_action(action: NoCommandAction) -> anyhow::Result<()> {
     match action {
-        NoCommandAction::Foreground(selector) => run_foreground_ui(selector),
+        NoCommandAction::Foreground(selector) => {
+            let selector = selector.or_else(|| {
+                read_project_device_selection()
+                    .ok()
+                    .flatten()
+                    .map(|selection| selection.udid)
+            });
+            run_foreground_ui(selector)
+        }
         NoCommandAction::Detached => start_detached_daemon(DaemonLaunchOptions::default()),
         NoCommandAction::Kill => stop_project_daemon(),
         NoCommandAction::Restart => restart_detached_daemon(DaemonLaunchOptions::default()),
@@ -2457,6 +2571,301 @@ fn list_studio_simulators(server_url: &str) -> anyhow::Result<Vec<StudioSimulato
         .collect())
 }
 
+fn resolve_cli_device_udid(
+    positional: Option<&str>,
+    global_selector: Option<&str>,
+    explicit_server_url: Option<&str>,
+) -> anyhow::Result<String> {
+    if let Some(udid) = positional.map(str::trim).filter(|value| !value.is_empty()) {
+        return Ok(udid.to_owned());
+    }
+
+    let selector = global_selector
+        .map(str::to_owned)
+        .or_else(|| env::var("SIMDECK_DEVICE").ok())
+        .or_else(|| env::var("SIMDECK_UDID").ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+
+    if let Some(selector) = selector {
+        if android::is_android_id(&selector) || looks_like_device_selector(&selector) {
+            return Ok(selector);
+        }
+        let server_url = command_service_url(explicit_server_url)?;
+        if let Some(simulator) = select_studio_simulator(&server_url, &selector)? {
+            return Ok(simulator.udid);
+        }
+        return Ok(selector);
+    }
+
+    if let Some(selection) = read_project_device_selection()? {
+        let udid = selection.udid.trim();
+        if !udid.is_empty() {
+            return Ok(udid.to_owned());
+        }
+    }
+
+    let server_url = command_service_url(explicit_server_url)?;
+    if let Some(simulator) = infer_default_cli_simulator(&server_url)? {
+        return Ok(simulator.udid);
+    }
+
+    let simulators = list_studio_simulators(&server_url)?;
+    let booted = simulators
+        .iter()
+        .filter(|simulator| simulator.is_booted)
+        .collect::<Vec<_>>();
+    if booted.len() > 1 {
+        anyhow::bail!(
+            "Multiple booted simulators are available. Pass a UDID, run `simdeck use <UDID>`, use --device, or set SIMDECK_DEVICE."
+        );
+    }
+    if simulators.is_empty() {
+        anyhow::bail!("No simulators are available. Boot one or pass a UDID explicitly.");
+    }
+    anyhow::bail!(
+        "No default simulator could be inferred. Pass a UDID, run `simdeck use <UDID>`, use --device, or set SIMDECK_DEVICE."
+    )
+}
+
+fn infer_default_cli_simulator(
+    server_url: &str,
+) -> anyhow::Result<Option<StudioSimulatorSelection>> {
+    let simulators = list_studio_simulators(server_url)?;
+    let booted = simulators
+        .iter()
+        .filter(|simulator| simulator.is_booted)
+        .cloned()
+        .collect::<Vec<_>>();
+    if booted.len() == 1 {
+        return Ok(booted.into_iter().next());
+    }
+    if booted.is_empty() && simulators.len() == 1 {
+        return Ok(simulators.into_iter().next());
+    }
+    Ok(None)
+}
+
+fn parse_tap_command_args(
+    args: Vec<String>,
+    id: Option<String>,
+    label: Option<String>,
+    value: Option<String>,
+    element_type: Option<String>,
+) -> anyhow::Result<TapCommandTarget> {
+    let mut target = TapCommandTarget {
+        selector: ElementSelector {
+            id,
+            label,
+            value,
+            element_type,
+            index: None,
+        },
+        ..Default::default()
+    };
+
+    let args = args
+        .into_iter()
+        .map(|arg| arg.trim().to_owned())
+        .filter(|arg| !arg.is_empty())
+        .collect::<Vec<_>>();
+
+    if !target.selector.is_empty() {
+        match args.as_slice() {
+            [] => return Ok(target),
+            [udid] => {
+                target.udid = Some(udid.clone());
+                return Ok(target);
+            }
+            _ => anyhow::bail!(
+                "tap accepts at most one positional UDID when selector flags are used."
+            ),
+        }
+    }
+
+    if args.is_empty() {
+        return Ok(target);
+    }
+
+    let (udid, target_args) = if args.len() >= 2 && looks_like_device_selector(&args[0]) {
+        (Some(args[0].clone()), &args[1..])
+    } else {
+        (None, args.as_slice())
+    };
+    target.udid = udid;
+
+    if target_args.len() == 2 {
+        if let (Some(x), Some(y)) = (
+            parse_f64_arg(&target_args[0]),
+            parse_f64_arg(&target_args[1]),
+        ) {
+            target.x = Some(x);
+            target.y = Some(y);
+            return Ok(target);
+        }
+    }
+
+    if target_args.len() == 1 && parse_f64_arg(&target_args[0]).is_some() {
+        anyhow::bail!("tap requires both x and y coordinates.");
+    }
+    if target_args.iter().any(|arg| parse_f64_arg(arg).is_some()) {
+        anyhow::bail!("tap coordinates must be provided as exactly two numeric values.");
+    }
+
+    if target_args.len() == 1 {
+        if let Some(index) = parse_agent_ref(&target_args[0]) {
+            target.selector.index = Some(index);
+            return Ok(target);
+        }
+    }
+
+    target.selector.label = Some(target_args.join(" "));
+    Ok(target)
+}
+
+fn parse_agent_ref(value: &str) -> Option<usize> {
+    let digits = value.trim().strip_prefix("@e")?;
+    let index = digits.parse::<usize>().ok()?;
+    (index > 0).then_some(index - 1)
+}
+
+fn project_device_selection_for_selector(
+    selector: &str,
+    explicit_server_url: Option<&str>,
+) -> anyhow::Result<ProjectDeviceSelection> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        anyhow::bail!("simdeck use requires a simulator UDID or name.");
+    }
+
+    let project_root = project_root()?;
+    if android::is_android_id(selector) || looks_like_device_selector(selector) {
+        return Ok(ProjectDeviceSelection {
+            project_root,
+            udid: selector.to_owned(),
+            name: None,
+            runtime_name: None,
+            selected_at: now_secs(),
+        });
+    }
+
+    let server_url = command_service_url(explicit_server_url)?;
+    let matched = select_studio_simulator(&server_url, selector)?;
+    if let Some(simulator) = matched {
+        return Ok(ProjectDeviceSelection {
+            project_root,
+            udid: simulator.udid,
+            name: Some(simulator.name),
+            runtime_name: simulator.runtime_name,
+            selected_at: now_secs(),
+        });
+    }
+
+    anyhow::bail!("No simulator matched {selector:?}. Run `simdeck list` to see available UDIDs.")
+}
+
+fn parse_optional_udid_value_args(
+    command: &str,
+    args: Vec<String>,
+    value_name: &str,
+) -> anyhow::Result<(Option<String>, String)> {
+    let args = clean_cli_args(args);
+    match args.as_slice() {
+        [value] => Ok((None, value.clone())),
+        [udid, value] => Ok((Some(udid.clone()), value.clone())),
+        [] => anyhow::bail!("{command} requires {value_name}."),
+        _ => anyhow::bail!("{command} accepts either {value_name} or UDID {value_name}."),
+    }
+}
+
+fn parse_optional_udid_text_args(
+    command: &str,
+    args: Vec<String>,
+    has_non_positional_input: bool,
+) -> anyhow::Result<(Option<String>, Option<String>)> {
+    let args = clean_cli_args(args);
+    if has_non_positional_input {
+        return match args.as_slice() {
+            [] => Ok((None, None)),
+            [udid] => Ok((Some(udid.clone()), None)),
+            _ => anyhow::bail!(
+                "{command} accepts at most one positional UDID with --stdin or --file."
+            ),
+        };
+    }
+    match args.as_slice() {
+        [] => Ok((None, None)),
+        [text] => Ok((None, Some(text.clone()))),
+        [udid, text] => Ok((Some(udid.clone()), Some(text.clone()))),
+        _ => anyhow::bail!("{command} accepts either TEXT or UDID TEXT. Quote multi-word text."),
+    }
+}
+
+fn parse_optional_udid_f64_args(
+    command: &str,
+    args: Vec<String>,
+    expected_values: usize,
+) -> anyhow::Result<(Option<String>, Vec<f64>)> {
+    let args = clean_cli_args(args);
+    let (udid, values) = match args.len() {
+        len if len == expected_values => (None, args.as_slice()),
+        len if len == expected_values + 1 => (Some(args[0].clone()), &args[1..]),
+        _ => anyhow::bail!(
+            "{command} accepts either {expected_values} numeric values or UDID plus {expected_values} numeric values."
+        ),
+    };
+    let mut parsed = Vec::with_capacity(values.len());
+    for value in values {
+        parsed.push(parse_f64_arg(value).ok_or_else(|| {
+            anyhow::anyhow!("{command} expected a finite number, got {value:?}.")
+        })?);
+    }
+    Ok((udid, parsed))
+}
+
+fn parse_optional_udid_point_args(
+    command: &str,
+    args: Vec<String>,
+) -> anyhow::Result<(Option<String>, Option<f64>, Option<f64>)> {
+    let args = clean_cli_args(args);
+    match args.as_slice() {
+        [] => Ok((None, None, None)),
+        [udid] => Ok((Some(udid.clone()), None, None)),
+        [x, y] => Ok((
+            None,
+            Some(parse_required_f64_arg(command, x)?),
+            Some(parse_required_f64_arg(command, y)?),
+        )),
+        [udid, x, y] => Ok((
+            Some(udid.clone()),
+            Some(parse_required_f64_arg(command, x)?),
+            Some(parse_required_f64_arg(command, y)?),
+        )),
+        _ => anyhow::bail!("{command} accepts [UDID] or [UDID] CENTER_X CENTER_Y."),
+    }
+}
+
+fn parse_required_f64_arg(command: &str, value: &str) -> anyhow::Result<f64> {
+    parse_f64_arg(value)
+        .ok_or_else(|| anyhow::anyhow!("{command} expected a finite number, got {value:?}."))
+}
+
+fn clean_cli_args(args: Vec<String>) -> Vec<String> {
+    args.into_iter()
+        .map(|arg| arg.trim().to_owned())
+        .filter(|arg| !arg.is_empty())
+        .collect()
+}
+
+fn parse_f64_arg(value: &str) -> Option<f64> {
+    value.parse::<f64>().ok().filter(|value| value.is_finite())
+}
+
+fn looks_like_device_selector(value: &str) -> bool {
+    android::is_android_id(value)
+        || (value.len() == 36 && value.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'))
+}
+
 fn studio_provider_bridge_script() -> anyhow::Result<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(root) = project_root() {
@@ -2612,11 +3021,19 @@ fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let explicit_server_url = cli.server_url.clone();
+    let device_selector = cli.device.clone();
     let service_url = explicit_server_url
         .clone()
         .or_else(|| env::var("SIMDECK_SERVER_URL").ok())
         .filter(|value| !value.trim().is_empty());
     let bridge = NativeBridge;
+    let resolve_device_udid = |udid: Option<&str>| -> anyhow::Result<String> {
+        resolve_cli_device_udid(
+            udid,
+            device_selector.as_deref(),
+            explicit_server_url.as_deref(),
+        )
+    };
 
     match cli.command {
         Command::Ui {
@@ -2808,6 +3225,27 @@ fn main() -> anyhow::Result<()> {
             }),
         },
         Command::Provider { command } => run_provider_command(command),
+        Command::Maestro { command } => match command {
+            MaestroCommand::Test {
+                args,
+                artifacts_dir,
+                continue_on_error,
+            } => {
+                let (udid, flow) = parse_optional_udid_value_args("maestro test", args, "FLOW")?;
+                let udid = resolve_device_udid(udid.as_deref())?;
+                let flow = PathBuf::from(flow);
+                let service_url = command_service_url(explicit_server_url.as_deref())?;
+                let report =
+                    run_maestro_flow(&service_url, &udid, &flow, artifacts_dir, continue_on_error)?;
+                let ok = report.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                println_json(&report)?;
+                if ok {
+                    Ok(())
+                } else {
+                    anyhow::bail!("Maestro-compatible flow failed.")
+                }
+            }
+        },
         Command::Serve {
             port,
             bind,
@@ -2934,7 +3372,23 @@ fn main() -> anyhow::Result<()> {
             print_list_simulators(&simulators, format)?;
             Ok(())
         }
+        Command::Use { udid } => {
+            let selection =
+                project_device_selection_for_selector(&udid, explicit_server_url.as_deref())?;
+            let path = write_project_device_selection(&selection)?;
+            println_json(&serde_json::json!({
+                "ok": true,
+                "action": "use",
+                "udid": selection.udid,
+                "name": selection.name,
+                "runtimeName": selection.runtime_name,
+                "projectRoot": selection.project_root,
+                "path": path,
+            }))?;
+            Ok(())
+        }
         Command::Boot { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             service_post_ok(&service_url, &udid, "boot", &Value::Null)?;
             println!(
@@ -2946,6 +3400,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Shutdown { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             service_post_ok(&service_url, &udid, "shutdown", &Value::Null)?;
             println!(
@@ -2956,7 +3411,9 @@ fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
-        Command::OpenUrl { udid, url } => {
+        Command::OpenUrl { args } => {
+            let (udid, url) = parse_optional_udid_value_args("open-url", args, "URL")?;
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             service_open_url(&service_url, &udid, &url)?;
             println!(
@@ -2967,7 +3424,9 @@ fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
-        Command::Launch { udid, bundle_id } => {
+        Command::Launch { args } => {
+            let (udid, bundle_id) = parse_optional_udid_value_args("launch", args, "BUNDLE_ID")?;
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             service_launch(&service_url, &udid, &bundle_id)?;
             println!(
@@ -2979,20 +3438,28 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::ToggleAppearance { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
-            service_post_ok(&service_url, &udid, "toggle-appearance", &Value::Null)?;
+            service_action_ok(
+                &service_url,
+                &udid,
+                &serde_json::json!({ "action": "toggleAppearance" }),
+            )?;
             println_json(
                 &serde_json::json!({ "ok": true, "udid": udid, "action": "toggle-appearance" }),
             )?;
             Ok(())
         }
         Command::Erase { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             service_post_ok(&service_url, &udid, "erase", &Value::Null)?;
             println_json(&serde_json::json!({ "ok": true, "udid": udid, "action": "erase" }))?;
             Ok(())
         }
-        Command::Install { udid, app_path } => {
+        Command::Install { args } => {
+            let (udid, app_path) = parse_optional_udid_value_args("install", args, "APP_PATH")?;
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             service_post_ok(
                 &service_url,
@@ -3005,7 +3472,9 @@ fn main() -> anyhow::Result<()> {
             )?;
             Ok(())
         }
-        Command::Uninstall { udid, bundle_id } => {
+        Command::Uninstall { args } => {
+            let (udid, bundle_id) = parse_optional_udid_value_args("uninstall", args, "BUNDLE_ID")?;
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             service_post_ok(
                 &service_url,
@@ -3020,6 +3489,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Pasteboard { command } => match command {
             PasteboardCommand::Get { udid } => {
+                let udid = resolve_device_udid(udid.as_deref())?;
                 let service_url = command_service_url(explicit_server_url.as_deref())?;
                 let text = service_get_json(
                     &service_url,
@@ -3032,12 +3502,14 @@ fn main() -> anyhow::Result<()> {
                 println_json(&serde_json::json!({ "udid": udid, "text": text }))?;
                 Ok(())
             }
-            PasteboardCommand::Set {
-                udid,
-                text,
-                stdin,
-                file,
-            } => {
+            PasteboardCommand::Set { args, stdin, file } => {
+                let has_non_positional_input = stdin || file.is_some();
+                let (udid, text) = parse_optional_udid_text_args(
+                    "pasteboard set",
+                    args,
+                    has_non_positional_input,
+                )?;
+                let udid = resolve_device_udid(udid.as_deref())?;
                 let service_url = command_service_url(explicit_server_url.as_deref())?;
                 let text = read_text_input(text, stdin, file)?;
                 service_post_ok(
@@ -3057,6 +3529,7 @@ fn main() -> anyhow::Result<()> {
             seconds,
             limit,
         } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             let filters = native::bridge::LogFilters::new(Vec::new(), Vec::new(), String::new());
             let _ = filters;
@@ -3074,6 +3547,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Processes { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             let processes = service_get_json(
                 &service_url,
@@ -3088,6 +3562,7 @@ fn main() -> anyhow::Result<()> {
             watch,
             interval,
         } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             if watch {
                 run_stats_watch(&service_url, &udid, pid, interval)?;
@@ -3098,6 +3573,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Sample { udid, pid, seconds } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             let pid = match pid {
                 Some(pid) => pid,
@@ -3126,6 +3602,7 @@ fn main() -> anyhow::Result<()> {
             stdout,
             with_bezel,
         } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             let query = if with_bezel { "?bezel=true" } else { "" };
             let png = service_get_bytes(
@@ -3159,6 +3636,7 @@ fn main() -> anyhow::Result<()> {
             stdout,
             seconds,
         } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             let mp4 = service_post_bytes(
                 &service_url,
@@ -3185,7 +3663,10 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Stream { udid, frames } => run_stream_stdout(&bridge, udid, frames),
+        Command::Stream { udid, frames } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
+            run_stream_stdout(&bridge, udid, frames)
+        }
         Command::DescribeUi {
             udid,
             point,
@@ -3193,9 +3674,19 @@ fn main() -> anyhow::Result<()> {
             source,
             max_depth,
             include_hidden,
+            interactive_only,
             direct,
         } => {
-            let service_url = command_service_url(explicit_server_url.as_deref())?;
+            let udid = resolve_cli_device_udid(
+                udid.as_deref(),
+                device_selector.as_deref(),
+                explicit_server_url.as_deref(),
+            )?;
+            let service_url = if direct {
+                String::new()
+            } else {
+                command_service_url(explicit_server_url.as_deref())?
+            };
             let snapshot = describe_ui_snapshot(
                 &bridge,
                 &udid,
@@ -3203,6 +3694,7 @@ fn main() -> anyhow::Result<()> {
                 source,
                 max_depth,
                 include_hidden,
+                interactive_only,
                 direct,
                 &service_url,
             )?;
@@ -3210,15 +3702,17 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Touch {
-            udid,
-            x,
-            y,
+            args,
             phase,
             normalized,
             down,
             up,
             delay_ms,
         } => {
+            let (udid, points) = parse_optional_udid_f64_args("touch", args, 2)?;
+            let udid = resolve_device_udid(udid.as_deref())?;
+            let x = points[0];
+            let y = points[1];
             let android_device = android::is_android_id(&udid);
             if android_device && !normalized {
                 anyhow::bail!("Android touch coordinates require --normalized.");
@@ -3270,13 +3764,19 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Tap {
-            udid,
-            x,
-            y,
+            args,
             id,
             label,
             value,
             element_type,
+            expect_id,
+            expect_label,
+            expect_value,
+            expect_element_type,
+            expect_index,
+            expect_timeout_ms,
+            expect_max_depth,
+            expect_include_hidden,
             wait_timeout_ms,
             poll_interval_ms,
             normalized,
@@ -3284,9 +3784,41 @@ fn main() -> anyhow::Result<()> {
             pre_delay_ms,
             post_delay_ms,
         } => {
+            let target = parse_tap_command_args(args, id, label, value, element_type)?;
+            let uses_inferred_device = target.udid.is_none();
+            let uses_selector = !target.selector.is_empty();
+            let expect_selector = SelectorArgs {
+                id: expect_id,
+                label: expect_label,
+                value: expect_value,
+                element_type: expect_element_type,
+                index: expect_index,
+            };
+            let uses_expectation = !expect_selector.is_empty();
+            let udid = resolve_cli_device_udid(
+                target.udid.as_deref(),
+                device_selector.as_deref(),
+                explicit_server_url.as_deref(),
+            )?;
+            let x = target.x;
+            let y = target.y;
+            let ElementSelector {
+                id,
+                label,
+                value,
+                element_type,
+                index,
+            } = target.selector;
+            let preferred_service_url = if uses_inferred_device || uses_selector || uses_expectation
+            {
+                Some(command_service_url(explicit_server_url.as_deref())?)
+            } else {
+                service_url.clone()
+            };
             let command_server_url =
-                command_service_url_for_udid(&udid, &explicit_server_url, &service_url)?;
-            if let (Some(server_url), Some(x), Some(y), true, None, None, None, None) = (
+                command_service_url_for_udid(&udid, &explicit_server_url, &preferred_service_url)?;
+            let mut expectation_match = None;
+            if let (Some(server_url), Some(x), Some(y), true, None, None, None, None, false) = (
                 command_server_url.as_deref(),
                 x,
                 y,
@@ -3295,30 +3827,45 @@ fn main() -> anyhow::Result<()> {
                 label.as_ref(),
                 value.as_ref(),
                 element_type.as_ref(),
+                uses_expectation,
             ) {
                 sleep_ms(pre_delay_ms);
                 service_tap(server_url, &udid, x, y, duration_ms)?;
                 sleep_ms(post_delay_ms);
             } else if let Some(server_url) = command_server_url.as_deref() {
                 sleep_ms(pre_delay_ms);
-                service_tap_element(
-                    server_url,
-                    &udid,
-                    serde_json::json!({
-                        "x": x,
-                        "y": y,
-                        "normalized": normalized,
-                        "selector": {
-                            "id": id,
-                            "label": label,
-                            "value": value,
-                            "elementType": element_type,
-                        },
-                        "waitTimeoutMs": wait_timeout_ms,
-                        "pollMs": poll_interval_ms,
-                        "durationMs": duration_ms,
-                    }),
-                )?;
+                let mut body = serde_json::json!({
+                    "x": x,
+                    "y": y,
+                    "normalized": normalized,
+                    "selector": {
+                        "id": id,
+                        "label": label,
+                        "value": value,
+                        "elementType": element_type,
+                        "index": index,
+                    },
+                    "waitTimeoutMs": wait_timeout_ms,
+                    "pollMs": poll_interval_ms,
+                    "durationMs": duration_ms,
+                });
+                if uses_expectation {
+                    if let Some(object) = body.as_object_mut() {
+                        object.insert(
+                            "expect".to_owned(),
+                            serde_json::json!({
+                                "selector": expect_selector.to_json(),
+                                "source": AccessibilitySource::NativeAX.as_query_value(),
+                                "maxDepth": expect_max_depth,
+                                "includeHidden": expect_include_hidden,
+                                "timeoutMs": expect_timeout_ms,
+                                "pollMs": poll_interval_ms,
+                            }),
+                        );
+                    }
+                }
+                let tap_result = service_tap_element(server_url, &udid, body)?;
+                expectation_match = tap_result.get("expectation").cloned();
                 sleep_ms(post_delay_ms);
             } else {
                 let target = resolve_tap_target(
@@ -3333,6 +3880,7 @@ fn main() -> anyhow::Result<()> {
                             label,
                             value,
                             element_type,
+                            index,
                         },
                         wait_timeout_ms,
                         poll_interval_ms,
@@ -3348,7 +3896,32 @@ fn main() -> anyhow::Result<()> {
                 }
                 sleep_ms(post_delay_ms);
             }
-            println_json(&serde_json::json!({ "ok": true, "udid": udid, "action": "tap" }))?;
+            let mut result = serde_json::json!({ "ok": true, "udid": udid, "action": "tap" });
+            if let (Some(object), Some(expectation)) = (result.as_object_mut(), expectation_match) {
+                object.insert("expectation".to_owned(), expectation);
+            }
+            println_json(&result)?;
+            Ok(())
+        }
+        Command::Back {
+            udid,
+            timeout_ms,
+            poll_interval_ms,
+            fallback_swipe,
+        } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
+            let service_url = command_service_url(explicit_server_url.as_deref())?;
+            let result = service_action(
+                &service_url,
+                &udid,
+                &serde_json::json!({
+                    "action": "back",
+                    "timeoutMs": timeout_ms,
+                    "pollMs": poll_interval_ms,
+                    "fallbackSwipe": fallback_swipe,
+                }),
+            )?;
+            println_json(&result)?;
             Ok(())
         }
         Command::WaitFor {
@@ -3360,6 +3933,7 @@ fn main() -> anyhow::Result<()> {
             timeout_ms,
             poll_interval_ms,
         } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             let result = service_wait_for_selector(
                 &service_url,
@@ -3384,6 +3958,7 @@ fn main() -> anyhow::Result<()> {
             timeout_ms,
             poll_interval_ms,
         } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             let result = service_wait_for_selector(
                 &service_url,
@@ -3400,17 +3975,19 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Swipe {
-            udid,
-            start_x,
-            start_y,
-            end_x,
-            end_y,
+            args,
             normalized,
             duration_ms,
             steps,
             pre_delay_ms,
             post_delay_ms,
         } => {
+            let (udid, points) = parse_optional_udid_f64_args("swipe", args, 4)?;
+            let udid = resolve_device_udid(udid.as_deref())?;
+            let start_x = points[0];
+            let start_y = points[1];
+            let end_x = points[2];
+            let end_y = points[3];
             let android_device = android::is_android_id(&udid);
             if android_device && !normalized {
                 anyhow::bail!("Android swipe coordinates require --normalized.");
@@ -3420,10 +3997,10 @@ fn main() -> anyhow::Result<()> {
             if let Some(server_url) = command_server_url.as_deref().filter(|_| normalized) {
                 sleep_ms(pre_delay_ms);
                 if android_device {
-                    service_batch(
+                    service_action_ok(
                         server_url,
                         &udid,
-                        vec![serde_json::json!({
+                        &serde_json::json!({
                             "action": "swipe",
                             "startX": start_x,
                             "startY": start_y,
@@ -3431,8 +4008,7 @@ fn main() -> anyhow::Result<()> {
                             "endY": end_y,
                             "durationMs": duration_ms,
                             "steps": steps,
-                        })],
-                        false,
+                        }),
                     )?;
                 } else {
                     service_swipe(
@@ -3470,8 +4046,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Gesture {
-            udid,
-            preset,
+            args,
             screen_width,
             screen_height,
             normalized,
@@ -3480,6 +4055,8 @@ fn main() -> anyhow::Result<()> {
             pre_delay_ms,
             post_delay_ms,
         } => {
+            let (udid, preset) = parse_optional_udid_value_args("gesture", args, "PRESET")?;
+            let udid = resolve_device_udid(udid.as_deref())?;
             let android_device = android::is_android_id(&udid);
             let command_server_url =
                 command_service_url_for_udid(&udid, &explicit_server_url, &service_url)?;
@@ -3488,17 +4065,16 @@ fn main() -> anyhow::Result<()> {
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("Android command requires SimDeck daemon."))?;
                 sleep_ms(pre_delay_ms);
-                service_batch(
+                service_action_ok(
                     server_url,
                     &udid,
-                    vec![serde_json::json!({
+                    &serde_json::json!({
                         "action": "gesture",
                         "preset": preset,
                         "durationMs": duration_ms,
                         "delta": delta,
                         "steps": 4,
-                    })],
-                    false,
+                    }),
                 )?;
                 sleep_ms(post_delay_ms);
                 println_json(
@@ -3559,9 +4135,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Pinch {
-            udid,
-            center_x,
-            center_y,
+            args,
             start_distance,
             end_distance,
             angle_degrees,
@@ -3569,6 +4143,8 @@ fn main() -> anyhow::Result<()> {
             duration_ms,
             steps,
         } => {
+            let (udid, center_x, center_y) = parse_optional_udid_point_args("pinch", args)?;
+            let udid = resolve_device_udid(udid.as_deref())?;
             if android::is_android_id(&udid) {
                 anyhow::bail!("Android pinch gestures are not supported by the ADB input bridge.");
             }
@@ -3588,15 +4164,16 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::RotateGesture {
-            udid,
-            center_x,
-            center_y,
+            args,
             radius,
             degrees,
             normalized,
             duration_ms,
             steps,
         } => {
+            let (udid, center_x, center_y) =
+                parse_optional_udid_point_args("rotate-gesture", args)?;
+            let udid = resolve_device_udid(udid.as_deref())?;
             if android::is_android_id(&udid) {
                 anyhow::bail!("Android rotate gestures are not supported by the ADB input bridge.");
             }
@@ -3619,13 +4196,14 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Key {
-            udid,
-            key,
+            args,
             modifiers,
             duration_ms,
             pre_delay_ms,
             post_delay_ms,
         } => {
+            let (udid, key) = parse_optional_udid_value_args("key", args, "KEY")?;
+            let udid = resolve_device_udid(udid.as_deref())?;
             let key_code = parse_hid_key(&key)?;
             sleep_ms(pre_delay_ms);
             let command_server_url =
@@ -3649,6 +4227,7 @@ fn main() -> anyhow::Result<()> {
             keycodes,
             delay_ms,
         } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let keys = parse_key_list(&keycodes)?;
             let command_server_url =
                 command_service_url_for_udid(&udid, &explicit_server_url, &service_url)?;
@@ -3673,6 +4252,7 @@ fn main() -> anyhow::Result<()> {
             modifiers,
             key,
         } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let modifier_mask = parse_modifier_mask(&modifiers)?;
             let key_code = parse_hid_key(&key)?;
             let command_server_url =
@@ -3686,24 +4266,26 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Type {
-            udid,
-            text,
+            args,
             stdin,
             file,
             delay_ms,
         } => {
+            let has_non_positional_input = stdin || file.is_some();
+            let (udid, text) =
+                parse_optional_udid_text_args("type", args, has_non_positional_input)?;
+            let udid = resolve_device_udid(udid.as_deref())?;
             let text = read_text_input(text, stdin, file)?;
             if android::is_android_id(&udid) {
                 let server_url = command_service_url(explicit_server_url.as_deref())?;
-                service_batch(
+                service_action_ok(
                     &server_url,
                     &udid,
-                    vec![serde_json::json!({
+                    &serde_json::json!({
                         "action": "type",
                         "text": text,
                         "delayMs": delay_ms,
-                    })],
-                    false,
+                    }),
                 )?;
             } else {
                 type_text(&bridge, &udid, &text, delay_ms)?;
@@ -3711,11 +4293,9 @@ fn main() -> anyhow::Result<()> {
             println_json(&serde_json::json!({ "ok": true, "udid": udid, "action": "type" }))?;
             Ok(())
         }
-        Command::Button {
-            udid,
-            button,
-            duration_ms,
-        } => {
+        Command::Button { args, duration_ms } => {
+            let (udid, button) = parse_optional_udid_value_args("button", args, "BUTTON")?;
+            let udid = resolve_device_udid(udid.as_deref())?;
             let command_server_url =
                 command_service_url_for_udid(&udid, &explicit_server_url, &service_url)?;
             if let Some(server_url) = command_server_url.as_deref() {
@@ -3729,6 +4309,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Crown { udid, delta } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             if let Some(server_url) = service_url.as_deref() {
                 service_crown(server_url, &udid, delta)?;
             } else {
@@ -3746,27 +4327,33 @@ fn main() -> anyhow::Result<()> {
             stdin,
             continue_on_error,
         } => {
-            let command_server_url =
-                command_service_url_for_udid(&udid, &explicit_server_url, &service_url)?;
-            let report = if let Some(server_url) = command_server_url.as_deref() {
-                let step_lines = read_batch_steps(steps, file, stdin)?;
-                service_batch(
-                    server_url,
+            let udid = resolve_device_udid(udid.as_deref())?;
+            let step_lines = read_batch_steps(steps, file, stdin)?;
+            let report = match command_service_url(explicit_server_url.as_deref()) {
+                Ok(server_url) => service_batch(
+                    &server_url,
                     &udid,
                     batch_lines_to_json_steps(&step_lines)?,
                     continue_on_error,
-                )?
-            } else {
-                run_batch(&bridge, &udid, steps, file, stdin, continue_on_error)?
+                )?,
+                Err(_error) if !android::is_android_id(&udid) => {
+                    run_batch(&bridge, &udid, step_lines, None, false, continue_on_error)?
+                }
+                Err(error) => return Err(error),
             };
             println_json(&report)?;
             Ok(())
         }
         Command::DismissKeyboard { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let command_server_url =
                 command_service_url_for_udid(&udid, &explicit_server_url, &service_url)?;
             if let Some(server_url) = command_server_url.as_deref() {
-                service_post_ok(server_url, &udid, "dismiss-keyboard", &Value::Null)?;
+                service_action_ok(
+                    server_url,
+                    &udid,
+                    &serde_json::json!({ "action": "dismissKeyboard" }),
+                )?;
             } else {
                 bridge.send_key(&udid, 41, 0)?;
             }
@@ -3779,10 +4366,11 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Home { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let command_server_url =
                 command_service_url_for_udid(&udid, &explicit_server_url, &service_url)?;
             if let Some(server_url) = command_server_url.as_deref() {
-                service_post_ok(server_url, &udid, "home", &Value::Null)?;
+                service_action_ok(server_url, &udid, &serde_json::json!({ "action": "home" }))?;
             } else {
                 bridge.press_home(&udid)?;
             }
@@ -3790,10 +4378,15 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::AppSwitcher { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let command_server_url =
                 command_service_url_for_udid(&udid, &explicit_server_url, &service_url)?;
             if let Some(server_url) = command_server_url.as_deref() {
-                service_post_ok(server_url, &udid, "app-switcher", &Value::Null)?;
+                service_action_ok(
+                    server_url,
+                    &udid,
+                    &serde_json::json!({ "action": "appSwitcher" }),
+                )?;
             } else {
                 bridge.open_app_switcher(&udid)?;
             }
@@ -3803,10 +4396,15 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::RotateLeft { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let command_server_url =
                 command_service_url_for_udid(&udid, &explicit_server_url, &service_url)?;
             if let Some(server_url) = command_server_url.as_deref() {
-                service_post_ok(server_url, &udid, "rotate-left", &Value::Null)?;
+                service_action_ok(
+                    server_url,
+                    &udid,
+                    &serde_json::json!({ "action": "rotateLeft" }),
+                )?;
             } else {
                 bridge.rotate_left(&udid)?;
             }
@@ -3816,10 +4414,15 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::RotateRight { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let command_server_url =
                 command_service_url_for_udid(&udid, &explicit_server_url, &service_url)?;
             if let Some(server_url) = command_server_url.as_deref() {
-                service_post_ok(server_url, &udid, "rotate-right", &Value::Null)?;
+                service_action_ok(
+                    server_url,
+                    &udid,
+                    &serde_json::json!({ "action": "rotateRight" }),
+                )?;
             } else {
                 bridge.rotate_right(&udid)?;
             }
@@ -3829,6 +4432,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::ChromeProfile { udid } => {
+            let udid = resolve_device_udid(udid.as_deref())?;
             let service_url = command_service_url(explicit_server_url.as_deref())?;
             let profile = service_get_json(
                 &service_url,
@@ -4029,12 +4633,31 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct ElementSelector {
     id: Option<String>,
     label: Option<String>,
     value: Option<String>,
     element_type: Option<String>,
+    index: Option<usize>,
+}
+
+impl ElementSelector {
+    fn is_empty(&self) -> bool {
+        self.id.is_none()
+            && self.label.is_none()
+            && self.value.is_none()
+            && self.element_type.is_none()
+            && self.index.is_none()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct TapCommandTarget {
+    udid: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    selector: ElementSelector,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4320,9 +4943,10 @@ fn describe_ui_snapshot(
     bridge: &NativeBridge,
     udid: &str,
     point: Option<(f64, f64)>,
-    source: DescribeUiSource,
+    source: AccessibilitySource,
     max_depth: Option<usize>,
     include_hidden: bool,
+    interactive_only: bool,
     direct: bool,
     server_url: &str,
 ) -> anyhow::Result<Value> {
@@ -4330,13 +4954,13 @@ fn describe_ui_snapshot(
         if let Some((x, y)) = point {
             if matches!(
                 source,
-                DescribeUiSource::Auto
-                    | DescribeUiSource::NativeAx
-                    | DescribeUiSource::AndroidUiautomator
+                AccessibilitySource::Auto
+                    | AccessibilitySource::NativeAX
+                    | AccessibilitySource::AndroidUiautomator
             ) {
                 match fetch_service_accessibility_point(udid, x, y, server_url) {
                     Ok(snapshot) => return Ok(snapshot),
-                    Err(error) if source != DescribeUiSource::Auto => return Err(error),
+                    Err(error) if source != AccessibilitySource::Auto => return Err(error),
                     Err(_) => {}
                 }
             }
@@ -4346,30 +4970,38 @@ fn describe_ui_snapshot(
                 source,
                 max_depth,
                 include_hidden,
+                interactive_only,
                 server_url,
             ) {
                 Ok(snapshot) => return Ok(snapshot),
-                Err(error) if source != DescribeUiSource::Auto => return Err(error),
+                Err(error) if source != AccessibilitySource::Auto => return Err(error),
                 Err(_) => {}
             }
         }
     }
 
-    if source != DescribeUiSource::Auto && source != DescribeUiSource::NativeAx {
+    if source != AccessibilitySource::Auto && source != AccessibilitySource::NativeAX {
         anyhow::bail!(
             "The `{}` hierarchy source requires a running SimDeck daemon. Start it with `simdeck daemon start --port 4311`, or use --source native-ax.",
             source.as_query_value()
         );
     }
 
-    Ok(bridge.accessibility_snapshot_with_max_depth(udid, point, max_depth)?)
+    let snapshot =
+        bridge.accessibility_snapshot_with_options(udid, point, max_depth, interactive_only)?;
+    Ok(if interactive_only && point.is_none() {
+        interactive_accessibility_snapshot(&snapshot)
+    } else {
+        snapshot
+    })
 }
 
 fn fetch_service_accessibility_tree(
     udid: &str,
-    source: DescribeUiSource,
+    source: AccessibilitySource,
     max_depth: Option<usize>,
     include_hidden: bool,
+    interactive_only: bool,
     server_url: &str,
 ) -> anyhow::Result<Value> {
     let mut query = vec![format!("source={}", source.as_query_value())];
@@ -4378,6 +5010,9 @@ fn fetch_service_accessibility_tree(
     }
     if include_hidden {
         query.push("includeHidden=true".to_owned());
+    }
+    if interactive_only {
+        query.push("interactiveOnly=true".to_owned());
     }
     let path = format!(
         "/api/simulators/{}/accessibility-tree?{}",
@@ -4460,2064 +5095,19 @@ fn http_get_json(server_url: &str, path: &str) -> anyhow::Result<Value> {
     http_request_json(server_url, "GET", path, None)
 }
 
-fn service_get_json(server_url: &str, path: &str) -> anyhow::Result<Value> {
-    http_request_json(server_url, "GET", path, None)
-}
+include!("main/service_client.rs");
 
-fn service_get_bytes(server_url: &str, path: &str) -> anyhow::Result<Vec<u8>> {
-    http_request(server_url, "GET", path, None)
-}
+include!("main/http.rs");
 
-fn service_post_bytes(server_url: &str, path: &str, body: &Value) -> anyhow::Result<Vec<u8>> {
-    http_request(server_url, "POST", path, Some(body))
-}
+include!("main/accessibility_format.rs");
 
-fn service_open_url(server_url: &str, udid: &str, url: &str) -> anyhow::Result<()> {
-    service_post_ok(
-        server_url,
-        udid,
-        "open-url",
-        &serde_json::json!({ "url": url }),
-    )
-}
+include!("main/tap_target.rs");
 
-fn service_launch(server_url: &str, udid: &str, bundle_id: &str) -> anyhow::Result<()> {
-    service_post_ok(
-        server_url,
-        udid,
-        "launch",
-        &serde_json::json!({ "bundleId": bundle_id }),
-    )
-}
+include!("main/input_helpers.rs");
 
-fn service_performance_json(
-    server_url: &str,
-    udid: &str,
-    pid: Option<i32>,
-) -> anyhow::Result<Value> {
-    let mut path = format!(
-        "/api/simulators/{}/performance?windowMs=120000",
-        url_path_component(udid)
-    );
-    if let Some(pid) = pid {
-        path.push_str(&format!("&pid={pid}"));
-    }
-    service_get_json(server_url, &path)
-}
+include!("main/maestro.rs");
 
-fn service_post_sample(
-    server_url: &str,
-    udid: &str,
-    pid: i32,
-    seconds: u64,
-) -> anyhow::Result<Value> {
-    http_request_json(
-        server_url,
-        "POST",
-        &format!(
-            "/api/simulators/{}/processes/{pid}/sample?seconds={}",
-            url_path_component(udid),
-            seconds.clamp(1, 30)
-        ),
-        None,
-    )
-}
-
-fn run_stats_watch(
-    server_url: &str,
-    udid: &str,
-    pid: Option<i32>,
-    interval: f64,
-) -> anyhow::Result<()> {
-    let interval = Duration::from_secs_f64(interval.clamp(0.25, 60.0));
-    loop {
-        let stats = service_performance_json(server_url, udid, pid)?;
-        print_performance_line(&stats)?;
-        std::thread::sleep(interval);
-    }
-}
-
-fn print_performance_line(stats: &Value) -> anyhow::Result<()> {
-    let current = stats
-        .get("current")
-        .and_then(Value::as_object)
-        .ok_or_else(|| anyhow::anyhow!("No current performance sample is available."))?;
-    let pid = current.get("pid").and_then(Value::as_i64).unwrap_or(0);
-    let process = stats
-        .get("processes")
-        .and_then(Value::as_array)
-        .and_then(|processes| {
-            processes
-                .iter()
-                .find(|process| process.get("pid").and_then(Value::as_i64) == Some(pid))
-        })
-        .and_then(|process| process.get("process"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let cpu = current
-        .get("cpuPercent")
-        .and_then(Value::as_f64)
-        .map(|value| format!("{value:.1}%"))
-        .unwrap_or_else(|| "--".to_owned());
-    let memory = current
-        .get("memoryFootprintBytes")
-        .or_else(|| current.get("memoryResidentBytes"))
-        .and_then(Value::as_u64)
-        .map(format_bytes_cli)
-        .unwrap_or_else(|| "--".to_owned());
-    let disk = current
-        .get("diskWriteBytesPerSecond")
-        .and_then(Value::as_f64)
-        .map(|value| format!("{}/s", format_bytes_cli(value.max(0.0) as u64)))
-        .unwrap_or_else(|| "--".to_owned());
-    let network_in = current
-        .get("networkReceivedBytesPerSecond")
-        .and_then(Value::as_f64)
-        .map(|value| format!("{}/s", format_bytes_cli(value.max(0.0) as u64)))
-        .unwrap_or_else(|| "--".to_owned());
-    let network_out = current
-        .get("networkSentBytesPerSecond")
-        .and_then(Value::as_f64)
-        .map(|value| format!("{}/s", format_bytes_cli(value.max(0.0) as u64)))
-        .unwrap_or_else(|| "--".to_owned());
-    let connections = current
-        .get("networkConnectionCount")
-        .and_then(Value::as_u64)
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "--".to_owned());
-    let hang = current
-        .get("hang")
-        .and_then(|hang| hang.get("state"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    println!(
-        "{} pid={} process={} cpu={} memory={} diskWrite={} netIn={} netOut={} connections={} hang={}",
-        chrono_like_time_label(),
-        pid,
-        process,
-        cpu,
-        memory,
-        disk,
-        network_in,
-        network_out,
-        connections,
-        hang
-    );
-    io::stdout().flush()?;
-    Ok(())
-}
-
-fn format_bytes_cli(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{} {}", bytes, UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
-fn chrono_like_time_label() -> String {
-    let now = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    let seconds = now % 60;
-    let minutes = (now / 60) % 60;
-    let hours = (now / 3600) % 24;
-    format!("{hours:02}:{minutes:02}:{seconds:02}")
-}
-
-fn service_touch(server_url: &str, udid: &str, x: f64, y: f64, phase: &str) -> anyhow::Result<()> {
-    service_post_ok(
-        server_url,
-        udid,
-        "touch",
-        &serde_json::json!({ "x": x, "y": y, "phase": phase }),
-    )
-}
-
-fn service_tap(
-    server_url: &str,
-    udid: &str,
-    x: f64,
-    y: f64,
-    duration_ms: u64,
-) -> anyhow::Result<()> {
-    service_touch_sequence(
-        server_url,
-        udid,
-        vec![
-            service_touch_event(x, y, "began", duration_ms),
-            service_touch_event(x, y, "ended", 0),
-        ],
-    )
-}
-
-fn service_tap_element(server_url: &str, udid: &str, body: Value) -> anyhow::Result<()> {
-    service_post_ok(server_url, udid, "tap", &body)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn service_wait_for_selector(
-    server_url: &str,
-    udid: &str,
-    action: &str,
-    selector: SelectorArgs,
-    source: DescribeUiSource,
-    max_depth: Option<usize>,
-    include_hidden: bool,
-    timeout_ms: u64,
-    poll_interval_ms: u64,
-) -> anyhow::Result<Value> {
-    if selector.is_empty() {
-        anyhow::bail!("{action} requires a selector flag.");
-    }
-    let body = serde_json::json!({
-        "selector": selector.to_json(),
-        "source": source.as_query_value(),
-        "maxDepth": max_depth,
-        "includeHidden": include_hidden,
-        "timeoutMs": timeout_ms,
-        "pollMs": poll_interval_ms,
-    });
-    let path = format!("/api/simulators/{}/{}", url_path_component(udid), action);
-    http_request_json(server_url, "POST", &path, Some(&body))
-}
-
-fn service_batch(
-    server_url: &str,
-    udid: &str,
-    steps: Vec<Value>,
-    continue_on_error: bool,
-) -> anyhow::Result<Value> {
-    let path = format!("/api/simulators/{}/batch", url_path_component(udid));
-    http_request_json(
-        server_url,
-        "POST",
-        &path,
-        Some(&serde_json::json!({
-            "steps": steps,
-            "continueOnError": continue_on_error,
-        })),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn service_swipe(
-    server_url: &str,
-    udid: &str,
-    start_x: f64,
-    start_y: f64,
-    end_x: f64,
-    end_y: f64,
-    duration_ms: u64,
-    steps: u32,
-) -> anyhow::Result<()> {
-    let step_count = steps.max(2);
-    let delay_ms = duration_ms / u64::from(step_count);
-    let mut events = vec![service_touch_event(start_x, start_y, "began", 0)];
-    for index in 1..step_count {
-        let progress = f64::from(index) / f64::from(step_count);
-        let x = start_x + (end_x - start_x) * progress;
-        let y = start_y + (end_y - start_y) * progress;
-        events.push(service_touch_event(x, y, "moved", delay_ms));
-    }
-    events.push(service_touch_event(end_x, end_y, "ended", 0));
-    service_touch_sequence(server_url, udid, events)
-}
-
-fn service_touch_event(x: f64, y: f64, phase: &str, delay_ms_after: u64) -> Value {
-    serde_json::json!({
-        "x": x,
-        "y": y,
-        "phase": phase,
-        "delayMsAfter": delay_ms_after,
-    })
-}
-
-fn service_touch_sequence(server_url: &str, udid: &str, events: Vec<Value>) -> anyhow::Result<()> {
-    service_post_ok(
-        server_url,
-        udid,
-        "touch-sequence",
-        &serde_json::json!({ "events": events }),
-    )
-}
-
-fn service_key(server_url: &str, udid: &str, key_code: u16, modifiers: u32) -> anyhow::Result<()> {
-    service_post_ok(
-        server_url,
-        udid,
-        "key",
-        &serde_json::json!({ "keyCode": key_code, "modifiers": modifiers }),
-    )
-}
-
-fn service_key_sequence(
-    server_url: &str,
-    udid: &str,
-    keys: &[u16],
-    delay_ms: u64,
-) -> anyhow::Result<()> {
-    service_post_ok(
-        server_url,
-        udid,
-        "key-sequence",
-        &serde_json::json!({ "keyCodes": keys, "delayMs": delay_ms }),
-    )
-}
-
-fn service_button(
-    server_url: &str,
-    udid: &str,
-    button: &str,
-    duration_ms: u32,
-) -> anyhow::Result<()> {
-    service_post_ok(
-        server_url,
-        udid,
-        "button",
-        &serde_json::json!({ "button": button, "durationMs": duration_ms }),
-    )
-}
-
-fn service_crown(server_url: &str, udid: &str, delta: f64) -> anyhow::Result<()> {
-    service_post_ok(
-        server_url,
-        udid,
-        "crown",
-        &serde_json::json!({ "delta": delta }),
-    )
-}
-
-fn service_post_ok(server_url: &str, udid: &str, action: &str, body: &Value) -> anyhow::Result<()> {
-    let path = format!("/api/simulators/{}/{}", url_path_component(udid), action);
-    let deadline = Instant::now() + Duration::from_secs(45);
-    loop {
-        match http_request_json(server_url, "POST", &path, Some(body)) {
-            Ok(_) => return Ok(()),
-            Err(error)
-                if Instant::now() < deadline
-                    && service_post_error_is_retryable(action, &error.to_string()) =>
-            {
-                std::thread::sleep(Duration::from_millis(250));
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-fn service_post_error_is_retryable(action: &str, message: &str) -> bool {
-    if !matches!(
-        action,
-        "boot" | "shutdown" | "erase" | "launch" | "open-url"
-    ) {
-        return false;
-    }
-    let message = message.to_lowercase();
-    message.contains("resource temporarily unavailable")
-        || message.contains("connection reset by peer")
-        || message.contains("broken pipe")
-        || message.contains("unexpected eof")
-        || message.contains("timed out")
-}
-
-fn http_request_json(
-    server_url: &str,
-    method: &str,
-    path: &str,
-    body: Option<&Value>,
-) -> anyhow::Result<Value> {
-    let body = http_request(server_url, method, path, body)?;
-    serde_json::from_slice(&body).context("parse SimDeck service JSON response")
-}
-
-fn http_request(
-    server_url: &str,
-    method: &str,
-    path: &str,
-    body: Option<&Value>,
-) -> anyhow::Result<Vec<u8>> {
-    let endpoint = HttpEndpoint::parse(server_url)?;
-    let mut stream = std::net::TcpStream::connect((endpoint.host.as_str(), endpoint.port))
-        .with_context(|| format!("connect to SimDeck service at {server_url}"))?;
-    stream.set_read_timeout(Some(Duration::from_secs(180)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let body = body.map(serde_json::to_vec).transpose()?;
-    let request = if let Some(body) = body.as_ref() {
-        format!(
-            "{method} {path} HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            endpoint.host_header(),
-            endpoint.origin(),
-            body.len(),
-        )
-    } else {
-        format!(
-            "{method} {path} HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
-            endpoint.host_header(),
-            endpoint.origin(),
-        )
-    };
-    stream.write_all(request.as_bytes())?;
-    if let Some(body) = body.as_ref() {
-        stream.write_all(body)?;
-    }
-
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response)?;
-    let (status, headers, body) = parse_http_response(&response)?;
-    let body = if response_is_chunked(&headers) {
-        decode_chunked_body(body)?
-    } else {
-        body.to_vec()
-    };
-    if !(200..300).contains(&status) {
-        let message = String::from_utf8_lossy(&body).trim().to_owned();
-        anyhow::bail!(
-            "SimDeck service returned HTTP {status}{}",
-            if message.is_empty() {
-                String::new()
-            } else {
-                format!(": {message}")
-            }
-        );
-    }
-    Ok(body)
-}
-
-struct HttpEndpoint {
-    host: String,
-    port: u16,
-}
-
-type HttpHeaders = Vec<(String, String)>;
-
-impl HttpEndpoint {
-    fn parse(server_url: &str) -> anyhow::Result<Self> {
-        let without_scheme = server_url
-            .trim_end_matches('/')
-            .strip_prefix("http://")
-            .ok_or_else(|| anyhow::anyhow!("Only http:// server URLs are supported."))?;
-        let authority = without_scheme
-            .split('/')
-            .next()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("Server URL must include a host."))?;
-        let (host, port) = if let Some(host) = authority.strip_prefix('[') {
-            let (host, rest) = host
-                .split_once(']')
-                .ok_or_else(|| anyhow::anyhow!("Invalid IPv6 server URL host."))?;
-            let port = rest
-                .strip_prefix(':')
-                .map(parse_port)
-                .transpose()?
-                .unwrap_or(80);
-            (host.to_owned(), port)
-        } else if let Some((host, port)) = authority.rsplit_once(':') {
-            (host.to_owned(), parse_port(port)?)
-        } else {
-            (authority.to_owned(), 80)
-        };
-        Ok(Self { host, port })
-    }
-
-    fn host_header(&self) -> String {
-        if self.host.contains(':') {
-            format!("[{}]:{}", self.host, self.port)
-        } else {
-            format!("{}:{}", self.host, self.port)
-        }
-    }
-
-    fn origin(&self) -> String {
-        format!("http://{}", self.host_header())
-    }
-}
-
-fn parse_port(value: &str) -> anyhow::Result<u16> {
-    value
-        .parse::<u16>()
-        .with_context(|| format!("parse port `{value}`"))
-}
-
-fn parse_http_response(response: &[u8]) -> anyhow::Result<(u16, HttpHeaders, &[u8])> {
-    let header_end = response
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| anyhow::anyhow!("SimDeck service returned a malformed HTTP response."))?;
-    let header_bytes = &response[..header_end];
-    let body = &response[header_end + 4..];
-    let header_text = std::str::from_utf8(header_bytes).context("parse HTTP headers as UTF-8")?;
-    let mut lines = header_text.lines();
-    let status_line = lines
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("SimDeck service returned an empty HTTP response."))?;
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("HTTP response did not include a status code."))?
-        .parse::<u16>()
-        .context("parse HTTP status code")?;
-    let headers = lines
-        .filter_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            Some((name.trim().to_ascii_lowercase(), value.trim().to_owned()))
-        })
-        .collect();
-    Ok((status, headers, body))
-}
-
-fn response_is_chunked(headers: &[(String, String)]) -> bool {
-    headers.iter().any(|(name, value)| {
-        name == "transfer-encoding"
-            && value
-                .split(',')
-                .any(|part| part.trim().eq_ignore_ascii_case("chunked"))
-    })
-}
-
-fn decode_chunked_body(mut body: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let mut decoded = Vec::new();
-    loop {
-        let line_end = body
-            .windows(2)
-            .position(|window| window == b"\r\n")
-            .ok_or_else(|| anyhow::anyhow!("Chunked response ended before a chunk size."))?;
-        let size_text = std::str::from_utf8(&body[..line_end])
-            .context("parse chunk size as UTF-8")?
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim();
-        let size = usize::from_str_radix(size_text, 16).context("parse chunk size")?;
-        body = &body[line_end + 2..];
-        if size == 0 {
-            return Ok(decoded);
-        }
-        if body.len() < size + 2 {
-            anyhow::bail!("Chunked response ended before a full chunk.");
-        }
-        decoded.extend_from_slice(&body[..size]);
-        body = &body[size + 2..];
-    }
-}
-
-fn url_path_component(value: &str) -> String {
-    value
-        .bytes()
-        .flat_map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                vec![byte as char]
-            }
-            _ => format!("%{byte:02X}").chars().collect(),
-        })
-        .collect()
-}
-
-impl DescribeUiSource {
-    fn as_query_value(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Nativescript => "nativescript",
-            Self::ReactNative => "react-native",
-            Self::Flutter => "flutter",
-            Self::Uikit => "uikit",
-            Self::NativeAx => "native-ax",
-            Self::AndroidUiautomator => "android-uiautomator",
-        }
-    }
-}
-
-fn print_describe_ui(snapshot: &Value, format: DescribeUiFormat) -> anyhow::Result<()> {
-    match format {
-        DescribeUiFormat::Json => println_json(snapshot),
-        DescribeUiFormat::CompactJson => {
-            println!(
-                "{}",
-                serde_json::to_string(&compact_accessibility_snapshot(snapshot))?
-            );
-            Ok(())
-        }
-        DescribeUiFormat::Agent => {
-            print!("{}", render_agent_accessibility_tree(snapshot));
-            Ok(())
-        }
-    }
-}
-
-fn compact_accessibility_snapshot(snapshot: &Value) -> Value {
-    let roots = snapshot
-        .get("roots")
-        .and_then(Value::as_array)
-        .map(|roots| {
-            roots
-                .iter()
-                .map(compact_accessibility_node)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let mut object = serde_json::Map::new();
-    object.insert(
-        "source".to_owned(),
-        snapshot
-            .get("source")
-            .cloned()
-            .unwrap_or_else(|| Value::String("unknown".to_owned())),
-    );
-    object.insert("roots".to_owned(), Value::Array(roots));
-    for field in ["availableSources", "fallbackReason", "fallbackSource"] {
-        if let Some(value) = snapshot.get(field) {
-            object.insert(field.to_owned(), value.clone());
-        }
-    }
-    Value::Object(object)
-}
-
-fn compact_accessibility_node(node: &Value) -> Value {
-    let mut object = serde_json::Map::new();
-    insert_string_alias(node, &mut object, "role", &["type", "role", "className"]);
-    insert_string_alias(
-        node,
-        &mut object,
-        "id",
-        &["AXIdentifier", "AXUniqueId", "inspectorId", "id"],
-    );
-    insert_string_alias(
-        node,
-        &mut object,
-        "label",
-        &["AXLabel", "label", "title", "text", "name"],
-    );
-    insert_string_alias(
-        node,
-        &mut object,
-        "value",
-        &["AXValue", "value", "placeholder"],
-    );
-    if let Some(frame) = compact_frame(node.get("frame").or_else(|| node.get("frameInScreen"))) {
-        object.insert("frame".to_owned(), frame);
-    }
-    if truthy_field(node, "hidden").unwrap_or(false)
-        || truthy_field(node, "isHidden").unwrap_or(false)
-    {
-        object.insert("hidden".to_owned(), Value::Bool(true));
-    }
-    if let Some(false) = truthy_field(node, "enabled") {
-        object.insert("enabled".to_owned(), Value::Bool(false));
-    }
-    if let Some(actions) = node
-        .get("custom_actions")
-        .or_else(|| {
-            node.get("control")
-                .and_then(|control| control.get("actions"))
-        })
-        .and_then(Value::as_array)
-    {
-        let actions = actions
-            .iter()
-            .filter_map(Value::as_str)
-            .map(|action| Value::String(action.to_owned()))
-            .collect::<Vec<_>>();
-        if !actions.is_empty() {
-            object.insert("actions".to_owned(), Value::Array(actions));
-        }
-    }
-    if let Some(source_location) = node.get("sourceLocation").filter(|value| !value.is_null()) {
-        object.insert("sourceLocation".to_owned(), source_location.clone());
-    }
-    let children = node
-        .get("children")
-        .and_then(Value::as_array)
-        .map(|children| {
-            children
-                .iter()
-                .map(compact_accessibility_node)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if !children.is_empty() {
-        object.insert("children".to_owned(), Value::Array(children));
-    }
-    Value::Object(object)
-}
-
-fn insert_string_alias(
-    source: &Value,
-    target: &mut serde_json::Map<String, Value>,
-    output_key: &str,
-    input_keys: &[&str],
-) {
-    if let Some(value) = input_keys
-        .iter()
-        .filter_map(|key| source.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .find(|value| !value.is_empty())
-    {
-        target.insert(output_key.to_owned(), Value::String(value.to_owned()));
-    }
-}
-
-fn compact_frame(frame: Option<&Value>) -> Option<Value> {
-    let frame = frame?;
-    let x = frame.get("x")?.as_f64()?;
-    let y = frame.get("y")?.as_f64()?;
-    let width = frame.get("width")?.as_f64()?;
-    let height = frame.get("height")?.as_f64()?;
-    Some(serde_json::json!([
-        round_frame_value(x),
-        round_frame_value(y),
-        round_frame_value(width),
-        round_frame_value(height)
-    ]))
-}
-
-fn round_frame_value(value: f64) -> Value {
-    let rounded = (value * 10.0).round() / 10.0;
-    serde_json::Number::from_f64(rounded)
-        .map(Value::Number)
-        .unwrap_or(Value::Null)
-}
-
-fn truthy_field(node: &Value, field: &str) -> Option<bool> {
-    node.get(field).and_then(Value::as_bool)
-}
-
-fn render_agent_accessibility_tree(snapshot: &Value) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!(
-        "source: {}",
-        snapshot
-            .get("source")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-    ));
-    if let Some(sources) = snapshot.get("availableSources").and_then(Value::as_array) {
-        let sources = sources
-            .iter()
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>()
-            .join(",");
-        if !sources.is_empty() {
-            lines.push(format!("available: {sources}"));
-        }
-    }
-    if let Some(reason) = snapshot.get("fallbackReason").and_then(Value::as_str) {
-        lines.push(format!("fallback: {}", compact_text(reason)));
-    }
-    if let Some(roots) = snapshot.get("roots").and_then(Value::as_array) {
-        for root in roots {
-            render_agent_node(root, 0, &mut lines);
-        }
-    }
-    lines.push(String::new());
-    lines.join("\n")
-}
-
-fn render_agent_node(node: &Value, depth: usize, lines: &mut Vec<String>) {
-    let compact = compact_accessibility_node(node);
-    let object = compact.as_object();
-    let field = |name| {
-        object
-            .and_then(|object| object.get(name))
-            .and_then(Value::as_str)
-            .map(compact_text)
-            .filter(|value| !value.is_empty())
-    };
-    let role = field("role").unwrap_or_else(|| "View".to_owned());
-    let id = field("id");
-    let label = field("label");
-    let value = field("value");
-    let mut line = format!("{}- {}", "  ".repeat(depth), role);
-    if let Some(id) = id {
-        line.push_str(" #");
-        line.push_str(&id);
-    }
-    if let Some(label) = label.as_ref() {
-        line.push_str(": ");
-        line.push_str(label);
-    }
-    if let Some(value) = value.filter(|value| Some(value) != label.as_ref()) {
-        line.push_str(" = ");
-        line.push_str(&value);
-    }
-    if let Some(frame) = object
-        .and_then(|object| object.get("frame"))
-        .and_then(Value::as_array)
-        .filter(|frame| frame.len() == 4)
-    {
-        line.push_str(&format!(
-            " @{},{} {}x{}",
-            frame_value(&frame[0]),
-            frame_value(&frame[1]),
-            frame_value(&frame[2]),
-            frame_value(&frame[3])
-        ));
-    }
-    let mut flags = Vec::new();
-    if object
-        .and_then(|object| object.get("hidden"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        flags.push("hidden");
-    }
-    if object
-        .and_then(|object| object.get("enabled"))
-        .and_then(Value::as_bool)
-        == Some(false)
-    {
-        flags.push("disabled");
-    }
-    if let Some(actions) = object
-        .and_then(|object| object.get("actions"))
-        .and_then(Value::as_array)
-    {
-        let actions = actions.iter().filter_map(Value::as_str).collect::<Vec<_>>();
-        if !actions.is_empty() {
-            line.push_str(" actions=");
-            line.push_str(&actions.join(","));
-        }
-    }
-    if !flags.is_empty() {
-        line.push(' ');
-        line.push_str(&flags.join(","));
-    }
-    lines.push(line);
-
-    if let Some(children) = node.get("children").and_then(Value::as_array) {
-        for child in children {
-            render_agent_node(child, depth + 1, lines);
-        }
-    }
-}
-
-fn compact_text(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn frame_value(value: &Value) -> String {
-    value
-        .as_f64()
-        .map(|value| {
-            if value.fract() == 0.0 {
-                format!("{value:.0}")
-            } else {
-                format!("{value:.1}")
-            }
-        })
-        .unwrap_or_else(|| "?".to_owned())
-}
-
-fn resolve_tap_target(
-    bridge: &NativeBridge,
-    udid: &str,
-    request: TapTargetRequest,
-) -> Result<ResolvedTapTarget, crate::error::AppError> {
-    if request.selector.id.is_none()
-        && request.selector.label.is_none()
-        && request.selector.value.is_none()
-    {
-        let x = request.x.ok_or_else(|| {
-            crate::error::AppError::bad_request("Tap requires x and y or a selector.")
-        })?;
-        let y = request.y.ok_or_else(|| {
-            crate::error::AppError::bad_request("Tap requires x and y or a selector.")
-        })?;
-        let (x, y) = resolve_touch_point(bridge, udid, x, y, request.normalized)?;
-        return Ok(ResolvedTapTarget { x, y, input: None });
-    }
-
-    let deadline = std::time::Instant::now() + Duration::from_millis(request.wait_timeout_ms);
-    loop {
-        let snapshot = bridge.accessibility_snapshot(udid, None)?;
-        if let Some(target) = find_element_tap_target(&snapshot, &request.selector) {
-            let input = bridge.create_input_session(udid)?;
-            let (x, y) = if let Some((display_width, display_height)) = input.display_size() {
-                normalize_accessibility_point_for_display(
-                    target.x,
-                    target.y,
-                    target.root_width,
-                    target.root_height,
-                    display_width,
-                    display_height,
-                )
-            } else {
-                (
-                    (target.x / target.root_width).clamp(0.0, 1.0),
-                    (target.y / target.root_height).clamp(0.0, 1.0),
-                )
-            };
-            return Ok(ResolvedTapTarget {
-                x,
-                y,
-                input: Some(input),
-            });
-        }
-        if request.wait_timeout_ms == 0 || std::time::Instant::now() >= deadline {
-            return Err(crate::error::AppError::not_found(
-                "No accessibility element matched the tap selector.",
-            ));
-        }
-        sleep_ms(request.poll_interval_ms.max(10));
-    }
-}
-
-fn find_element_tap_target(
-    snapshot: &Value,
-    selector: &ElementSelector,
-) -> Option<ElementTapTarget> {
-    let roots = snapshot.get("roots")?.as_array()?;
-    let mut matches = Vec::new();
-    for root in roots {
-        let (root_width, root_height) = element_size(root)?;
-        collect_matching_elements(root, selector, root_width, root_height, &mut matches);
-    }
-    matches
-        .into_iter()
-        .max_by_key(|target| is_actionable_element(target.node) as u8)
-        .and_then(|target| {
-            element_center(target.node).map(|(x, y)| ElementTapTarget {
-                x,
-                y,
-                root_width: target.root_width,
-                root_height: target.root_height,
-            })
-        })
-}
-
-struct MatchedElement<'a> {
-    node: &'a Value,
-    root_width: f64,
-    root_height: f64,
-}
-
-fn collect_matching_elements<'a>(
-    node: &'a Value,
-    selector: &ElementSelector,
-    root_width: f64,
-    root_height: f64,
-    matches: &mut Vec<MatchedElement<'a>>,
-) {
-    if element_matches(node, selector) {
-        matches.push(MatchedElement {
-            node,
-            root_width,
-            root_height,
-        });
-    }
-    if let Some(children) = node.get("children").and_then(Value::as_array) {
-        for child in children {
-            collect_matching_elements(child, selector, root_width, root_height, matches);
-        }
-    }
-}
-
-fn element_matches(node: &Value, selector: &ElementSelector) -> bool {
-    if let Some(element_type) = &selector.element_type {
-        let node_type = string_field(node, "type").or_else(|| string_field(node, "role"));
-        if !node_type
-            .as_deref()
-            .map(|value| value.eq_ignore_ascii_case(element_type))
-            .unwrap_or(false)
-        {
-            return false;
-        }
-    }
-    if let Some(id) = &selector.id {
-        return [
-            "AXUniqueId",
-            "AXIdentifier",
-            "id",
-            "identifier",
-            "inspectorId",
-        ]
-        .iter()
-        .filter_map(|key| string_field(node, key))
-        .any(|value| value == *id);
-    }
-    if let Some(label) = &selector.label {
-        return ["AXLabel", "label", "title", "name"]
-            .iter()
-            .filter_map(|key| string_field(node, key))
-            .any(|value| value == *label);
-    }
-    if let Some(expected_value) = &selector.value {
-        return ["AXValue", "value"]
-            .iter()
-            .filter_map(|key| string_field(node, key))
-            .any(|value| value == *expected_value);
-    }
-    false
-}
-
-fn string_field(node: &Value, key: &str) -> Option<String> {
-    node.get(key)?.as_str().map(str::to_owned)
-}
-
-fn element_center(node: &Value) -> Option<(f64, f64)> {
-    let frame = node.get("frame")?;
-    let x = frame.get("x")?.as_f64()?;
-    let y = frame.get("y")?.as_f64()?;
-    let width = frame.get("width")?.as_f64()?;
-    let height = frame.get("height")?.as_f64()?;
-    (width > 0.0 && height > 0.0).then_some((x + width / 2.0, y + height / 2.0))
-}
-
-fn element_size(node: &Value) -> Option<(f64, f64)> {
-    let frame = node.get("frame")?;
-    let width = frame.get("width")?.as_f64()?;
-    let height = frame.get("height")?.as_f64()?;
-    (width > 0.0 && height > 0.0).then_some((width, height))
-}
-
-fn normalize_accessibility_point_for_display(
-    x: f64,
-    y: f64,
-    root_width: f64,
-    root_height: f64,
-    display_width: f64,
-    display_height: f64,
-) -> (f64, f64) {
-    let normalized_x = (x / root_width).clamp(0.0, 1.0);
-    let normalized_y = (y / root_height).clamp(0.0, 1.0);
-    let root_is_landscape = root_width > root_height;
-    let display_is_landscape = display_width > display_height;
-    if root_is_landscape != display_is_landscape {
-        return (normalized_y, normalized_x);
-    }
-    (normalized_x, normalized_y)
-}
-
-fn is_actionable_element(node: &Value) -> bool {
-    let haystack = format!(
-        "{} {}",
-        string_field(node, "type").unwrap_or_default(),
-        string_field(node, "role").unwrap_or_default()
-    )
-    .to_lowercase();
-    ["button", "textfield", "switch", "link", "cell"]
-        .iter()
-        .any(|needle| haystack.contains(needle))
-}
-
-fn gesture_coordinates(
-    bridge: &NativeBridge,
-    udid: &str,
-    preset: &str,
-    screen_width: Option<f64>,
-    screen_height: Option<f64>,
-    normalized: bool,
-    delta: Option<f64>,
-) -> Result<GestureCoordinates, crate::error::AppError> {
-    let (width, height) = if normalized {
-        (1.0, 1.0)
-    } else {
-        match (screen_width, screen_height) {
-            (Some(width), Some(height)) => (width, height),
-            _ => accessibility_root_size(bridge, udid)
-                .or_else(|| chrome_screen_size(bridge, udid))
-                .unwrap_or((390.0, 844.0)),
-        }
-    };
-    let center_x = width / 2.0;
-    let center_y = height / 2.0;
-    let edge = if normalized { 0.02 } else { 20.0 };
-    let distance = delta.unwrap_or(if normalized { 0.25 } else { 200.0 });
-    let (start_x, start_y, end_x, end_y, duration_ms) = match preset {
-        "scroll-up" => (
-            center_x,
-            center_y + distance / 2.0,
-            center_x,
-            center_y - distance / 2.0,
-            500,
-        ),
-        "scroll-down" => (
-            center_x,
-            center_y - distance / 2.0,
-            center_x,
-            center_y + distance / 2.0,
-            500,
-        ),
-        "scroll-left" => (
-            center_x + distance / 2.0,
-            center_y,
-            center_x - distance / 2.0,
-            center_y,
-            500,
-        ),
-        "scroll-right" => (
-            center_x - distance / 2.0,
-            center_y,
-            center_x + distance / 2.0,
-            center_y,
-            500,
-        ),
-        "swipe-from-left-edge" => (edge, center_y, width - edge, center_y, 300),
-        "swipe-from-right-edge" => (width - edge, center_y, edge, center_y, 300),
-        "swipe-from-top-edge" => (center_x, edge, center_x, height - edge, 300),
-        "swipe-from-bottom-edge" => (center_x, height - edge, center_x, edge, 300),
-        _ => {
-            return Err(crate::error::AppError::bad_request(format!(
-                "Unsupported gesture preset `{preset}`."
-            )))
-        }
-    };
-    let (start_x, start_y) = resolve_touch_point(bridge, udid, start_x, start_y, normalized)?;
-    let (end_x, end_y) = resolve_touch_point(bridge, udid, end_x, end_y, normalized)?;
-    Ok(GestureCoordinates {
-        start_x,
-        start_y,
-        end_x,
-        end_y,
-        duration_ms,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn pinch_frames(
-    bridge: &NativeBridge,
-    udid: &str,
-    center_x: Option<f64>,
-    center_y: Option<f64>,
-    start_distance: f64,
-    end_distance: f64,
-    angle_degrees: f64,
-    normalized: bool,
-    steps: u32,
-) -> Result<Vec<MultiTouchFrame>, crate::error::AppError> {
-    if start_distance < 0.0 || end_distance < 0.0 {
-        return Err(crate::error::AppError::bad_request(
-            "Pinch distances must be non-negative.",
-        ));
-    }
-    let (width, height) = gesture_surface_size(bridge, udid, normalized);
-    let center_x = center_x.unwrap_or(width / 2.0);
-    let center_y = center_y.unwrap_or(height / 2.0);
-    let angle = angle_degrees.to_radians();
-    let unit_x = angle.cos();
-    let unit_y = angle.sin();
-    let count = steps.max(2);
-    let mut frames = Vec::with_capacity(count as usize);
-    for step in 0..count {
-        let t = if count == 1 {
-            1.0
-        } else {
-            f64::from(step) / f64::from(count - 1)
-        };
-        let distance = lerp(start_distance, end_distance, t) / 2.0;
-        let p1x = center_x - unit_x * distance;
-        let p1y = center_y - unit_y * distance;
-        let p2x = center_x + unit_x * distance;
-        let p2y = center_y + unit_y * distance;
-        let (x1, y1) = resolve_touch_point(bridge, udid, p1x, p1y, normalized)?;
-        let (x2, y2) = resolve_touch_point(bridge, udid, p2x, p2y, normalized)?;
-        frames.push(MultiTouchFrame { x1, y1, x2, y2 });
-    }
-    Ok(frames)
-}
-
-fn rotate_gesture_frames(
-    bridge: &NativeBridge,
-    udid: &str,
-    request: RotateGestureRequest,
-) -> Result<Vec<MultiTouchFrame>, crate::error::AppError> {
-    if request.radius < 0.0 {
-        return Err(crate::error::AppError::bad_request(
-            "Rotate gesture radius must be non-negative.",
-        ));
-    }
-    let (width, height) = gesture_surface_size(bridge, udid, request.normalized);
-    let center_x = request.center_x.unwrap_or(width / 2.0);
-    let center_y = request.center_y.unwrap_or(height / 2.0);
-    let count = request.steps.max(2);
-    let mut frames = Vec::with_capacity(count as usize);
-    for step in 0..count {
-        let t = if count == 1 {
-            1.0
-        } else {
-            f64::from(step) / f64::from(count - 1)
-        };
-        let angle = (request.degrees * t).to_radians();
-        let unit_x = angle.cos();
-        let unit_y = angle.sin();
-        let p1x = center_x - unit_x * request.radius;
-        let p1y = center_y - unit_y * request.radius;
-        let p2x = center_x + unit_x * request.radius;
-        let p2y = center_y + unit_y * request.radius;
-        let (x1, y1) = resolve_touch_point(bridge, udid, p1x, p1y, request.normalized)?;
-        let (x2, y2) = resolve_touch_point(bridge, udid, p2x, p2y, request.normalized)?;
-        frames.push(MultiTouchFrame { x1, y1, x2, y2 });
-    }
-    Ok(frames)
-}
-
-fn gesture_surface_size(bridge: &NativeBridge, udid: &str, normalized: bool) -> (f64, f64) {
-    if normalized {
-        return (1.0, 1.0);
-    }
-    accessibility_root_size(bridge, udid)
-        .or_else(|| chrome_screen_size(bridge, udid))
-        .unwrap_or((390.0, 844.0))
-}
-
-fn parse_key_list(value: &str) -> Result<Vec<u16>, crate::error::AppError> {
-    let mut keys = Vec::new();
-    for token in value
-        .split(',')
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-    {
-        keys.push(parse_hid_key(token)?);
-    }
-    if keys.is_empty() {
-        return Err(crate::error::AppError::bad_request(
-            "Key sequence must include at least one key.",
-        ));
-    }
-    Ok(keys)
-}
-
-fn parse_hid_key(value: &str) -> Result<u16, crate::error::AppError> {
-    if let Ok(code) = value.parse::<u16>() {
-        return Ok(code);
-    }
-    let key = match value.to_lowercase().as_str() {
-        "enter" | "return" => HID_KEY_ENTER,
-        "escape" | "esc" => 41,
-        "backspace" | "delete" => 42,
-        "tab" => 43,
-        "space" => 44,
-        "right" | "arrow-right" => HID_KEY_ARROW_RIGHT,
-        "left" | "arrow-left" => HID_KEY_ARROW_LEFT,
-        "down" | "arrow-down" => HID_KEY_ARROW_DOWN,
-        "up" | "arrow-up" => HID_KEY_ARROW_UP,
-        "home" => 74,
-        "end" => 77,
-        other if other.len() == 1 => hid_for_character(other.chars().next().unwrap())
-            .map(|(key, _)| key)
-            .ok_or_else(|| {
-                crate::error::AppError::bad_request(format!("Unsupported key `{value}`."))
-            })?,
-        _ => {
-            return Err(crate::error::AppError::bad_request(format!(
-                "Unsupported key `{value}`."
-            )))
-        }
-    };
-    Ok(key)
-}
-
-fn parse_modifier_mask(value: &str) -> Result<u32, crate::error::AppError> {
-    let mut mask = 0;
-    for token in value
-        .split(',')
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-    {
-        mask |= match token.to_lowercase().as_str() {
-            "shift" | "225" | "left-shift" => 1,
-            "ctrl" | "control" | "224" | "left-control" => 1 << 1,
-            "alt" | "option" | "226" | "left-option" => 1 << 2,
-            "cmd" | "command" | "meta" | "227" | "left-command" => 1 << 3,
-            "caps" | "caps-lock" | "57" => 1 << 4,
-            other => {
-                return Err(crate::error::AppError::bad_request(format!(
-                    "Unsupported modifier `{other}`."
-                )))
-            }
-        };
-    }
-    Ok(mask)
-}
-
-fn run_batch(
-    bridge: &NativeBridge,
-    udid: &str,
-    steps: Vec<String>,
-    file: Option<PathBuf>,
-    use_stdin: bool,
-    continue_on_error: bool,
-) -> anyhow::Result<Value> {
-    let step_lines = read_batch_steps(steps, file, use_stdin)?;
-    let mut results = Vec::new();
-    let mut failures = Vec::new();
-    for (index, line) in step_lines.iter().enumerate() {
-        let result = run_batch_step(bridge, udid, line);
-        match result {
-            Ok(action) => {
-                results.push(serde_json::json!({ "index": index, "ok": true, "action": action }))
-            }
-            Err(error) => {
-                let message = error.to_string();
-                results.push(serde_json::json!({ "index": index, "ok": false, "error": message }));
-                failures.push(message);
-                if !continue_on_error {
-                    return Err(crate::error::AppError::bad_request(format!(
-                        "Batch step {} failed: {}",
-                        index + 1,
-                        failures.last().unwrap()
-                    ))
-                    .into());
-                }
-            }
-        }
-    }
-    Ok(serde_json::json!({
-        "ok": failures.is_empty(),
-        "steps": results,
-        "failureCount": failures.len()
-    }))
-}
-
-fn read_batch_steps(
-    steps: Vec<String>,
-    file: Option<PathBuf>,
-    use_stdin: bool,
-) -> anyhow::Result<Vec<String>> {
-    let source_count =
-        usize::from(!steps.is_empty()) + usize::from(file.is_some()) + usize::from(use_stdin);
-    if source_count != 1 {
-        return Err(crate::error::AppError::bad_request(
-            "Specify exactly one batch source: --step, --file, or --stdin.",
-        )
-        .into());
-    }
-    let raw = if use_stdin {
-        let mut buffer = String::new();
-        io::stdin().read_to_string(&mut buffer)?;
-        buffer
-    } else if let Some(file) = file {
-        fs::read_to_string(file)?
-    } else {
-        return Ok(steps);
-    };
-    Ok(raw
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(str::to_owned)
-        .collect())
-}
-
-fn batch_lines_to_json_steps(step_lines: &[String]) -> anyhow::Result<Vec<Value>> {
-    step_lines
-        .iter()
-        .map(|line| batch_line_to_json_step(line))
-        .collect()
-}
-
-fn batch_line_to_json_step(line: &str) -> anyhow::Result<Value> {
-    let tokens = tokenize_step(line)?;
-    let Some(command) = tokens.first().map(String::as_str) else {
-        return Err(crate::error::AppError::bad_request("Empty batch step.").into());
-    };
-    let args = parse_step_options(&tokens[1..]);
-    let value = match command {
-        "sleep" => serde_json::json!({
-            "action": "sleep",
-            "ms": parse_batch_sleep_duration_ms(&args, tokens.get(1).map(String::as_str))?,
-        }),
-        "tap" => serde_json::json!({
-            "action": "tap",
-            "x": args.value("x").and_then(|value| value.parse::<f64>().ok()),
-            "y": args.value("y").and_then(|value| value.parse::<f64>().ok()),
-            "normalized": args.flag("normalized"),
-            "selector": batch_selector_json(&args),
-            "durationMs": args.value("duration-ms").and_then(|value| value.parse::<u64>().ok()).unwrap_or(60),
-            "waitTimeoutMs": args.value("wait-timeout-ms").and_then(|value| value.parse::<u64>().ok()).unwrap_or(0),
-            "pollMs": args.value("poll-interval-ms").and_then(|value| value.parse::<u64>().ok()).unwrap_or(100),
-        }),
-        "wait-for" | "waitFor" => serde_json::json!({
-            "action": "waitFor",
-            "selector": batch_selector_json(&args),
-            "source": args.value("source"),
-            "maxDepth": args.value("max-depth").and_then(|value| value.parse::<usize>().ok()),
-            "includeHidden": args.flag("include-hidden"),
-            "timeoutMs": args.value("timeout-ms").or_else(|| args.value("wait-timeout-ms")).and_then(|value| value.parse::<u64>().ok()).unwrap_or(5_000),
-            "pollMs": args.value("poll-interval-ms").and_then(|value| value.parse::<u64>().ok()).unwrap_or(100),
-        }),
-        "assert" => serde_json::json!({
-            "action": "assert",
-            "selector": batch_selector_json(&args),
-            "source": args.value("source"),
-            "maxDepth": args.value("max-depth").and_then(|value| value.parse::<usize>().ok()),
-            "includeHidden": args.flag("include-hidden"),
-            "timeoutMs": args.value("timeout-ms").or_else(|| args.value("wait-timeout-ms")).and_then(|value| value.parse::<u64>().ok()).unwrap_or(5_000),
-            "pollMs": args.value("poll-interval-ms").and_then(|value| value.parse::<u64>().ok()).unwrap_or(100),
-        }),
-        "key" => serde_json::json!({
-            "action": "key",
-            "keyCode": parse_hid_key(tokens.get(1).map(String::as_str).unwrap_or(""))?,
-            "modifiers": args.value("modifiers").and_then(|value| value.parse::<u32>().ok()).unwrap_or(0),
-        }),
-        "key-sequence" => serde_json::json!({
-            "action": "keySequence",
-            "keyCodes": parse_key_list(args.value("keycodes").or_else(|| args.value("keys")).unwrap_or(""))?,
-            "delayMs": args.value("delay-ms").and_then(|value| value.parse::<u64>().ok()).unwrap_or(0),
-        }),
-        "key-combo" => serde_json::json!({
-            "action": "key",
-            "keyCode": parse_hid_key(args.value("key").unwrap_or(""))?,
-            "modifiers": parse_modifier_mask(args.value("modifiers").unwrap_or(""))?,
-        }),
-        "touch" => {
-            let x = args
-                .value("x")
-                .or_else(|| tokens.get(1).map(String::as_str))
-                .and_then(|value| value.parse::<f64>().ok());
-            let y = args
-                .value("y")
-                .or_else(|| tokens.get(2).map(String::as_str))
-                .and_then(|value| value.parse::<f64>().ok());
-            serde_json::json!({
-                "action": "touch",
-                "x": x.unwrap_or(0.0),
-                "y": y.unwrap_or(0.0),
-                "phase": args.value("phase").unwrap_or("began"),
-                "down": args.flag("down"),
-                "up": args.flag("up"),
-                "delayMs": args.value("delay-ms").and_then(|value| value.parse::<u64>().ok()).unwrap_or(100),
-            })
-        }
-        "swipe" => {
-            let value = |name: &str, index: usize| {
-                args.value(name)
-                    .or_else(|| tokens.get(index).map(String::as_str))
-                    .and_then(|value| value.parse::<f64>().ok())
-            };
-            serde_json::json!({
-                "action": "swipe",
-                "startX": value("start-x", 1).unwrap_or(0.5),
-                "startY": value("start-y", 2).unwrap_or(0.75),
-                "endX": value("end-x", 3).unwrap_or(0.5),
-                "endY": value("end-y", 4).unwrap_or(0.25),
-                "durationMs": args.value("duration-ms").and_then(|value| value.parse::<u64>().ok()).unwrap_or(350),
-                "steps": args.value("steps").and_then(|value| value.parse::<u32>().ok()).unwrap_or(12),
-            })
-        }
-        "gesture" => serde_json::json!({
-            "action": "gesture",
-            "preset": tokens.get(1).map(String::as_str).unwrap_or("scroll-down"),
-            "durationMs": args.value("duration-ms").and_then(|value| value.parse::<u64>().ok()),
-            "delta": args.value("delta").and_then(|value| value.parse::<f64>().ok()),
-            "steps": args.value("steps").and_then(|value| value.parse::<u32>().ok()).unwrap_or(12),
-        }),
-        "type" => serde_json::json!({
-            "action": "type",
-            "text": tokens.get(1).map(String::as_str).unwrap_or(""),
-            "delayMs": args.value("delay-ms").and_then(|value| value.parse::<u64>().ok()).unwrap_or(12),
-        }),
-        "button" => serde_json::json!({
-            "action": "button",
-            "button": tokens.get(1).map(String::as_str).unwrap_or(""),
-            "durationMs": args.value("duration-ms").and_then(|value| value.parse::<u32>().ok()).unwrap_or(0),
-        }),
-        "crown" => serde_json::json!({
-            "action": "crown",
-            "delta": args.value("delta").and_then(|value| value.parse::<f64>().ok()).unwrap_or(50.0),
-        }),
-        "home" => serde_json::json!({ "action": "home" }),
-        "dismiss-keyboard" => serde_json::json!({ "action": "dismissKeyboard" }),
-        "app-switcher" => serde_json::json!({ "action": "appSwitcher" }),
-        "rotate-left" => serde_json::json!({ "action": "rotateLeft" }),
-        "rotate-right" => serde_json::json!({ "action": "rotateRight" }),
-        "toggle-appearance" => serde_json::json!({ "action": "toggleAppearance" }),
-        "launch" => serde_json::json!({
-            "action": "launch",
-            "bundleId": tokens.get(1).map(String::as_str).unwrap_or(""),
-        }),
-        "open-url" => serde_json::json!({
-            "action": "openUrl",
-            "url": tokens.get(1).map(String::as_str).unwrap_or(""),
-        }),
-        other => {
-            return Err(crate::error::AppError::bad_request(format!(
-                "Unsupported daemon batch step `{other}`."
-            ))
-            .into())
-        }
-    };
-    Ok(value)
-}
-
-fn run_batch_step(
-    bridge: &NativeBridge,
-    udid: &str,
-    line: &str,
-) -> Result<&'static str, crate::error::AppError> {
-    let tokens = tokenize_step(line)?;
-    let Some(command) = tokens.first().map(String::as_str) else {
-        return Err(crate::error::AppError::bad_request("Empty batch step."));
-    };
-    match command {
-        "sleep" => {
-            let args = parse_step_options(&tokens[1..]);
-            let duration_ms = parse_batch_sleep_duration_ms(
-                &args,
-                tokens
-                    .iter()
-                    .skip(1)
-                    .find(|token| !token.starts_with('-'))
-                    .map(String::as_str),
-            )?;
-            sleep_ms(duration_ms);
-            Ok("sleep")
-        }
-        "tap" => {
-            let args = parse_step_options(&tokens[1..]);
-            let x = args.value("x").and_then(|value| value.parse::<f64>().ok());
-            let y = args.value("y").and_then(|value| value.parse::<f64>().ok());
-            let normalized = args.flag("normalized");
-            let duration_ms = args
-                .value("duration-ms")
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(60);
-            let target = resolve_tap_target(
-                bridge,
-                udid,
-                TapTargetRequest {
-                    x,
-                    y,
-                    normalized,
-                    selector: batch_selector_from_args(&args),
-                    wait_timeout_ms: args
-                        .value("wait-timeout-ms")
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(0),
-                    poll_interval_ms: args
-                        .value("poll-interval-ms")
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(100),
-                },
-            )?;
-            if bridge_simulator_is_tvos(bridge, udid) {
-                press_tvos_remote_key(bridge, udid, HID_KEY_ENTER)?;
-            } else if let Some(input) = target.input.as_ref() {
-                perform_tap_with_input(input, target.x, target.y, duration_ms)?;
-            } else {
-                perform_tap(bridge, udid, target.x, target.y, duration_ms)?;
-            }
-            Ok("tap")
-        }
-        "wait-for" | "waitFor" => {
-            let args = parse_step_options(&tokens[1..]);
-            wait_for_batch_selector(bridge, udid, &args)?;
-            Ok("wait-for")
-        }
-        "assert" => {
-            let args = parse_step_options(&tokens[1..]);
-            wait_for_batch_selector(bridge, udid, &args)?;
-            Ok("assert")
-        }
-        "swipe" => {
-            let args = parse_step_options(&tokens[1..]);
-            let start_x = required_f64(&args, "start-x")?;
-            let start_y = required_f64(&args, "start-y")?;
-            let end_x = required_f64(&args, "end-x")?;
-            let end_y = required_f64(&args, "end-y")?;
-            let normalized = args.flag("normalized");
-            let (start_x, start_y) =
-                resolve_touch_point(bridge, udid, start_x, start_y, normalized)?;
-            let (end_x, end_y) = resolve_touch_point(bridge, udid, end_x, end_y, normalized)?;
-            perform_swipe(
-                bridge,
-                udid,
-                GestureCoordinates {
-                    start_x,
-                    start_y,
-                    end_x,
-                    end_y,
-                    duration_ms: args
-                        .value("duration-ms")
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(350),
-                },
-                args.value("steps")
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(12),
-            )?;
-            Ok("swipe")
-        }
-        "gesture" => {
-            let preset = tokens
-                .get(1)
-                .ok_or_else(|| crate::error::AppError::bad_request("gesture requires a preset."))?;
-            let args = parse_step_options(&tokens[2..]);
-            let gesture = gesture_coordinates(
-                bridge,
-                udid,
-                preset,
-                args.value("screen-width")
-                    .and_then(|value| value.parse().ok()),
-                args.value("screen-height")
-                    .and_then(|value| value.parse().ok()),
-                args.flag("normalized"),
-                args.value("delta").and_then(|value| value.parse().ok()),
-            )?;
-            perform_swipe(
-                bridge,
-                udid,
-                GestureCoordinates {
-                    duration_ms: args
-                        .value("duration-ms")
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(gesture.duration_ms),
-                    ..gesture
-                },
-                12,
-            )?;
-            Ok("gesture")
-        }
-        "pinch" => {
-            let args = parse_step_options(&tokens[1..]);
-            let frames = pinch_frames(
-                bridge,
-                udid,
-                args.value("center-x").and_then(|value| value.parse().ok()),
-                args.value("center-y").and_then(|value| value.parse().ok()),
-                args.value("start-distance")
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(160.0),
-                args.value("end-distance")
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(80.0),
-                args.value("angle-degrees")
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(0.0),
-                args.flag("normalized"),
-                args.value("steps")
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(12),
-            )?;
-            run_multitouch_frames(
-                bridge,
-                udid,
-                frames,
-                args.value("duration-ms")
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(450),
-            )?;
-            Ok("pinch")
-        }
-        "rotate-gesture" => {
-            let args = parse_step_options(&tokens[1..]);
-            let frames = rotate_gesture_frames(
-                bridge,
-                udid,
-                RotateGestureRequest {
-                    center_x: args.value("center-x").and_then(|value| value.parse().ok()),
-                    center_y: args.value("center-y").and_then(|value| value.parse().ok()),
-                    radius: args
-                        .value("radius")
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(100.0),
-                    degrees: args
-                        .value("degrees")
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(90.0),
-                    normalized: args.flag("normalized"),
-                    steps: args
-                        .value("steps")
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(12),
-                },
-            )?;
-            run_multitouch_frames(
-                bridge,
-                udid,
-                frames,
-                args.value("duration-ms")
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(500),
-            )?;
-            Ok("rotate-gesture")
-        }
-        "touch" => {
-            let args = parse_step_options(&tokens[1..]);
-            let x = required_f64(&args, "x")?;
-            let y = required_f64(&args, "y")?;
-            let normalized = args.flag("normalized");
-            if bridge_simulator_is_tvos(bridge, udid) {
-                perform_tvos_touch_command(
-                    bridge,
-                    udid,
-                    args.value("phase").unwrap_or("began"),
-                    args.flag("down"),
-                    args.flag("up"),
-                )?;
-            } else {
-                let (x, y) = resolve_touch_point(bridge, udid, x, y, normalized)?;
-                if args.flag("down") || args.flag("up") {
-                    let input = bridge.create_input_session(udid)?;
-                    if args.flag("down") {
-                        input.send_touch(x, y, "began")?;
-                    }
-                    if args.flag("down") && args.flag("up") {
-                        sleep_ms(
-                            args.value("delay-ms")
-                                .and_then(|value| value.parse().ok())
-                                .unwrap_or(100),
-                        );
-                    }
-                    if args.flag("up") {
-                        input.send_touch(x, y, "ended")?;
-                    }
-                } else {
-                    bridge.send_touch(udid, x, y, args.value("phase").unwrap_or("began"))?;
-                }
-            }
-            Ok("touch")
-        }
-        "type" => {
-            let text = tokens.get(1).cloned().unwrap_or_default();
-            type_text(bridge, udid, &text, 12)?;
-            Ok("type")
-        }
-        "button" => {
-            let button = tokens
-                .get(1)
-                .ok_or_else(|| crate::error::AppError::bad_request("button requires a name."))?;
-            bridge.press_button(udid, button, 0)?;
-            Ok("button")
-        }
-        "crown" => {
-            let delta = tokens
-                .get(1)
-                .and_then(|value| value.parse::<f64>().ok())
-                .unwrap_or(50.0);
-            bridge.rotate_crown(udid, delta)?;
-            Ok("crown")
-        }
-        "key" => {
-            let key = tokens.get(1).ok_or_else(|| {
-                crate::error::AppError::bad_request("key requires a keycode or key name.")
-            })?;
-            bridge.send_key(udid, parse_hid_key(key)?, 0)?;
-            Ok("key")
-        }
-        "key-sequence" => {
-            let args = parse_step_options(&tokens[1..]);
-            let keys = parse_key_list(
-                args.value("keycodes")
-                    .or_else(|| args.value("keys"))
-                    .ok_or_else(|| {
-                        crate::error::AppError::bad_request("key-sequence requires --keycodes.")
-                    })?,
-            )?;
-            let input = bridge.create_input_session(udid)?;
-            for (index, key) in keys.iter().enumerate() {
-                input.send_key(*key, 0)?;
-                if index + 1 < keys.len() {
-                    sleep_ms(
-                        args.value("delay-ms")
-                            .and_then(|value| value.parse().ok())
-                            .unwrap_or(100),
-                    );
-                }
-            }
-            Ok("key-sequence")
-        }
-        "key-combo" => {
-            let args = parse_step_options(&tokens[1..]);
-            let modifiers = args.value("modifiers").ok_or_else(|| {
-                crate::error::AppError::bad_request("key-combo requires --modifiers.")
-            })?;
-            let key = args
-                .value("key")
-                .ok_or_else(|| crate::error::AppError::bad_request("key-combo requires --key."))?;
-            bridge.send_key(udid, parse_hid_key(key)?, parse_modifier_mask(modifiers)?)?;
-            Ok("key-combo")
-        }
-        _ => Err(crate::error::AppError::bad_request(format!(
-            "Unsupported batch step `{command}`."
-        ))),
-    }
-}
-
-#[derive(Default)]
-struct StepOptions {
-    values: Vec<(String, String)>,
-    flags: Vec<String>,
-}
-
-impl StepOptions {
-    fn value(&self, key: &str) -> Option<&str> {
-        self.values
-            .iter()
-            .rev()
-            .find(|(candidate, _)| candidate == key)
-            .map(|(_, value)| value.as_str())
-    }
-
-    fn flag(&self, key: &str) -> bool {
-        self.flags.iter().any(|candidate| candidate == key)
-    }
-}
-
-fn parse_step_options(tokens: &[String]) -> StepOptions {
-    let mut options = StepOptions::default();
-    let mut index = 0;
-    while index < tokens.len() {
-        let token = &tokens[index];
-        if let Some(stripped) = token.strip_prefix("--") {
-            if let Some((key, value)) = stripped.split_once('=') {
-                options.values.push((key.to_owned(), value.to_owned()));
-            } else if index + 1 < tokens.len() && !tokens[index + 1].starts_with("--") {
-                options
-                    .values
-                    .push((stripped.to_owned(), tokens[index + 1].clone()));
-                index += 1;
-            } else {
-                options.flags.push(stripped.to_owned());
-            }
-        } else if let Some(stripped) = token.strip_prefix('-') {
-            if index + 1 < tokens.len() && !tokens[index + 1].starts_with('-') {
-                options
-                    .values
-                    .push((stripped.to_owned(), tokens[index + 1].clone()));
-                index += 1;
-            }
-        }
-        index += 1;
-    }
-    options
-}
-
-fn required_f64(args: &StepOptions, key: &str) -> Result<f64, crate::error::AppError> {
-    args.value(key)
-        .ok_or_else(|| crate::error::AppError::bad_request(format!("Missing --{key}.")))?
-        .parse::<f64>()
-        .map_err(|_| crate::error::AppError::bad_request(format!("--{key} must be numeric.")))
-}
-
-fn batch_selector_json(args: &StepOptions) -> Value {
-    serde_json::json!({
-        "id": args.value("id"),
-        "label": args.value("label"),
-        "value": args.value("value"),
-        "elementType": args.value("element-type"),
-    })
-}
-
-fn batch_selector_from_args(args: &StepOptions) -> ElementSelector {
-    ElementSelector {
-        id: args.value("id").map(str::to_owned),
-        label: args.value("label").map(str::to_owned),
-        value: args.value("value").map(str::to_owned),
-        element_type: args.value("element-type").map(str::to_owned),
-    }
-}
-
-fn wait_for_batch_selector(
-    bridge: &NativeBridge,
-    udid: &str,
-    args: &StepOptions,
-) -> Result<(), crate::error::AppError> {
-    let selector = batch_selector_from_args(args);
-    if selector.id.is_none()
-        && selector.label.is_none()
-        && selector.value.is_none()
-        && selector.element_type.is_none()
-    {
-        return Err(crate::error::AppError::bad_request(
-            "wait-for/assert requires a selector flag.",
-        ));
-    }
-
-    let timeout_ms = args
-        .value("timeout-ms")
-        .or_else(|| args.value("wait-timeout-ms"))
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(5_000);
-    let poll_interval_ms = args
-        .value("poll-interval-ms")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(100)
-        .max(10);
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-
-    loop {
-        let snapshot = bridge.accessibility_snapshot(udid, None)?;
-        if snapshot_contains_element(&snapshot, &selector) {
-            return Ok(());
-        }
-        if timeout_ms == 0 || std::time::Instant::now() >= deadline {
-            return Err(crate::error::AppError::not_found(
-                "No accessibility element matched the selector.",
-            ));
-        }
-        sleep_ms(poll_interval_ms);
-    }
-}
-
-fn snapshot_contains_element(snapshot: &Value, selector: &ElementSelector) -> bool {
-    snapshot
-        .get("roots")
-        .and_then(Value::as_array)
-        .map(|roots| {
-            roots
-                .iter()
-                .any(|root| node_contains_matching_element(root, selector))
-        })
-        .unwrap_or(false)
-}
-
-fn node_contains_matching_element(node: &Value, selector: &ElementSelector) -> bool {
-    element_matches(node, selector)
-        || node
-            .get("children")
-            .and_then(Value::as_array)
-            .map(|children| {
-                children
-                    .iter()
-                    .any(|child| node_contains_matching_element(child, selector))
-            })
-            .unwrap_or(false)
-}
-
-fn parse_batch_sleep_duration_ms(
-    args: &StepOptions,
-    positional: Option<&str>,
-) -> Result<u64, crate::error::AppError> {
-    if let Some(value) = args
-        .value("ms")
-        .or_else(|| args.value("milliseconds"))
-        .or_else(|| args.value("duration-ms"))
-    {
-        return parse_duration_ms_value(value, "sleep --ms");
-    }
-
-    if let Some(value) = args.value("seconds").or_else(|| args.value("s")) {
-        return parse_duration_seconds_value(value, "sleep --seconds");
-    }
-
-    let Some(value) = positional else {
-        return Err(crate::error::AppError::bad_request(
-            "sleep requires a duration, for example `sleep 500`, `sleep 500ms`, or `sleep 0.5s`.",
-        ));
-    };
-
-    parse_duration_literal_ms(value)
-}
-
-fn parse_duration_literal_ms(value: &str) -> Result<u64, crate::error::AppError> {
-    let value = value.trim();
-    if let Some(ms) = value.strip_suffix("ms") {
-        return parse_duration_ms_value(ms, "sleep duration");
-    }
-    if let Some(seconds) = value.strip_suffix('s') {
-        return parse_duration_seconds_value(seconds, "sleep duration");
-    }
-    parse_duration_ms_value(value, "sleep duration")
-}
-
-fn parse_duration_ms_value(value: &str, context: &str) -> Result<u64, crate::error::AppError> {
-    let duration = value
-        .trim()
-        .parse::<f64>()
-        .map_err(|_| crate::error::AppError::bad_request(format!("{context} must be numeric.")))?;
-    finite_non_negative_duration_ms(duration, 1.0, context)
-}
-
-fn parse_duration_seconds_value(value: &str, context: &str) -> Result<u64, crate::error::AppError> {
-    let duration = value
-        .trim()
-        .parse::<f64>()
-        .map_err(|_| crate::error::AppError::bad_request(format!("{context} must be numeric.")))?;
-    finite_non_negative_duration_ms(duration, 1000.0, context)
-}
-
-fn finite_non_negative_duration_ms(
-    value: f64,
-    multiplier: f64,
-    context: &str,
-) -> Result<u64, crate::error::AppError> {
-    if !value.is_finite() || value < 0.0 {
-        return Err(crate::error::AppError::bad_request(format!(
-            "{context} must be finite and non-negative."
-        )));
-    }
-    Ok((value * multiplier).round() as u64)
-}
-
-fn tokenize_step(line: &str) -> Result<Vec<String>, crate::error::AppError> {
-    enum State {
-        Normal,
-        Single,
-        Double,
-    }
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut state = State::Normal;
-    let mut escaping = false;
-    let mut saw_boundary = false;
-    for character in line.chars() {
-        match state {
-            State::Normal => {
-                if escaping {
-                    current.push(character);
-                    escaping = false;
-                    saw_boundary = true;
-                } else if character == '\\' {
-                    escaping = true;
-                } else if character == '\'' {
-                    state = State::Single;
-                    saw_boundary = true;
-                } else if character == '"' {
-                    state = State::Double;
-                    saw_boundary = true;
-                } else if character.is_whitespace() {
-                    if !current.is_empty() || saw_boundary {
-                        tokens.push(std::mem::take(&mut current));
-                        saw_boundary = false;
-                    }
-                } else {
-                    current.push(character);
-                    saw_boundary = true;
-                }
-            }
-            State::Single => {
-                if character == '\'' {
-                    state = State::Normal;
-                } else {
-                    current.push(character);
-                }
-            }
-            State::Double => {
-                if escaping {
-                    current.push(character);
-                    escaping = false;
-                } else if character == '\\' {
-                    escaping = true;
-                } else if character == '"' {
-                    state = State::Normal;
-                } else {
-                    current.push(character);
-                }
-            }
-        }
-    }
-    if escaping {
-        return Err(crate::error::AppError::bad_request(
-            "Dangling escape in batch step.",
-        ));
-    }
-    if !matches!(state, State::Normal) {
-        return Err(crate::error::AppError::bad_request(
-            "Unterminated quote in batch step.",
-        ));
-    }
-    if !current.is_empty() || saw_boundary {
-        tokens.push(current);
-    }
-    Ok(tokens)
-}
+include!("main/batch.rs");
 
 fn println_json(value: &Value) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
@@ -6689,6 +5279,7 @@ async fn serve(
         performance: PerformanceRegistry::default(),
         stream_clients: Default::default(),
         simulator_inventory: Default::default(),
+        accessibility_cache: Default::default(),
         android: Default::default(),
     };
 
@@ -6940,19 +5531,24 @@ fn default_client_root() -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_line_to_json_step, daemon_matches_launch_options, http_url_for_host, is_tailscale_ip,
-        normalize_accessibility_point_for_display, parse_workspace_daemon_process_line,
-        render_qr_code, server_health_watchdog_should_restart, service_post_error_is_retryable,
-        simdeck_pair_url, studio_daemon_restart_args, workspace_daemon_process_is_current, Cli,
-        Command, DaemonCommand, DaemonLaunchOptions, DaemonMetadata, PairingAddress,
-        ServiceCommand, StreamQualityProfileArg, StudioExposeOptions, VideoCodecMode,
-        WorkspaceDaemonProcess, DEFAULT_LOCAL_STREAM_QUALITY_PROFILE,
-        SERVER_HEALTH_WATCHDOG_FAILURE_THRESHOLD, SERVER_HEALTH_WATCHDOG_HTTP_FAILURE_THRESHOLD,
+        batch_line_to_json_step, daemon_matches_launch_options, http_url_for_host,
+        interactive_accessibility_snapshot, is_tailscale_ip, maestro_commands_from_flow,
+        maestro_selector, normalize_accessibility_point_for_display, parse_maestro_flow_yaml,
+        parse_maestro_point, parse_optional_udid_f64_args, parse_optional_udid_text_args,
+        parse_optional_udid_value_args, parse_tap_command_args,
+        parse_workspace_daemon_process_line, render_agent_accessibility_tree, render_qr_code,
+        run_maestro_command, server_health_watchdog_should_restart,
+        service_post_error_is_retryable, simdeck_pair_url, studio_daemon_restart_args,
+        workspace_daemon_process_is_current, Cli, Command, DaemonCommand, DaemonLaunchOptions,
+        DaemonMetadata, ElementSelector, PairingAddress, ServiceCommand, StreamQualityProfileArg,
+        StudioExposeOptions, TapCommandTarget, VideoCodecMode, WorkspaceDaemonProcess, YamlValue,
+        DEFAULT_LOCAL_STREAM_QUALITY_PROFILE, SERVER_HEALTH_WATCHDOG_FAILURE_THRESHOLD,
+        SERVER_HEALTH_WATCHDOG_HTTP_FAILURE_THRESHOLD,
     };
     use clap::Parser;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn daemon_metadata_for_test(
         port: u16,
@@ -7285,6 +5881,14 @@ mod tests {
     }
 
     #[test]
+    fn daemon_launch_options_accept_probed_port() {
+        let metadata = daemon_metadata_for_test(4313, "127.0.0.1", None, None);
+        let options = daemon_launch_options_for_test(4311, "127.0.0.1", None, None);
+
+        assert!(daemon_matches_launch_options(&metadata, &options));
+    }
+
+    #[test]
     fn daemon_launch_options_reject_different_bind_or_client() {
         let metadata =
             daemon_metadata_for_test(4310, "127.0.0.1", Some("127.0.0.1"), Some("/tmp/client-a"));
@@ -7343,6 +5947,318 @@ mod tests {
     }
 
     #[test]
+    fn describe_interactive_flag_prunes_agent_tree_but_keeps_context() {
+        let parsed =
+            Cli::try_parse_from(["simdeck", "describe", "sim-1", "--format", "agent", "-i"])
+                .unwrap();
+        let Command::DescribeUi {
+            interactive_only, ..
+        } = parsed.command
+        else {
+            panic!("expected describe command");
+        };
+        assert!(interactive_only);
+
+        let snapshot = serde_json::json!({
+            "source": "native-ax",
+            "roots": [{
+                "type": "Window",
+                "children": [{
+                    "type": "View",
+                    "AXLabel": "Static wrapper",
+                    "children": [{
+                        "type": "Button",
+                        "AXLabel": "Continue",
+                        "enabled": true,
+                        "children": []
+                    }, {
+                        "type": "Label",
+                        "AXLabel": "Read only",
+                        "children": []
+                    }]
+                }]
+            }]
+        });
+
+        let pruned = interactive_accessibility_snapshot(&snapshot);
+        let output = render_agent_accessibility_tree(&pruned);
+
+        assert!(output.contains("- @e1 Window"));
+        assert!(output.contains("- @e2 View: Static wrapper"));
+        assert!(output.contains("- @e3 Button: Continue"));
+        assert!(!output.contains("Read only"));
+    }
+
+    #[test]
+    fn describe_agent_format_emits_stable_element_refs() {
+        let snapshot = serde_json::json!({
+            "source": "native-ax",
+            "roots": [{
+                "type": "Application",
+                "AXLabel": "Fixture",
+                "children": [{
+                    "type": "Button",
+                    "AXLabel": "Continue",
+                    "children": []
+                }]
+            }]
+        });
+
+        let output = render_agent_accessibility_tree(&snapshot);
+
+        assert!(output.contains("- @e1 Application: Fixture"));
+        assert!(output.contains("  - @e2 Button: Continue"));
+    }
+
+    #[test]
+    fn tap_single_positional_arg_is_label_shorthand() {
+        let parsed = Cli::try_parse_from(["simdeck", "tap", "Continue"]).unwrap();
+        let Command::Tap { args, .. } = parsed.command else {
+            panic!("expected tap command");
+        };
+        let target = parse_tap_command_args(args, None, None, None, None).unwrap();
+
+        assert_eq!(
+            target,
+            TapCommandTarget {
+                udid: None,
+                x: None,
+                y: None,
+                selector: ElementSelector {
+                    label: Some("Continue".to_owned()),
+                    ..Default::default()
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn tap_agent_ref_maps_to_element_index() {
+        let parsed = Cli::try_parse_from(["simdeck", "tap", "@e3"]).unwrap();
+        let Command::Tap { args, .. } = parsed.command else {
+            panic!("expected tap command");
+        };
+        let target = parse_tap_command_args(args, None, None, None, None).unwrap();
+
+        assert_eq!(
+            target.selector,
+            ElementSelector {
+                index: Some(2),
+                ..Default::default()
+            }
+        );
+        assert_eq!(target.udid, None);
+    }
+
+    #[test]
+    fn tap_accepts_post_action_expectation_flags() {
+        let parsed = Cli::try_parse_from([
+            "simdeck",
+            "tap",
+            "--id",
+            "com.apple.settings.screenTime",
+            "--expect-id",
+            "BackButton",
+            "--expect-timeout-ms",
+            "2500",
+        ])
+        .unwrap();
+        let Command::Tap {
+            expect_id,
+            expect_timeout_ms,
+            ..
+        } = parsed.command
+        else {
+            panic!("expected tap command");
+        };
+
+        assert_eq!(expect_id.as_deref(), Some("BackButton"));
+        assert_eq!(expect_timeout_ms, 2500);
+    }
+
+    #[test]
+    fn agent_command_aliases_parse_like_primary_commands() {
+        let parsed = Cli::try_parse_from(["simdeck", "snapshot", "sim-1"]).unwrap();
+        assert!(matches!(parsed.command, Command::DescribeUi { .. }));
+
+        let parsed = Cli::try_parse_from(["simdeck", "press", "Continue"]).unwrap();
+        assert!(matches!(parsed.command, Command::Tap { .. }));
+
+        let parsed = Cli::try_parse_from(["simdeck", "wait", "--label", "Continue"]).unwrap();
+        assert!(matches!(parsed.command, Command::WaitFor { .. }));
+    }
+
+    #[test]
+    fn back_command_accepts_default_device_and_timeout() {
+        let parsed = Cli::try_parse_from([
+            "simdeck",
+            "back",
+            "--timeout-ms",
+            "3000",
+            "--no-fallback-swipe",
+        ])
+        .unwrap();
+        let Command::Back {
+            udid,
+            timeout_ms,
+            fallback_swipe,
+            ..
+        } = parsed.command
+        else {
+            panic!("expected back command");
+        };
+
+        assert_eq!(udid, None);
+        assert_eq!(timeout_ms, 3000);
+        assert!(!fallback_swipe);
+    }
+
+    #[test]
+    fn tap_legacy_udid_coordinates_still_parse() {
+        let udid = "00000000-0000-0000-0000-000000000001";
+        let target = parse_tap_command_args(
+            vec![udid.to_owned(), "120".to_owned(), "240".to_owned()],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(target.udid.as_deref(), Some(udid));
+        assert_eq!(target.x, Some(120.0));
+        assert_eq!(target.y, Some(240.0));
+        assert!(target.selector.is_empty());
+    }
+
+    #[test]
+    fn tap_legacy_udid_label_shorthand_still_parse() {
+        let udid = "00000000-0000-0000-0000-000000000001";
+        let target = parse_tap_command_args(
+            vec![udid.to_owned(), "Continue".to_owned()],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(target.udid.as_deref(), Some(udid));
+        assert_eq!(target.selector.label.as_deref(), Some("Continue"));
+    }
+
+    #[test]
+    fn global_device_flag_is_available_for_agent_shortcuts() {
+        let parsed =
+            Cli::try_parse_from(["simdeck", "--device", "iPhone 16", "tap", "Continue"]).unwrap();
+
+        assert_eq!(parsed.device.as_deref(), Some("iPhone 16"));
+    }
+
+    #[test]
+    fn use_command_accepts_udid_selector() {
+        let parsed =
+            Cli::try_parse_from(["simdeck", "use", "00000000-0000-0000-0000-000000000001"])
+                .unwrap();
+
+        let Command::Use { udid } = parsed.command else {
+            panic!("expected use command");
+        };
+        assert_eq!(udid, "00000000-0000-0000-0000-000000000001");
+    }
+
+    #[test]
+    fn device_commands_accept_omitted_udid() {
+        let parsed = Cli::try_parse_from(["simdeck", "boot"]).unwrap();
+        let Command::Boot { udid } = parsed.command else {
+            panic!("expected boot command");
+        };
+        assert_eq!(udid, None);
+
+        let parsed = Cli::try_parse_from(["simdeck", "home"]).unwrap();
+        let Command::Home { udid } = parsed.command else {
+            panic!("expected home command");
+        };
+        assert_eq!(udid, None);
+
+        let parsed = Cli::try_parse_from(["simdeck", "screenshot", "--stdout"]).unwrap();
+        let Command::Screenshot { udid, stdout, .. } = parsed.command else {
+            panic!("expected screenshot command");
+        };
+        assert_eq!(udid, None);
+        assert!(stdout);
+    }
+
+    #[test]
+    fn payload_commands_keep_legacy_udid_but_allow_default_device() {
+        let parsed = Cli::try_parse_from(["simdeck", "launch", "com.example.App"]).unwrap();
+        let Command::Launch { args } = parsed.command else {
+            panic!("expected launch command");
+        };
+        let (udid, bundle_id) =
+            parse_optional_udid_value_args("launch", args, "BUNDLE_ID").unwrap();
+        assert_eq!(udid, None);
+        assert_eq!(bundle_id, "com.example.App");
+
+        let parsed =
+            Cli::try_parse_from(["simdeck", "launch", "SIM-1", "com.example.App"]).unwrap();
+        let Command::Launch { args } = parsed.command else {
+            panic!("expected launch command");
+        };
+        let (udid, bundle_id) =
+            parse_optional_udid_value_args("launch", args, "BUNDLE_ID").unwrap();
+        assert_eq!(udid.as_deref(), Some("SIM-1"));
+        assert_eq!(bundle_id, "com.example.App");
+    }
+
+    #[test]
+    fn coordinate_commands_keep_legacy_udid_but_allow_default_device() {
+        let parsed = Cli::try_parse_from(["simdeck", "touch", "120", "240"]).unwrap();
+        let Command::Touch { args, .. } = parsed.command else {
+            panic!("expected touch command");
+        };
+        let (udid, points) = parse_optional_udid_f64_args("touch", args, 2).unwrap();
+        assert_eq!(udid, None);
+        assert_eq!(points, vec![120.0, 240.0]);
+
+        let parsed =
+            Cli::try_parse_from(["simdeck", "swipe", "SIM-1", "10", "20", "30", "40"]).unwrap();
+        let Command::Swipe { args, .. } = parsed.command else {
+            panic!("expected swipe command");
+        };
+        let (udid, points) = parse_optional_udid_f64_args("swipe", args, 4).unwrap();
+        assert_eq!(udid.as_deref(), Some("SIM-1"));
+        assert_eq!(points, vec![10.0, 20.0, 30.0, 40.0]);
+    }
+
+    #[test]
+    fn text_commands_use_positional_text_or_legacy_udid_with_input_flags() {
+        let parsed = Cli::try_parse_from(["simdeck", "type", "hello"]).unwrap();
+        let Command::Type {
+            args, stdin, file, ..
+        } = parsed.command
+        else {
+            panic!("expected type command");
+        };
+        let (udid, text) =
+            parse_optional_udid_text_args("type", args, stdin || file.is_some()).unwrap();
+        assert_eq!(udid, None);
+        assert_eq!(text.as_deref(), Some("hello"));
+
+        let parsed = Cli::try_parse_from(["simdeck", "type", "SIM-1", "--stdin"]).unwrap();
+        let Command::Type {
+            args, stdin, file, ..
+        } = parsed.command
+        else {
+            panic!("expected type command");
+        };
+        let (udid, text) =
+            parse_optional_udid_text_args("type", args, stdin || file.is_some()).unwrap();
+        assert_eq!(udid.as_deref(), Some("SIM-1"));
+        assert_eq!(text, None);
+    }
+
+    #[test]
     fn batch_sleep_positional_duration_defaults_to_milliseconds() {
         let step = batch_line_to_json_step("sleep 500").unwrap();
 
@@ -7385,12 +6301,133 @@ mod tests {
     }
 
     #[test]
+    fn batch_tap_maps_post_action_expectation() {
+        let step = batch_line_to_json_step(
+            "tap --id com.apple.settings.screenTime --expect-id BackButton --expect-timeout-ms 2500",
+        )
+        .unwrap();
+
+        assert_eq!(step["action"], "tap");
+        assert_eq!(step["selector"]["id"], "com.apple.settings.screenTime");
+        assert_eq!(step["expect"]["selector"]["id"], "BackButton");
+        assert_eq!(step["expect"]["timeoutMs"], 2500);
+
+        let back = batch_line_to_json_step("back --timeout-ms 3000 --no-fallback-swipe").unwrap();
+        assert_eq!(back["action"], "back");
+        assert_eq!(back["timeoutMs"], 3000);
+        assert_eq!(back["fallbackSwipe"], false);
+    }
+
+    #[test]
     fn batch_assert_maps_to_assert_action() {
         let step = batch_line_to_json_step("assert --value Ready").unwrap();
 
         assert_eq!(step["action"], "assert");
         assert_eq!(step["selector"]["value"], "Ready");
         assert_eq!(step["timeoutMs"], 5000);
+    }
+
+    #[test]
+    fn batch_assert_not_and_scroll_map_to_daemon_actions() {
+        let assert_not = batch_line_to_json_step("assert-not --text Loading --regex").unwrap();
+        assert_eq!(assert_not["action"], "assertNot");
+        assert_eq!(assert_not["selector"]["text"], "Loading");
+        assert_eq!(assert_not["selector"]["regex"], true);
+
+        let scroll =
+            batch_line_to_json_step("scroll-until-visible --text Settings --direction down")
+                .unwrap();
+        assert_eq!(scroll["action"], "scrollUntilVisible");
+        assert_eq!(scroll["selector"]["text"], "Settings");
+        assert_eq!(scroll["direction"], "down");
+    }
+
+    #[test]
+    fn maestro_flow_accepts_config_with_commands() {
+        let yaml = parse_maestro_flow_yaml(
+            r#"
+appId: com.example.App
+---
+- launchApp
+- tapOn: Continue
+"#,
+        )
+        .unwrap();
+        let commands = maestro_commands_from_flow(&yaml).unwrap();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0]["launchApp"].as_str(), Some("com.example.App"));
+    }
+
+    #[test]
+    fn maestro_selector_maps_text_and_state() {
+        let yaml: YamlValue = serde_yaml::from_str(
+            r#"
+text: Continue.*
+enabled: true
+index: 1
+"#,
+        )
+        .unwrap();
+        let selector = maestro_selector(&yaml).unwrap();
+        assert_eq!(selector["text"], "Continue.*");
+        assert_eq!(selector["enabled"], true);
+        assert_eq!(selector["index"], 1);
+        assert_eq!(selector["regex"], true);
+    }
+
+    #[test]
+    fn maestro_selector_keeps_id_literals_exact_by_default() {
+        let yaml: YamlValue = serde_yaml::from_str("id: login.button").unwrap();
+        let selector = maestro_selector(&yaml).unwrap();
+
+        assert_eq!(selector["id"], "login.button");
+        assert_eq!(selector["regex"], false);
+    }
+
+    #[test]
+    fn maestro_selector_escapes_literal_ids_when_text_requires_regex() {
+        let yaml: YamlValue = serde_yaml::from_str(
+            r#"
+text: Continue.*
+id: login.button
+"#,
+        )
+        .unwrap();
+        let selector = maestro_selector(&yaml).unwrap();
+
+        assert_eq!(selector["text"], "Continue.*");
+        assert_eq!(selector["id"], "^login\\.button$");
+        assert_eq!(selector["regex"], true);
+    }
+
+    #[test]
+    fn maestro_swipe_rejects_unknown_directions() {
+        let command: YamlValue = serde_yaml::from_str(
+            r#"
+swipe:
+  direction: rigth
+"#,
+        )
+        .unwrap();
+        let error =
+            run_maestro_command("http://127.0.0.1:9", "test-udid", &command, Path::new("."))
+                .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Unsupported Maestro swipe direction `rigth`"));
+    }
+
+    #[test]
+    fn maestro_percent_points_become_normalized_coordinates() {
+        assert_eq!(parse_maestro_point("50%,75%").unwrap(), (0.5, 0.75));
+    }
+
+    #[test]
+    fn maestro_tap_on_string_maps_to_text_selector() {
+        let yaml: YamlValue = serde_yaml::from_str("Continue").unwrap();
+        let body = super::maestro_tap_body(&yaml).unwrap();
+        assert_eq!(body["selector"]["text"], "Continue");
     }
 
     #[test]

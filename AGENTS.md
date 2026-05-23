@@ -79,7 +79,7 @@ Private simulator behavior is implemented locally in:
 
 The current repo uses the private boot path, private display bridge, and private accessibility translation bridge directly. The browser streams frames from that bridge, injects touch and keyboard events through the same native session layer, inspects accessibility through `AccessibilityPlatformTranslation`, and renders device chrome from `cli/XCWChromeRenderer.*`.
 CoreSimulator service contexts resolve the active developer directory from `DEVELOPER_DIR`, then `xcode-select -p`, then `/Applications/Xcode.app/Contents/Developer`. The display bridge prefers direct CoreSimulator screen IOSurface callbacks and activates the SimulatorKit offscreen renderable view only if direct callbacks are unavailable.
-Accessibility recovery may use simulator launchctl UIKit application state plus hit-tested translations to recover candidate foreground pids; the returned tree must still be rooted at tokenized `AXPTranslator` application objects, because `translationApplicationObjectForPid:` can omit the bridge delegate token after private display lifecycle changes. Full-tree snapshots merge those recovered roots with the private frontmost application translation. When multiple candidate application roots are discovered, serialize all of them in preferred order: non-extension app roots first, then largest translated roots, with `.appex`/PlugIns processes de-prioritized so SpringBoard and Safari app roots stay primary while widgets and WebContent roots remain debuggable. Widget renderer extension roots may report local frames; normalize those roots and children against matching SpringBoard widget placeholder frames before returning the snapshot.
+Accessibility recovery may use simulator launchctl UIKit application state plus hit-tested translations to recover candidate foreground pids; the returned tree must still be rooted at tokenized `AXPTranslator` application objects, because `translationApplicationObjectForPid:` can omit the bridge delegate token after private display lifecycle changes. Full-tree snapshots merge those recovered roots with the private frontmost application translation. Shallow snapshots with `maxDepth <= 2` use the tokenized frontmost application translation directly when it is available, and only run the expensive recovery sweep if frontmost lookup fails, so agent-oriented describe loops avoid launchctl and hit-test recovery overhead. Interactive-only snapshots also prune non-actionable native AX leaves during Objective-C serialization before the Rust-side compacting pass; keep this native pruning conservative so selector taps still retain actionable rows plus their ancestors. When multiple candidate application roots are discovered, serialize all of them in preferred order: non-extension app roots first, then largest translated roots, with `.appex`/PlugIns processes de-prioritized so SpringBoard and Safari app roots stay primary while widgets and WebContent roots remain debuggable. Widget renderer extension roots may report local frames; normalize those roots and children against matching SpringBoard widget placeholder frames before returning the snapshot.
 Physical chrome button support uses DeviceKit `chrome.json` input geometry for browser hit targets. Volume, action, mute, Apple Watch digital crown, Watch side button, and Watch left-side button dispatch through `IndigoHIDMessageForHIDArbitrary` with consumer/telephony/vendor HID usage pairs from the device chrome metadata; home, lock, and app-switcher remain on the existing SimulatorKit button paths. Apple Watch Digital Crown rotation dispatches through `IndigoHIDMessageForDigitalCrownEvent` when SimulatorKit exposes it, with `IndigoHIDMessageForScrollEvent(..., target=0x34)` as the fallback. tvOS simulators do not support direct screen touch; browser/API tap maps to Enter, swipe maps to arrow keys, and the native bridge rejects tvOS touch packets before they reach guest `SimulatorHID`. watchOS/tvOS skip dynamic pointer/mouse service warm-up because those guest runtimes abort on unsupported virtual services. Apple TV and Apple Watch simulators are fixed-orientation devices, so client and server rotation paths must not expose or dispatch device rotation for those families.
 Two-point multi-touch dispatch prefers the current SimulatorKit/Indigo packet constructor and falls back to SimDeck's manual Indigo packet adapter. On Xcode 26 SimulatorKit, the constructor expects pixel-space points and stable two-finger movement requires sending `LeftMouseDown` for both `began` and `moved`, then `LeftMouseUp` for `ended`/`cancelled`; using `LeftMouseDragged` for multi-touch moves only advances one contact in UIKit. Do not coalesce multi-touch move packets in the WebSocket or WebRTC control paths, because gesture recognizers need the intermediate two-contact samples.
 WebKit inspection uses the simulator `webinspectord` Unix socket named `com.apple.webinspectord_sim.socket` and WebKit's binary-plist Remote Inspector selectors. It lists only WebKit content that the runtime exposes as inspectable. For app-owned `WKWebView` on iOS 16.4 and newer, the app must set `isInspectable = true`.
@@ -137,31 +137,42 @@ Useful direct commands:
 
 ```sh
 ./build/simdeck list
+./build/simdeck use <udid>
 ./build/simdeck boot <udid>
-./build/simdeck shutdown <udid>
-./build/simdeck erase <udid>
-./build/simdeck install <udid> /path/to/App.app
-./build/simdeck uninstall <udid> com.example.App
-./build/simdeck open-url <udid> https://example.com
-./build/simdeck launch <udid> com.apple.Preferences
-./build/simdeck pasteboard set <udid> "hello"
-./build/simdeck pasteboard get <udid>
-./build/simdeck screenshot <udid> --output screen.png
-./build/simdeck screenshot <udid> --with-bezel --output screen-bezel.png
-./build/simdeck record <udid> --seconds 5 --output screen-recording.mp4
-./build/simdeck describe <udid>
-./build/simdeck tap <udid> 120 240
-./build/simdeck tap <udid> --label "Continue" --wait-timeout-ms 5000
-./build/simdeck swipe <udid> 200 700 200 200
-./build/simdeck gesture <udid> scroll-down
-./build/simdeck pinch <udid> --start-distance 160 --end-distance 80
-./build/simdeck rotate-gesture <udid> --radius 100 --degrees 90
-./build/simdeck key-sequence <udid> --keycodes h,e,l,l,o
-./build/simdeck key-combo <udid> --modifiers cmd --key a
-./build/simdeck type <udid> "hello"
-./build/simdeck button <udid> lock --duration-ms 1000
-./build/simdeck home <udid>
+./build/simdeck shutdown
+./build/simdeck erase
+./build/simdeck install /path/to/App.app
+./build/simdeck uninstall com.example.App
+./build/simdeck open-url https://example.com
+./build/simdeck launch com.apple.Preferences
+./build/simdeck pasteboard set "hello"
+./build/simdeck pasteboard get
+./build/simdeck screenshot --output screen.png
+./build/simdeck screenshot --with-bezel --output screen-bezel.png
+./build/simdeck record --seconds 5 --output screen-recording.mp4
+./build/simdeck describe --format agent --max-depth 4 -i
+./build/simdeck wait-for --label "Welcome" --timeout-ms 5000
+./build/simdeck tap 120 240
+./build/simdeck tap --label "Continue" --wait-timeout-ms 5000
+./build/simdeck tap "Continue"
+./build/simdeck tap --id com.apple.settings.screenTime --expect-id BackButton
+./build/simdeck back
+./build/simdeck swipe 200 700 200 200
+./build/simdeck gesture scroll-down
+./build/simdeck pinch --start-distance 160 --end-distance 80
+./build/simdeck rotate-gesture --radius 100 --degrees 90
+./build/simdeck key-sequence --keycodes h,e,l,l,o
+./build/simdeck key-combo --modifiers cmd --key a
+./build/simdeck type "hello"
+./build/simdeck button lock --duration-ms 1000
+./build/simdeck home
 ```
+
+Most simulator commands accept `[<udid>]`; when it is omitted, SimDeck uses
+`--device`, `SIMDECK_DEVICE`, `SIMDECK_UDID`, the saved project default, or the
+only booted simulator, in that order. For agent navigation, prefer
+`describe -i`, `wait-for`, `tap --id/--label`, `tap "Text"`, `back`, and
+`batch` over coordinate-only loops.
 
 ## Expectations For Future Changes
 

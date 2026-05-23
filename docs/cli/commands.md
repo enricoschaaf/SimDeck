@@ -46,122 +46,144 @@ rotate the token and pairing code, then restart the LaunchAgent.
 ```sh
 simdeck list
 simdeck list --format json
+simdeck use <udid>
 simdeck boot <udid>
-simdeck shutdown <udid>
-simdeck erase <udid>
+simdeck shutdown
+simdeck erase
 ```
 
 Android emulators appear as IDs such as `android:Pixel_8_API_36`.
 `list` defaults to compact JSON. Use `--format json` for the full simulator
 inventory, including paths and display metadata.
 
+`simdeck use <udid>` saves a default simulator for the current project
+directory. After that, most device commands can omit `<udid>`; explicit UDIDs
+still override the default.
+
 ## Apps And URLs
 
 ```sh
-simdeck install <udid> /path/to/App.app
-simdeck install <udid> /path/to/App.ipa
+simdeck install /path/to/App.app
+simdeck install /path/to/App.ipa
 simdeck install android:<avd-name> /path/to/app.apk
-simdeck uninstall <udid> com.example.App
-simdeck launch <udid> com.example.App
-simdeck open-url <udid> https://example.com
-simdeck toggle-appearance <udid>
+simdeck uninstall com.example.App
+simdeck launch com.example.App
+simdeck open-url https://example.com
+simdeck toggle-appearance
 ```
 
 ## Inspect UI
 
 ```sh
-simdeck describe <udid>
-simdeck describe <udid> --format agent --max-depth 4
-simdeck describe <udid> --format compact-json
-simdeck describe <udid> --source nativescript
-simdeck describe <udid> --source react-native
-simdeck describe <udid> --source flutter
-simdeck describe <udid> --source uikit
-simdeck describe <udid> --source native-ax
-simdeck describe <udid> --point 120,240
-simdeck wait-for <udid> --label "Welcome" --timeout-ms 5000
-simdeck assert <udid> --id login.button --source auto --max-depth 8
+simdeck describe
+simdeck describe --format agent --max-depth 4
+simdeck describe --format agent --max-depth 4 --interactive
+simdeck snapshot --format agent --max-depth 4 -i
+simdeck describe --format compact-json
+simdeck describe --source nativescript
+simdeck describe --source react-native
+simdeck describe --source flutter
+simdeck describe --source uikit
+simdeck describe --source native-ax
+simdeck describe --point 120,240
+simdeck wait-for --label "Welcome" --timeout-ms 5000
+simdeck wait --label "Welcome" --timeout-ms 5000
+simdeck assert --id login.button --source auto --max-depth 8
 ```
 
-Default source selection prefers a connected framework inspector, then the Swift in-app agent, then native accessibility.
+The default source is native accessibility for fast agent loops. Use `--source auto` when you want SimDeck to prefer a connected framework inspector, then the Swift in-app agent, then native accessibility. Use `--interactive` or `-i` to keep actionable elements and the ancestor context needed to find them. `snapshot` is an alias for `describe`. Agent-format output labels nodes with refs such as `@e3`, which can be passed back to `tap` or `press`. For quick agent loops, set the project default once and keep snapshots shallow.
 
 ## Performance
 
 ```sh
-simdeck processes <udid>
-simdeck stats <udid>
-simdeck stats <udid> --pid 12345
-simdeck stats <udid> --watch
-simdeck sample <udid>
-simdeck sample <udid> --pid 12345 --seconds 3
+simdeck processes
+simdeck stats
+simdeck stats --pid 12345
+simdeck stats --watch
+simdeck sample
+simdeck sample --pid 12345 --seconds 3
 ```
 
 Performance data is simulator-only and uses host-process telemetry for matching app, extension, helper, and web-content PIDs. `stats` reports CPU, memory, disk write rate, network receive/send rates, connection count, hang state, and recent crash or termination signals. `sample` captures a short macOS `sample` report for the selected or foreground app process.
 
 ## Input
 
-Coordinates are screen points unless `--normalized` is present.
+Coordinates are screen points unless `--normalized` is present. `tap "Continue"` is shorthand for a label tap on the selected device. `press` is an alias for `tap`, and refs from `describe --format agent` work as direct targets. Add `--expect-id`, `--expect-label`, or another `--expect-*` selector when the tap should wait for the next screen before returning. Use `--device <udid>` or `SIMDECK_DEVICE=<udid>` for one-off overrides.
 
 ```sh
-simdeck tap <udid> 120 240
-simdeck tap <udid> 0.5 0.5 --normalized
-simdeck tap <udid> --label "Continue" --wait-timeout-ms 5000
-simdeck swipe <udid> 200 700 200 200
-simdeck gesture <udid> scroll-down
-simdeck pinch <udid> --start-distance 160 --end-distance 80
-simdeck rotate-gesture <udid> --radius 100 --degrees 90
-simdeck type <udid> "hello"
-simdeck type <udid> --file message.txt
-simdeck key <udid> enter
-simdeck key-sequence <udid> --keycodes h,e,l,l,o
-simdeck key-combo <udid> --modifiers cmd --key a
+simdeck tap 120 240
+simdeck tap 0.5 0.5 --normalized
+simdeck tap --label "Continue" --wait-timeout-ms 5000
+simdeck tap --id com.apple.settings.screenTime --expect-id BackButton
+simdeck tap "Continue"
+simdeck press @e3
+simdeck swipe 200 700 200 200
+simdeck gesture scroll-down
+simdeck pinch --start-distance 160 --end-distance 80
+simdeck rotate-gesture --radius 100 --degrees 90
+simdeck type "hello"
+simdeck type --file message.txt
+simdeck key enter
+simdeck key-sequence --keycodes h,e,l,l,o
+simdeck key-combo --modifiers cmd --key a
 ```
 
 System controls:
 
 ```sh
-simdeck button <udid> lock --duration-ms 1000
-simdeck button <udid> volume-up
-simdeck button <udid> action
-simdeck button <udid> digital-crown
-simdeck crown <udid> --delta 50
-simdeck dismiss-keyboard <udid>
-simdeck button <udid> software-keyboard
-simdeck home <udid>
-simdeck app-switcher <udid>
-simdeck rotate-left <udid>
-simdeck rotate-right <udid>
+simdeck button lock --duration-ms 1000
+simdeck button volume-up
+simdeck button action
+simdeck button digital-crown
+simdeck crown --delta 50
+simdeck dismiss-keyboard
+simdeck button software-keyboard
+simdeck home
+simdeck back
+simdeck app-switcher
+simdeck rotate-left
+simdeck rotate-right
 ```
 
 ## Batch
 
 ```sh
-simdeck batch <udid> \
-  --step "tap --label Continue --wait-timeout-ms 5000" \
+simdeck batch \
+  --step "tap --label Continue --wait-timeout-ms 5000 --expect-label Done" \
   --step "type 'hello world'" \
-  --step "wait-for --label 'hello world' --timeout-ms 5000"
+  --step "back"
 ```
 
 Use `wait-for` or `assert` steps instead of fixed sleeps when possible.
 
+## Maestro YAML
+
+Run common Maestro flows through SimDeck's daemon-backed iOS Simulator API:
+
+```sh
+simdeck maestro test flow.yaml --artifacts-dir artifacts/maestro
+```
+
+The compatibility runner supports the core local commands: `launchApp`, `openLink`, `tapOn`, `inputText`, `eraseText`, `pressKey`, `assertVisible`, `assertNotVisible`, `scrollUntilVisible`, `swipe`, `takeScreenshot`, and `waitForAnimationToEnd`.
+
 ## Evidence
 
 ```sh
-simdeck screenshot <udid> --output screen.png
-simdeck screenshot <udid> --with-bezel --output screen-bezel.png
-simdeck screenshot <udid> --stdout > screen.png
-simdeck record <udid> --seconds 5 --output screen-recording.mp4
-simdeck record <udid> --seconds 5 --stdout > screen-recording.mp4
-simdeck pasteboard set <udid> "hello"
-simdeck pasteboard get <udid>
-simdeck logs <udid> --seconds 30 --limit 200
-simdeck chrome-profile <udid>
+simdeck screenshot --output screen.png
+simdeck screenshot --with-bezel --output screen-bezel.png
+simdeck screenshot --stdout > screen.png
+simdeck record --seconds 5 --output screen-recording.mp4
+simdeck record --seconds 5 --stdout > screen-recording.mp4
+simdeck pasteboard set "hello"
+simdeck pasteboard get
+simdeck logs --seconds 30 --limit 200
+simdeck chrome-profile
 ```
 
 Diagnostic iOS H.264 stream:
 
 ```sh
-simdeck stream <udid> --frames 120 > stream.h264
+simdeck stream --frames 120 > stream.h264
 ```
 
 ## Studio And Providers
