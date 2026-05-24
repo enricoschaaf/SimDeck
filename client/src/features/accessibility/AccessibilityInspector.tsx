@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties, FormEvent } from "react";
+import type { CSSProperties, FormEvent, ReactNode } from "react";
 
 import { sendInspectorRequest } from "../../api/simulators";
 import type {
@@ -42,6 +42,7 @@ interface AccessibilityInspectorProps {
 }
 
 type InspectorTab = "console" | "inspector" | "performance";
+type DetailValue = ReactNode;
 
 export function AccessibilityInspector({
   availableSources,
@@ -317,6 +318,7 @@ export function AccessibilityInspector({
               const kind = accessibilityKind(item.node);
               const label = hierarchyNodeLabel(item.node, kind);
               const sourceBadge = sourceLocationBadgeText(item.node);
+              const sourceHref = sourceLocationHref(item.node);
               const sourceTitle = sourceLocationText(item.node);
               const chainBadge = compactedChainBadgeText(item.chain.length);
               const chainPath = compactedChainPathText(item);
@@ -377,15 +379,25 @@ export function AccessibilityInspector({
                     {label ? (
                       <span className="hierarchy-node-text">{label}</span>
                     ) : null}
-                    {sourceBadge ? (
+                  </button>
+                  {sourceBadge ? (
+                    sourceHref ? (
+                      <a
+                        className="hierarchy-node-source"
+                        href={sourceHref}
+                        title={sourceTitle}
+                      >
+                        {sourceBadge}
+                      </a>
+                    ) : (
                       <span
                         className="hierarchy-node-source"
                         title={sourceTitle}
                       >
                         {sourceBadge}
                       </span>
-                    ) : null}
-                  </button>
+                    )
+                  ) : null}
                 </div>
               );
             })
@@ -500,46 +512,59 @@ function NodeDetails({
   selectedSimulator: SimulatorMetadata | null;
 }) {
   const isAndroid = isAndroidSimulator(selectedSimulator);
-  const details = [
-    ["Type", accessibilityKind(node)],
-    ["Label", primaryAccessibilityText(node)],
-    ["Source", sourceLocationText(node)],
+  const sourceText = sourceLocationText(node);
+  const sourceHref = sourceLocationHref(node);
+  const details = (
     [
-      isAndroid ? "Resource ID" : "Identifier",
-      isAndroid
-        ? (node.androidResourceId ?? "")
-        : accessibilityIdentifier(node),
-    ],
-    ["Inspector ID", node.inspectorId ?? ""],
-    ["Module", node.moduleName ?? ""],
-    ["NativeScript", nativeScriptDescription(node.nativeScript)],
-    ["React Native", reactNativeDescription(node.reactNative)],
-    ["Flutter", flutterDescription(node.flutter)],
-    [isAndroid ? "Android Class" : "UIKit Class", node.className ?? ""],
-    ["Package", isAndroid ? (node.androidPackage ?? "") : ""],
-    ["Last JS", lastUIKitScriptText(node)],
-    ["Value", node.AXValue ?? ""],
-    ["Role", node.role ?? ""],
-    ["Role Description", node.role_description ?? ""],
-    ["View Controller", objectClassName(node.viewController)],
-    ["SwiftUI", swiftUIDescription(node.swiftUI)],
-    ["Enabled", node.enabled == null ? "" : node.enabled ? "true" : "false"],
-    ["Hidden", node.isHidden == null ? "" : node.isHidden ? "true" : "false"],
-    ["Clickable", boolDetail(isAndroid, node.clickable)],
-    ["Long Clickable", boolDetail(isAndroid, node.longClickable)],
-    ["Focusable", boolDetail(isAndroid, node.focusable)],
-    ["Focused", boolDetail(isAndroid, node.focused)],
-    ["Scrollable", boolDetail(isAndroid, node.scrollable)],
-    ["Checkable", boolDetail(isAndroid, node.checkable)],
-    ["Checked", boolDetail(isAndroid, node.checked)],
-    ["Selected", boolDetail(isAndroid, node.selected)],
-    ["Password", boolDetail(isAndroid, node.password)],
-    ["Alpha", node.alpha == null ? "" : String(round(node.alpha))],
-    ["Frame", validFrame(node.frame) ? frameText(node.frame) : ""],
-    ["PID", node.pid == null ? "" : String(node.pid)],
-    ["Actions", node.custom_actions?.join(", ") ?? ""],
-    ["Help", node.help ?? ""],
-  ].filter(([, value]) => value);
+      ["Type", accessibilityKind(node)],
+      ["Label", primaryAccessibilityText(node)],
+      [
+        "Source",
+        sourceHref ? (
+          <a className="hierarchy-detail-link" href={sourceHref}>
+            {sourceText}
+          </a>
+        ) : (
+          sourceText
+        ),
+      ],
+      [
+        isAndroid ? "Resource ID" : "Identifier",
+        isAndroid
+          ? (node.androidResourceId ?? "")
+          : accessibilityIdentifier(node),
+      ],
+      ["Inspector ID", node.inspectorId ?? ""],
+      ["Module", node.moduleName ?? ""],
+      ["NativeScript", nativeScriptDescription(node.nativeScript)],
+      ["React Native", reactNativeDescription(node.reactNative)],
+      ["Flutter", flutterDescription(node.flutter)],
+      [isAndroid ? "Android Class" : "UIKit Class", node.className ?? ""],
+      ["Package", isAndroid ? (node.androidPackage ?? "") : ""],
+      ["Last JS", lastUIKitScriptText(node)],
+      ["Value", node.AXValue ?? ""],
+      ["Role", node.role ?? ""],
+      ["Role Description", node.role_description ?? ""],
+      ["View Controller", objectClassName(node.viewController)],
+      ["SwiftUI", swiftUIDescription(node.swiftUI)],
+      ["Enabled", node.enabled == null ? "" : node.enabled ? "true" : "false"],
+      ["Hidden", node.isHidden == null ? "" : node.isHidden ? "true" : "false"],
+      ["Clickable", boolDetail(isAndroid, node.clickable)],
+      ["Long Clickable", boolDetail(isAndroid, node.longClickable)],
+      ["Focusable", boolDetail(isAndroid, node.focusable)],
+      ["Focused", boolDetail(isAndroid, node.focused)],
+      ["Scrollable", boolDetail(isAndroid, node.scrollable)],
+      ["Checkable", boolDetail(isAndroid, node.checkable)],
+      ["Checked", boolDetail(isAndroid, node.checked)],
+      ["Selected", boolDetail(isAndroid, node.selected)],
+      ["Password", boolDetail(isAndroid, node.password)],
+      ["Alpha", node.alpha == null ? "" : String(round(node.alpha))],
+      ["Frame", validFrame(node.frame) ? frameText(node.frame) : ""],
+      ["PID", node.pid == null ? "" : String(node.pid)],
+      ["Actions", node.custom_actions?.join(", ") ?? ""],
+      ["Help", node.help ?? ""],
+    ] as Array<[string, DetailValue]>
+  ).filter(([, value]) => value);
 
   return (
     <div className="hierarchy-details">
@@ -671,6 +696,24 @@ function sourceLocationText(node: AccessibilityNode): string {
     return `${location.file}:${line}`;
   }
   return `${location.file}:${line}:${column}`;
+}
+
+function sourceLocationHref(node: AccessibilityNode): string {
+  const location = primarySourceLocation(node);
+  return location?.file ? fileUrl(location.file) : "";
+}
+
+function fileUrl(file: string): string {
+  if (file.startsWith("file://")) {
+    return file;
+  }
+  if (!file.startsWith("/")) {
+    return "";
+  }
+  return `file://${file
+    .split("/")
+    .map((part, index) => (index === 0 ? "" : encodeURIComponent(part)))
+    .join("/")}`;
 }
 
 function sourceLocationBadgeText(node: AccessibilityNode): string {
