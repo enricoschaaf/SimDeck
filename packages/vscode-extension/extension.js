@@ -8,6 +8,8 @@ const { spawn } = require("node:child_process");
 let outputChannel;
 let simulatorPanel;
 
+const DEFAULT_SERVICE_URL = "http://127.0.0.1:4310";
+
 function activate(context) {
   outputChannel = vscode.window.createOutputChannel("SimDeck");
 
@@ -49,15 +51,37 @@ async function resolveSimulatorUrl(context) {
     return serverUrl;
   }
 
+  const serviceUrl = await resolveExistingServiceUrl(serverUrl);
+  if (serviceUrl) {
+    outputChannel.appendLine(`Using existing SimDeck service at ${serviceUrl}`);
+    return serviceUrl;
+  }
+
   const config = vscode.workspace.getConfiguration("simdeck");
   const autoStart = getAutoStartDaemon(config);
   if (!autoStart) {
     throw new Error(
-      `SimDeck is not reachable at ${serverUrl}. Enable auto-start or launch the daemon manually.`,
+      `SimDeck is not reachable at ${serverUrl} or ${DEFAULT_SERVICE_URL}. Enable auto-start or launch the daemon manually.`,
     );
   }
 
   return await startProjectDaemon(context);
+}
+
+async function resolveExistingServiceUrl(preferredUrl) {
+  for (const serviceUrl of serviceUrlCandidates(preferredUrl)) {
+    if (await isServerHealthy(serviceUrl)) {
+      return serviceUrl;
+    }
+  }
+  return "";
+}
+
+function serviceUrlCandidates(preferredUrl) {
+  if (sameOrigin(preferredUrl, DEFAULT_SERVICE_URL)) {
+    return [];
+  }
+  return [DEFAULT_SERVICE_URL];
 }
 
 function getAutoStartDaemon(config) {
@@ -298,6 +322,14 @@ function isServerHealthy(serverUrl) {
 function getOrigin(value) {
   const url = new URL(value);
   return `${url.protocol}//${url.host}`;
+}
+
+function sameOrigin(left, right) {
+  try {
+    return getOrigin(left) === getOrigin(right);
+  } catch {
+    return false;
+  }
 }
 
 function escapeHtml(value) {

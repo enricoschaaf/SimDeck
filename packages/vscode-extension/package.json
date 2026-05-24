@@ -44,7 +44,7 @@
         "simdeck.serverUrl": {
           "type": "string",
           "default": "http://127.0.0.1:4310",
-          "description": "Preferred URL loaded inside the simulator webview. If auto-start launches a daemon on a different port, the extension uses the daemon URL returned by the CLI."
+          "description": "Preferred URL loaded inside the simulator webview. If this URL is not reachable, the extension tries the default always-on service URL before auto-starting a project daemon."
         },
         "simdeck.cliPath": {
           "type": "string",
@@ -66,7 +66,7 @@
         "simdeck.autoStartDaemon": {
           "type": "boolean",
           "default": true,
-          "description": "Start or reuse the project daemon with `simdeck ui` when opening the simulator view if the preferred URL is not already reachable."
+          "description": "Start or reuse a daemon with `simdeck ui` when opening the simulator view if neither the preferred URL nor the default service URL is already reachable."
         },
         "simdeck.autoStartServer": {
           "type": "boolean",

@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 const SERVICE_LABEL: &str = "org.nativescript.simdeck";
 const LEGACY_SERVICE_LABELS: &[&str] = &["dev.nativescript.simdeck"];
+const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_millis(750);
+const SERVICE_KILL_GRACE: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug)]
 pub struct ServiceInstallResult {
@@ -25,6 +27,9 @@ pub struct ServiceInstallResult {
 
 pub fn enable(mut options: ServiceOptions) -> anyhow::Result<()> {
     preserve_or_create_credentials(&mut options);
+    if let Some(result) = reuse_running_service_if_matching(&options)? {
+        return print_install_result(&result);
+    }
     let result = install(options)?;
     print_install_result(&result)
 }
@@ -257,7 +262,9 @@ fn reuse_running_service_if_matching(
         Some(path) => path.clone(),
         None => default_client_root()?,
     };
-    if !service_options_match_arguments(&arguments, options, &client_root) {
+    if enable_action_for_installed_arguments(Some(&arguments), options, &client_root)
+        != ServiceEnableAction::Reuse
+    {
         return Ok(None);
     }
     let plist_path = plist_path()?;
@@ -273,6 +280,25 @@ fn reuse_running_service_if_matching(
         pairing_code: options.pairing_code.clone(),
         reused: true,
     }))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServiceEnableAction {
+    Reuse,
+    Install,
+}
+
+fn enable_action_for_installed_arguments(
+    arguments: Option<&[String]>,
+    options: &ServiceOptions,
+    client_root: &Path,
+) -> ServiceEnableAction {
+    match arguments {
+        Some(arguments) if service_options_match_arguments(arguments, options, client_root) => {
+            ServiceEnableAction::Reuse
+        }
+        _ => ServiceEnableAction::Install,
+    }
 }
 
 fn service_options_match_arguments(
@@ -418,7 +444,7 @@ fn unload_existing_services(domain: &str) -> anyhow::Result<()> {
                 .output();
         }
         if let Some(pid) = old_pid {
-            terminate_process_group(pid, Duration::from_secs(5));
+            terminate_process_group(pid, SERVICE_SHUTDOWN_GRACE);
         }
     }
     Ok(())
@@ -470,7 +496,7 @@ fn terminate_process_group(pid: u32, timeout: Duration) {
     }
     signal_process_group(pid, "KILL");
     signal_process(pid, "KILL");
-    let _ = wait_for_process_exit(pid, Duration::from_secs(2));
+    let _ = wait_for_process_exit(pid, SERVICE_KILL_GRACE);
 }
 
 fn signal_process(pid: u32, signal: &str) {
@@ -800,5 +826,28 @@ mod tests {
             &options,
             Path::new("/tmp/client")
         ));
+    }
+
+    #[test]
+    fn enable_action_reuses_matching_installed_service() {
+        let mut options = service_options_for_test();
+        options.access_token = Some("token".to_owned());
+        options.pairing_code = Some("123456".to_owned());
+        let arguments = service_arguments_for_test(&options);
+
+        assert_eq!(
+            enable_action_for_installed_arguments(
+                Some(&arguments),
+                &options,
+                Path::new("/tmp/client")
+            ),
+            ServiceEnableAction::Reuse
+        );
+    }
+
+    #[test]
+    fn service_shutdown_grace_period_stays_short() {
+        assert!(SERVICE_SHUTDOWN_GRACE <= Duration::from_secs(1));
+        assert!(SERVICE_KILL_GRACE <= Duration::from_secs(1));
     }
 }
