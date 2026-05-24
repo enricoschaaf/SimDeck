@@ -4111,9 +4111,8 @@ async fn inspector_session_for_state(
 }
 
 async fn inspector_frontmost_process_identifier(state: &AppState, udid: &str) -> Option<i64> {
-    match frontmost_process_identifier(state, udid).await {
-        Ok(Some(process_identifier)) => return Some(process_identifier),
-        Ok(None) | Err(_) => {}
+    if let Ok(Some(process_identifier)) = frontmost_process_identifier(state, udid).await {
+        return Some(process_identifier);
     }
 
     foreground_app_for_simulator_with_cache_ttl(state, udid, INSPECTOR_FOREGROUND_APP_CACHE_TTL)
