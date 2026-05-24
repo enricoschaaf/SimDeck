@@ -172,7 +172,6 @@ function AccessibilityDomNode({
     "data-simdeck-accessibility-value": metadata.value,
     "data-simdeck-inspector-id": node.inspectorId || undefined,
     "data-simdeck-uikit-id": node.uikitId || undefined,
-    title: label,
     role,
     style: frameStyle(node.frame, rootFrame),
   });
