@@ -2020,7 +2020,7 @@ mod tests {
             app_id: "PID:1".to_owned(),
             page_id: 1,
             title: Some("SimDeck".to_owned()),
-            url: Some("https://simdeck.nativescript.org/".to_owned()),
+            url: Some("https://simdeck.sh/".to_owned()),
             connection_id: None,
         };
 

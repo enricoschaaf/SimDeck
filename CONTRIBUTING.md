@@ -118,7 +118,7 @@ published without actually publishing.
 
 ## Documentation site
 
-The public docs at [simdeck.nativescript.org](https://simdeck.nativescript.org/)
+The public docs at [simdeck.sh](https://simdeck.sh/)
 are built from [docs/](docs/) with VitePress and deployed by
 `.github/workflows/docs.yml`. Preview locally:
 

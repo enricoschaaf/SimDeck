@@ -9,7 +9,10 @@ import {
 
 const repoName = "SimDeck";
 const githubUrl = `https://github.com/NativeScript/${repoName}`;
-const siteUrl = "https://simdeck.nativescript.org";
+const siteUrl = "https://simdeck.sh";
+const homeOgImageRelPath = "images/codex-screenshot.png";
+const homeOgImageWidth = "3216";
+const homeOgImageHeight = "2090";
 
 type CollectedPage = OgPageInfo & {
   slug: string;
@@ -57,16 +60,21 @@ export default defineConfig({
       pageData.description ||
       "Stream, inspect, and automate iOS Simulators and Android emulators from a browser, CLI, or test.";
 
-    collectedPages.set(slug, {
-      slug,
-      urlPath,
-      title,
-      description,
-      category: isHome ? undefined : category,
-    });
+    if (!isHome) {
+      collectedPages.set(slug, {
+        slug,
+        urlPath,
+        title,
+        description,
+        category,
+      });
+    }
 
     const pageUrl = `${siteUrl}${urlPath}`;
-    const imageUrl = `${siteUrl}/${ogImageRelPath(slug)}`;
+    const imageRelPath = isHome ? homeOgImageRelPath : ogImageRelPath(slug);
+    const imageUrl = `${siteUrl}/${imageRelPath}`;
+    const imageWidth = isHome ? homeOgImageWidth : "1200";
+    const imageHeight = isHome ? homeOgImageHeight : "630";
 
     pageData.frontmatter.head ??= [];
     pageData.frontmatter.head.push(
@@ -75,8 +83,8 @@ export default defineConfig({
       ["meta", { property: "og:description", content: description }],
       ["meta", { property: "og:url", content: pageUrl }],
       ["meta", { property: "og:image", content: imageUrl }],
-      ["meta", { property: "og:image:width", content: "1200" }],
-      ["meta", { property: "og:image:height", content: "630" }],
+      ["meta", { property: "og:image:width", content: imageWidth }],
+      ["meta", { property: "og:image:height", content: imageHeight }],
       ["meta", { property: "og:image:alt", content: title }],
       ["meta", { name: "twitter:title", content: title }],
       ["meta", { name: "twitter:description", content: description }],
