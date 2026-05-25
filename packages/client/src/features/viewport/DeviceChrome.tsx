@@ -225,6 +225,44 @@ const CHROME_BUTTON_WIRE_NAMES: Record<string, string> = {
   "volume-down": "volume-down",
   "volume-up": "volume-up",
 };
+const CHROME_BUTTON_REST_INSET_RATIO = 0.5;
+const CHROME_BUTTON_PRESSED_INSET_RATIO = 0.85;
+
+export function chromeButtonMotionVariables(button: ChromeButtonProfile) {
+  const normalOffset = button.normalOffset ?? { x: 0, y: 0 };
+  const rolloverOffset = button.rolloverOffset ?? normalOffset;
+  const inwardDelta = {
+    x: normalOffset.x - rolloverOffset.x,
+    y: normalOffset.y - rolloverOffset.y,
+  };
+  const restOffset = {
+    x: inwardDelta.x * CHROME_BUTTON_REST_INSET_RATIO,
+    y: inwardDelta.y * CHROME_BUTTON_REST_INSET_RATIO,
+  };
+  const pressedOffset = {
+    x: inwardDelta.x * CHROME_BUTTON_PRESSED_INSET_RATIO,
+    y: inwardDelta.y * CHROME_BUTTON_PRESSED_INSET_RATIO,
+  };
+  const width = Math.max(button.width, 1);
+  const height = Math.max(button.height, 1);
+
+  return {
+    "--button-rest-x": `${(restOffset.x / width) * 100}%`,
+    "--button-rest-y": `${(restOffset.y / height) * 100}%`,
+    "--button-hover-x": "0%",
+    "--button-hover-y": "0%",
+    "--button-pressed-x": `${(pressedOffset.x / width) * 100}%`,
+    "--button-pressed-y": `${(pressedOffset.y / height) * 100}%`,
+  } as Record<
+    | "--button-rest-x"
+    | "--button-rest-y"
+    | "--button-hover-x"
+    | "--button-hover-y"
+    | "--button-pressed-x"
+    | "--button-pressed-y",
+    string
+  >;
+}
 
 function ChromeButtonOverlay({
   chromeButtonUrl,
@@ -305,12 +343,6 @@ function ChromeButtonHitTarget({
   const pressedRef = useRef(false);
   const [pressed, setPressed] = useState(false);
   const label = button.label || humanizeChromeButtonName(button.name);
-  const rolloverDelta = button.rolloverOffset
-    ? {
-        x: button.rolloverOffset.x - (button.normalOffset?.x ?? 0),
-        y: button.rolloverOffset.y - (button.normalOffset?.y ?? 0),
-      }
-    : { x: 0, y: 0 };
   const imageUrl = chromeButtonUrl(button.name, false);
   const pressedImageUrl = button.imageDownName
     ? chromeButtonUrl(button.name, true)
@@ -324,12 +356,7 @@ function ChromeButtonHitTarget({
     left: `${(button.x / totalWidth) * 100}%`,
     top: `${(button.y / totalHeight) * 100}%`,
     width: `${(button.width / totalWidth) * 100}%`,
-    "--button-rest-x": "0%",
-    "--button-rest-y": "0%",
-    "--button-hover-x": `${(rolloverDelta.x / Math.max(button.width, 1)) * 100}%`,
-    "--button-hover-y": `${(rolloverDelta.y / Math.max(button.height, 1)) * 100}%`,
-    "--button-pressed-x": `${(-rolloverDelta.x / Math.max(button.width, 1)) * 100}%`,
-    "--button-pressed-y": `${(-rolloverDelta.y / Math.max(button.height, 1)) * 100}%`,
+    ...chromeButtonMotionVariables(button),
   } as CSSProperties &
     Record<
       | "--button-rest-x"

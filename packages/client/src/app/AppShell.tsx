@@ -51,6 +51,7 @@ import {
   shouldRenderNativeChrome,
   simulatorHasFixedOrientation,
   simulatorRuntimeLabel,
+  simulatorUsesInsetChromeButtons,
 } from "../features/simulators/simulatorDisplay";
 import { useSimulatorList } from "../features/simulators/useSimulatorList";
 import { sendWebRtcControlMessage } from "../features/stream/streamWorkerClient";
@@ -147,7 +148,7 @@ const STREAM_TRANSPORT_VALUES = new Set<StreamTransport>([
   "webrtc",
 ]);
 const MOBILE_VIEWPORT_MEDIA_QUERY = "(max-width: 600px)";
-const CHROME_RENDERER_ASSET_VERSION = "chrome-renderer-watch-bezel-inset-22";
+const CHROME_RENDERER_ASSET_VERSION = "chrome-renderer-button-overlay-23";
 clearLegacyVolatileUiState();
 
 interface StreamQualityResponse {
@@ -1015,6 +1016,9 @@ export function AppShell({
   const chromeHasInteractiveButtons = Boolean(
     viewportChromeProfile?.buttons?.length,
   );
+  const chromeUsesButtonOverlay =
+    chromeHasInteractiveButtons &&
+    simulatorUsesInsetChromeButtons(selectedSimulator);
   const chromeHasCrown = Boolean(
     viewportChromeProfile?.buttons?.some(
       (button) =>
@@ -1033,14 +1037,23 @@ export function AppShell({
     selectedSimulator?.udid,
     chromeGeometryStamp,
     CHROME_RENDERER_ASSET_VERSION,
-    chromeHasInteractiveButtons ? "baked-buttons" : "no-buttons",
+    chromeUsesButtonOverlay
+      ? "overlay-buttons"
+      : chromeHasInteractiveButtons
+        ? "baked-buttons"
+        : "no-buttons",
     chromeHasCrown ? "crown" : "no-crown",
   ]
     .filter(Boolean)
     .join(":");
-  const chromeButtonsRenderedInChrome = chromeHasInteractiveButtons;
+  const chromeButtonsRenderedInChrome =
+    chromeHasInteractiveButtons && !chromeUsesButtonOverlay;
   const chromeUrl = selectedSimulator
-    ? buildChromeUrl(selectedSimulator.udid, chromeAssetStamp, true)
+    ? buildChromeUrl(
+        selectedSimulator.udid,
+        chromeAssetStamp,
+        chromeButtonsRenderedInChrome,
+      )
     : "";
   const chromeButtonUrl = useCallback(
     (button: string, pressed = false) =>

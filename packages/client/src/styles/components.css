@@ -2414,8 +2414,9 @@ a.hierarchy-node-source:hover,
   pointer-events: auto;
   touch-action: none;
   transform: translate3d(var(--button-rest-x, 0), var(--button-rest-y, 0), 0);
-  transition: transform 130ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
   -webkit-tap-highlight-color: transparent;
+  will-change: transform;
   z-index: 1;
 }
 
@@ -2453,6 +2454,7 @@ a.hierarchy-node-source:hover,
     var(--button-pressed-y, var(--button-rest-y, 0)),
     0
   );
+  transition-duration: 90ms;
 }
 
 .pan-enabled .device-bezel,

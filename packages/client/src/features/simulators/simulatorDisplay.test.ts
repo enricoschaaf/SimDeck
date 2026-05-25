@@ -5,6 +5,7 @@ import {
   shouldRenderNativeChrome,
   simulatorHasFixedOrientation,
   simulatorRuntimeLabel,
+  simulatorUsesInsetChromeButtons,
 } from "./simulatorDisplay";
 
 function simulator(
@@ -90,6 +91,33 @@ describe("simulatorDisplay", () => {
           deviceTypeIdentifier:
             "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
           runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-0",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("uses inset overlay chrome buttons only for iPhone and iPad simulators", () => {
+    expect(
+      simulatorUsesInsetChromeButtons(
+        simulator({
+          deviceTypeIdentifier:
+            "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      simulatorUsesInsetChromeButtons(
+        simulator({
+          deviceTypeIdentifier:
+            "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      simulatorUsesInsetChromeButtons(
+        simulator({
+          deviceTypeIdentifier:
+            "com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Ultra-3-49mm",
         }),
       ),
     ).toBe(false);

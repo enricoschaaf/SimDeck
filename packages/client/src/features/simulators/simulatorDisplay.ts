@@ -47,6 +47,16 @@ export function simulatorHasFixedOrientation(
   );
 }
 
+export function simulatorUsesInsetChromeButtons(
+  simulator: SimulatorMetadata | null,
+): boolean {
+  if (!simulator || simulator.platform === "android-emulator") {
+    return false;
+  }
+  const metadata = simulatorMetadataText(simulator);
+  return metadata.includes("iphone") || metadata.includes("ipad");
+}
+
 function simulatorMetadataText(simulator: SimulatorMetadata): string {
   return [
     simulator.name,
