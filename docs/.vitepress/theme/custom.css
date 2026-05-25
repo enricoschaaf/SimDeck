@@ -215,36 +215,47 @@ html:not(.sd-home-active) .VPNavBar.screen-open {
 
 .sd-home {
   position: relative;
+  isolation: isolate;
   width: 100vw;
   margin-top: calc(-1 * var(--vp-nav-height));
   margin-left: calc(50% - 50vw);
   padding-top: var(--vp-nav-height);
   overflow: hidden;
-  background:
-    linear-gradient(
-      180deg,
-      rgba(0, 112, 243, 0.026) 0,
-      rgba(0, 112, 243, 0.014) 18svh,
-      rgba(0, 112, 243, 0.005) 42svh,
-      rgba(0, 112, 243, 0) 76svh
-    ),
-    var(--sd-bg);
+  background: var(--sd-bg);
 }
 
-.dark .sd-home {
-  background:
-    linear-gradient(
-      180deg,
-      rgba(50, 145, 255, 0.034) 0,
-      rgba(50, 145, 255, 0.018) 18svh,
-      rgba(50, 145, 255, 0.006) 42svh,
-      rgba(50, 145, 255, 0) 76svh
-    ),
-    var(--sd-bg);
+.sd-home::before {
+  content: "";
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  height: 100svh;
+  pointer-events: none;
+  background-image: url("/images/background-light-portrait.png");
+  background-position: center var(--sd-hero-bg-camera-y, 0);
+  background-repeat: no-repeat;
+  background-size: auto 170svh;
+  opacity: var(--sd-hero-bg-opacity, 1);
+  will-change: opacity, background-position;
+}
+
+.dark .sd-home::before {
+  background-image: url("/images/background-portrait.png");
+}
+
+@media (min-width: 641px) {
+  .sd-home::before {
+    background-image: url("/images/background-light.png");
+  }
+
+  .dark .sd-home::before {
+    background-image: url("/images/background.png");
+  }
 }
 
 .sd-home > * {
   position: relative;
+  z-index: 1;
 }
 
 .sd-hero,
@@ -267,7 +278,7 @@ html:not(.sd-home-active) .VPNavBar.screen-open {
 
 .sd-hero-copy {
   display: flex;
-  max-width: 860px;
+  max-width: 980px;
   flex-direction: column;
   align-items: center;
 }
@@ -281,7 +292,7 @@ html:not(.sd-home-active) .VPNavBar.screen-open {
 }
 
 .sd-home .sd-hero-copy p {
-  max-width: 640px;
+  max-width: 920px;
   margin: 24px auto 0;
   color: var(--sd-muted);
   font-size: 28px;
@@ -1053,6 +1064,7 @@ html:not(.sd-home-active) .VPNavBar.screen-open {
   }
 
   .sd-home .sd-hero-copy p {
+    max-width: 680px;
     font-size: 24px;
   }
 
@@ -1117,6 +1129,7 @@ html:not(.sd-home-active) .VPNavBar.screen-open {
   }
 
   .sd-home .sd-hero-copy p {
+    max-width: 100%;
     margin-top: 18px;
     font-size: 23px;
     line-height: 1.18;

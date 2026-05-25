@@ -5,8 +5,14 @@ const command = "npm i -g simdeck@latest\nsimdeck";
 const copied = ref(false);
 
 function updateNavState() {
-  const progress = Math.min(Math.max((window.scrollY - 120) / 260, 0), 1);
+  const scrollY = window.scrollY;
+  const progress = Math.min(Math.max((scrollY - 120) / 260, 0), 1);
+  const bgCameraY = Math.min(scrollY * 0.58, window.innerHeight * 0.7);
+  const bgOpacity = Math.max(1 - scrollY / (window.innerHeight * 0.95), 0);
+
   document.documentElement.style.setProperty("--sd-nav-progress", progress.toFixed(3));
+  document.documentElement.style.setProperty("--sd-hero-bg-camera-y", `${(-bgCameraY).toFixed(1)}px`);
+  document.documentElement.style.setProperty("--sd-hero-bg-opacity", bgOpacity.toFixed(3));
   document.documentElement.classList.toggle("sd-nav-scrolled", progress > 0.02);
 }
 
@@ -20,6 +26,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("scroll", updateNavState);
   document.documentElement.classList.remove("sd-home-active", "sd-nav-scrolled");
   document.documentElement.style.removeProperty("--sd-nav-progress");
+  document.documentElement.style.removeProperty("--sd-hero-bg-camera-y");
+  document.documentElement.style.removeProperty("--sd-hero-bg-opacity");
 });
 
 async function copyCommand() {
