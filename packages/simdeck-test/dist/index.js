@@ -9,8 +9,8 @@ const DEFAULT_QUERY_SOURCE = "native-ax";
 export async function connect(options = {}) {
     const cliPath = options.cliPath ?? "simdeck";
     const result = options.isolated
-        ? await startIsolatedDaemon(cliPath, options)
-        : runJson(cliPath, ["daemon", "start"], {
+        ? await startIsolatedService(cliPath, options)
+        : runJson(cliPath, ["service", "start"], {
             cwd: options.projectRoot,
         });
     const endpoint = result.url;
@@ -360,7 +360,7 @@ export async function connect(options = {}) {
                 });
             },
             close: () => {
-                if (options.keepDaemon) {
+                if (options.keepService) {
                     return;
                 }
                 if (result.child) {
@@ -371,7 +371,7 @@ export async function connect(options = {}) {
                     return;
                 }
                 if (result.started) {
-                    spawnSync(cliPath, ["daemon", "stop"], { cwd: options.projectRoot });
+                    spawnSync(cliPath, ["service", "stop"], { cwd: options.projectRoot });
                 }
             },
         };
@@ -379,7 +379,7 @@ export async function connect(options = {}) {
     };
     return createSession(options.udid);
 }
-async function startIsolatedDaemon(cliPath, options) {
+async function startIsolatedService(cliPath, options) {
     const port = options.port ?? (await freePortPair());
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "simdeck-test-project-"));
     const metadataPath = path.join(os.tmpdir(), `simdeck-test-${process.pid}-${Date.now()}-${crypto.randomUUID()}.json`);
@@ -429,7 +429,7 @@ async function waitForHealth(endpoint, child, output) {
     let lastError;
     while (Date.now() < deadline) {
         if (child.exitCode !== null) {
-            throw new Error(`SimDeck isolated daemon exited with ${child.exitCode}.\n${output()}`);
+            throw new Error(`SimDeck isolated service exited with ${child.exitCode}.\n${output()}`);
         }
         try {
             await requestJson(endpoint, "GET", "/api/health");
@@ -440,7 +440,7 @@ async function waitForHealth(endpoint, child, output) {
             await new Promise((resolve) => setTimeout(resolve, 50));
         }
     }
-    throw new Error(`Timed out waiting for isolated SimDeck daemon: ${lastError instanceof Error ? lastError.message : String(lastError)}\n${output()}`);
+    throw new Error(`Timed out waiting for isolated SimDeck service: ${lastError instanceof Error ? lastError.message : String(lastError)}\n${output()}`);
 }
 function captureChildOutput(child) {
     const chunks = [];

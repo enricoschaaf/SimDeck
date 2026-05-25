@@ -233,7 +233,7 @@ fn batch_line_to_json_step(line: &str) -> anyhow::Result<Value> {
         }),
         other => {
             return Err(crate::error::AppError::bad_request(format!(
-                "Unsupported daemon batch step `{other}`."
+                "Unsupported service batch step `{other}`."
             ))
             .into())
         }

@@ -1638,9 +1638,9 @@ fn android_cmdline_tool_path(name: &str) -> PathBuf {
             return path;
         }
     }
-    let legacy = root.join("tools/bin").join(name);
-    if legacy.exists() {
-        return legacy;
+    let tools_bin = root.join("tools/bin").join(name);
+    if tools_bin.exists() {
+        return tools_bin;
     }
     latest
 }

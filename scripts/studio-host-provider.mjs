@@ -103,7 +103,7 @@ async function run(args) {
     });
   }
 
-  await ensureDaemon(config);
+  await ensureService(config);
   await heartbeat(config, state, true);
   console.log(
     `[simdeck-provider] online as ${config.hostId} for ${config.studioUrl}`,
@@ -126,15 +126,15 @@ async function run(args) {
   await heartbeat(config, state, false, "draining");
 }
 
-async function ensureDaemon(config) {
-  const status = await daemonStatus().catch(() => null);
-  if (daemonLooksUsable(status, config)) {
+async function ensureService(config) {
+  const status = await serviceStatus().catch(() => null);
+  if (serviceLooksUsable(status, config)) {
     config.localUrl = status.httpUrl.replace(/\/$/, "");
     config.localToken = status.accessToken;
     return status;
   }
   const args = [
-    "daemon",
+    "service",
     status ? "restart" : "start",
     "--port",
     String(new URL(config.localUrl).port || 4310),
@@ -146,25 +146,25 @@ async function ensureDaemon(config) {
     config.streamQuality,
   ];
   await execFileAsync(simdeckBinary(), args, { timeout: 120000 });
-  const next = await daemonStatus();
+  const next = await serviceStatus();
   config.localUrl = next.httpUrl.replace(/\/$/, "");
   config.localToken = next.accessToken;
   return next;
 }
 
-async function daemonStatus() {
+async function serviceStatus() {
   const { stdout } = await execFileAsync(
     simdeckBinary(),
-    ["daemon", "status"],
+    ["service", "status"],
     {
       timeout: 15000,
     },
   );
   const parsed = JSON.parse(stdout);
-  return parsed.daemon || parsed;
+  return parsed.service || parsed;
 }
 
-function daemonLooksUsable(status, config) {
+function serviceLooksUsable(status, config) {
   if (!status?.httpUrl || !status?.accessToken) {
     return false;
   }
@@ -187,7 +187,7 @@ async function heartbeat(config, state, first, statusOverride) {
   });
   state.lastHeartbeatAt = Date.now();
   if (!metadata.ok && first) {
-    throw new Error("Local SimDeck daemon is not healthy.");
+    throw new Error("Local SimDeck service is not healthy.");
   }
 }
 

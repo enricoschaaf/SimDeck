@@ -55,7 +55,7 @@ inputs:
     required: false
     default: latest
   simdeck_port:
-    description: Local daemon port on the runner.
+    description: Local service port on the runner.
     required: false
     default: "4311"
   stream_profile:
@@ -286,7 +286,7 @@ runs:
         simdeck --version
         cloudflared --version
         access_token="$(openssl rand -hex 32)"
-        metadata_path="${RUNNER_TEMP:-/tmp}/simdeck-daemon-${GITHUB_RUN_ID}.json"
+        metadata_path="${RUNNER_TEMP:-/tmp}/simdeck-service-${GITHUB_RUN_ID}.json"
         case "${SIMDECK_STREAM_PROFILE}" in
           tiny)
             stream_max_edge=540
@@ -308,7 +308,7 @@ runs:
             ;;
         esac
 
-        simdeck daemon stop || true
+        simdeck service stop || true
         existing_pid="$(lsof -ti tcp:"${SIMDECK_PORT}" -sTCP:LISTEN | head -n 1 || true)"
         if [[ -n "${existing_pid}" ]]; then
           kill "${existing_pid}" || true
@@ -338,7 +338,7 @@ runs:
           --local-stream-fps "${stream_fps}" \
           --access-token "${access_token}" \
           --pairing-code 000000 \
-          > simdeck-daemon.log 2>&1 &
+          > simdeck-service.log 2>&1 &
         echo "$!" > simdeck.pid
 
         cloudflared tunnel --url "http://127.0.0.1:${SIMDECK_PORT}" --protocol http2 --no-autoupdate > cloudflared.log 2>&1 &
@@ -348,8 +348,8 @@ runs:
         local_ready=0
         for attempt in {1..120}; do
           if ! kill -0 "$(cat simdeck.pid)" 2>/dev/null; then
-            cat simdeck-daemon.log >&2
-            echo "SimDeck daemon exited before becoming healthy" >&2
+            cat simdeck-service.log >&2
+            echo "SimDeck service exited before becoming healthy" >&2
             exit 1
           fi
           if curl -fsS "${local_health_url}" >/dev/null; then
@@ -359,8 +359,8 @@ runs:
           sleep 0.25
         done
         if [[ "${local_ready}" -ne 1 ]]; then
-          cat simdeck-daemon.log >&2
-          echo "SimDeck daemon did not become healthy" >&2
+          cat simdeck-service.log >&2
+          echo "SimDeck service did not become healthy" >&2
           exit 1
         fi
 
@@ -756,7 +756,7 @@ runs:
           cat public-simulators.json >&2 || true
         fi
         cat cloudflared.log >&2 || true
-        cat simdeck-daemon.log >&2 || true
+        cat simdeck-service.log >&2 || true
         exit 1
 
     - name: Update status comment with booted simulator URL
@@ -954,31 +954,31 @@ runs:
         set -euo pipefail
         udid="${{ steps.simulator.outputs.udid }}"
         end=$((SECONDS + KEEPALIVE_SECONDS))
-        SIMDECK_DAEMON_HEALTH_GRACE_SECONDS="${SIMDECK_DAEMON_HEALTH_GRACE_SECONDS:-90}"
+        SIMDECK_SERVICE_HEALTH_GRACE_SECONDS="${SIMDECK_SERVICE_HEALTH_GRACE_SECONDS:-90}"
         health_failure_started=""
 
-        note_daemon_health_failure() {
+        note_service_health_failure() {
           local reason="$1"
           if [[ -z "${health_failure_started}" ]]; then
             health_failure_started="${SECONDS}"
           fi
 
-          if (( SECONDS - health_failure_started >= SIMDECK_DAEMON_HEALTH_GRACE_SECONDS )); then
-            echo "${reason} for ${SIMDECK_DAEMON_HEALTH_GRACE_SECONDS}s; stopping session." >&2
+          if (( SECONDS - health_failure_started >= SIMDECK_SERVICE_HEALTH_GRACE_SECONDS )); then
+            echo "${reason} for ${SIMDECK_SERVICE_HEALTH_GRACE_SECONDS}s; stopping session." >&2
             cat simdeck-health.log >&2 || true
-            cat simdeck-daemon.log >&2 || true
+            cat simdeck-service.log >&2 || true
             return 1
           fi
 
-          echo "${reason}; waiting for SimDeck daemon supervisor to recover."
+          echo "${reason}; waiting for SimDeck service supervisor to recover."
           sleep 5
           return 0
         }
 
         while (( SECONDS < end )); do
           if [[ -f simdeck.pid ]] && ! kill -0 "$(cat simdeck.pid)" 2>/dev/null; then
-            echo "SimDeck daemon process exited; stopping session."
-            cat simdeck-daemon.log >&2 || true
+            echo "SimDeck service process exited; stopping session."
+            cat simdeck-service.log >&2 || true
             exit 1
           fi
 
@@ -989,7 +989,7 @@ runs:
           fi
 
           if ! curl -fsS "http://127.0.0.1:${SIMDECK_PORT}/api/health?simdeckToken=${{ steps.stream.outputs.access_token }}" >/dev/null 2>simdeck-health.log; then
-            note_daemon_health_failure "SimDeck daemon health check failed" || exit 1
+            note_service_health_failure "SimDeck service health check failed" || exit 1
             continue
           fi
 
@@ -1008,7 +1008,7 @@ runs:
         if [[ -f simdeck.pid ]]; then
           kill "$(cat simdeck.pid)"
         fi
-        simdeck daemon stop
+        simdeck service stop
         if [[ -n "${SIMULATOR_UDID:-}" ]]; then
           xcrun simctl shutdown "${SIMULATOR_UDID}"
         fi

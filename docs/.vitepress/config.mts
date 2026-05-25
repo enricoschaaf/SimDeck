@@ -150,7 +150,7 @@ export default defineConfig({
         {
           text: "Use",
           items: [
-            { text: "Daemon", link: "/guide/daemon" },
+            { text: "Service", link: "/guide/service" },
             { text: "Video and streaming", link: "/guide/video" },
             { text: "LAN access", link: "/guide/lan-access" },
             { text: "Testing", link: "/guide/testing" },

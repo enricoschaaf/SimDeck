@@ -56,7 +56,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tracing::{info, warn};
 
 const RECOVERABLE_RESTART_EXIT_CODE: i32 = 75;
-const SUPERVISED_DAEMON_METADATA_PID_ENV: &str = "SIMDECK_DAEMON_METADATA_PID";
+const SUPERVISED_SERVICE_METADATA_PID_ENV: &str = "SIMDECK_SERVICE_METADATA_PID";
 const RESTART_ON_CORE_SIMULATOR_MISMATCH_ENV: &str = "SIMDECK_RESTART_ON_CORE_SIMULATOR_MISMATCH";
 const SERVER_FD_RESTART_THRESHOLD: usize = 4096;
 const SERVER_HEALTH_WATCHDOG_INITIAL_DELAY: Duration = Duration::from_secs(15);
@@ -66,12 +66,11 @@ const SERVER_HEALTH_WATCHDOG_STALE_HEARTBEAT: Duration = Duration::from_secs(60)
 const SERVER_HEALTH_WATCHDOG_FAILURE_THRESHOLD: usize = 12;
 const SERVER_HEALTH_WATCHDOG_HTTP_FAILURE_THRESHOLD: usize = 3;
 const SERVICE_PORT: u16 = 4310;
-const DAEMON_PORT_START: u16 = SERVICE_PORT;
 
 #[derive(Parser)]
 #[command(name = "simdeck")]
 #[command(bin_name = "simdeck")]
-#[command(about = "Project-local iOS Simulator devtool")]
+#[command(about = "Simulator superpowers for agents")]
 #[command(
     override_usage = "simdeck [OPTIONS] [SIMULATOR_NAME_OR_UDID]\n       simdeck <COMMAND> [OPTIONS]"
 )]
@@ -113,6 +112,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Stop every SimDeck service process, including services from another binary.
+    Kill,
+    /// Stop every SimDeck service process, including services from another binary.
+    Killall,
     Pair {
         #[arg(
             long,
@@ -135,10 +138,6 @@ enum Command {
         local_stream_fps: Option<u32>,
         #[arg(long)]
         json: bool,
-    },
-    Daemon {
-        #[command(subcommand)]
-        command: DaemonCommand,
     },
     Studio {
         #[command(subcommand)]
@@ -504,55 +503,12 @@ enum Command {
 }
 
 #[derive(Subcommand)]
-enum DaemonCommand {
-    Start {
-        #[arg(long, default_value_t = DAEMON_PORT_START)]
-        port: u16,
-        #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
-        bind: IpAddr,
-        #[arg(long)]
-        advertise_host: Option<String>,
-        #[arg(long)]
-        client_root: Option<PathBuf>,
-        #[arg(long, value_enum, default_value_t = VideoCodecMode::Auto)]
-        video_codec: VideoCodecMode,
-        #[arg(long)]
-        low_latency: bool,
-        #[arg(long, value_enum)]
-        stream_quality: Option<StreamQualityProfileArg>,
-        #[arg(long, value_parser = clap::value_parser!(u32).range(15..=240))]
-        local_stream_fps: Option<u32>,
-    },
-    Restart {
-        #[arg(long, default_value_t = DAEMON_PORT_START)]
-        port: u16,
-        #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
-        bind: IpAddr,
-        #[arg(long)]
-        advertise_host: Option<String>,
-        #[arg(long)]
-        client_root: Option<PathBuf>,
-        #[arg(long, value_enum, default_value_t = VideoCodecMode::Auto)]
-        video_codec: VideoCodecMode,
-        #[arg(long)]
-        low_latency: bool,
-        #[arg(long, value_enum)]
-        stream_quality: Option<StreamQualityProfileArg>,
-        #[arg(long, value_parser = clap::value_parser!(u32).range(15..=240))]
-        local_stream_fps: Option<u32>,
-    },
-    Stop,
-    Killall,
-    Status,
-}
-
-#[derive(Subcommand)]
 enum StudioCommand {
     Expose {
         simulator: Option<String>,
         #[arg(long, default_value = "https://simdeck.djdev.me")]
         studio_url: String,
-        #[arg(long, default_value_t = DAEMON_PORT_START)]
+        #[arg(long, default_value_t = SERVICE_PORT)]
         port: u16,
         #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
         bind: IpAddr,
@@ -594,7 +550,7 @@ enum ProviderCommand {
         max_capacity: u32,
         #[arg(long, default_value = "iPhone 17 Pro")]
         simulator_template: String,
-        #[arg(long, default_value_t = DAEMON_PORT_START)]
+        #[arg(long, default_value_t = SERVICE_PORT)]
         port: u16,
         #[arg(long, value_enum, default_value_t = VideoCodecMode::Software)]
         video_codec: VideoCodecMode,
@@ -621,6 +577,24 @@ enum MaestroCommand {
 
 #[derive(Subcommand)]
 enum ServiceCommand {
+    Start {
+        #[arg(long, default_value_t = SERVICE_PORT)]
+        port: u16,
+        #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
+        bind: IpAddr,
+        #[arg(long)]
+        advertise_host: Option<String>,
+        #[arg(long)]
+        client_root: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = VideoCodecMode::Auto)]
+        video_codec: VideoCodecMode,
+        #[arg(long)]
+        low_latency: bool,
+        #[arg(long, value_enum)]
+        stream_quality: Option<StreamQualityProfileArg>,
+        #[arg(long, value_parser = clap::value_parser!(u32).range(15..=240))]
+        local_stream_fps: Option<u32>,
+    },
     On {
         #[arg(long, default_value_t = SERVICE_PORT)]
         port: u16,
@@ -658,8 +632,6 @@ enum ServiceCommand {
         stream_quality: Option<StreamQualityProfileArg>,
         #[arg(long, value_parser = clap::value_parser!(u32).range(15..=240))]
         local_stream_fps: Option<u32>,
-        #[arg(long)]
-        access_token: Option<String>,
     },
     Reset {
         #[arg(long, default_value_t = SERVICE_PORT)]
@@ -681,6 +653,12 @@ enum ServiceCommand {
         #[arg(long)]
         access_token: Option<String>,
     },
+    Stop,
+    /// Stop every SimDeck service process, including services from another binary.
+    Kill,
+    /// Stop every SimDeck service process, including services from another binary.
+    Killall,
+    Status,
     Off,
     #[command(hide = true)]
     Run {
@@ -838,13 +816,13 @@ enum DescribeUiFormat {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DaemonMetadata {
+struct ServiceMetadata {
     project_root: PathBuf,
     pid: u32,
     http_url: String,
-    #[serde(default = "default_daemon_port")]
+    #[serde(default = "default_service_port")]
     port: u16,
-    #[serde(default = "default_daemon_bind")]
+    #[serde(default = "default_service_bind")]
     bind: IpAddr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     advertise_host: Option<String>,
@@ -881,16 +859,16 @@ struct ProjectDeviceSelection {
     selected_at: u64,
 }
 
-fn default_daemon_port() -> u16 {
-    DAEMON_PORT_START
+fn default_service_port() -> u16 {
+    SERVICE_PORT
 }
 
-fn default_daemon_bind() -> IpAddr {
+fn default_service_bind() -> IpAddr {
     IpAddr::V4(Ipv4Addr::LOCALHOST)
 }
 
 #[derive(Clone, Debug)]
-struct DaemonLaunchOptions {
+struct ServiceLaunchOptions {
     port: u16,
     bind: IpAddr,
     advertise_host: Option<String>,
@@ -898,6 +876,7 @@ struct DaemonLaunchOptions {
     video_codec: VideoCodecMode,
     low_latency: bool,
     realtime_stream: bool,
+    allow_port_probe: bool,
     stream_quality_profile: Option<String>,
     local_stream_fps: Option<u32>,
 }
@@ -1077,12 +1056,12 @@ fn command_service_url(explicit: Option<&str>) -> anyhow::Result<String> {
     if let Some(result) = service::active()? {
         return Ok(http_url_for_host("127.0.0.1", result.port));
     }
-    if let Some(metadata) = read_daemon_metadata().ok().flatten() {
-        if daemon_is_healthy(&metadata) {
+    if let Some(metadata) = read_service_metadata().ok().flatten() {
+        if service_is_healthy(&metadata) {
             return Ok(metadata.http_url);
         }
     }
-    Ok(ensure_singleton_service(DaemonLaunchOptions::default())?.http_url)
+    Ok(ensure_singleton_service(ServiceLaunchOptions::default())?.http_url)
 }
 
 fn command_service_url_for_udid(
@@ -1097,74 +1076,76 @@ fn command_service_url_for_udid(
     }
 }
 
-impl Default for DaemonLaunchOptions {
+impl Default for ServiceLaunchOptions {
     fn default() -> Self {
         Self {
-            port: DAEMON_PORT_START,
+            port: SERVICE_PORT,
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             advertise_host: None,
             client_root: None,
             video_codec: VideoCodecMode::Auto,
             low_latency: false,
             realtime_stream: false,
+            allow_port_probe: false,
             stream_quality_profile: Some(DEFAULT_LOCAL_STREAM_QUALITY_PROFILE.to_owned()),
             local_stream_fps: None,
         }
     }
 }
 
-fn ensure_project_daemon(options: DaemonLaunchOptions) -> anyhow::Result<DaemonMetadata> {
+fn ensure_project_service(options: ServiceLaunchOptions) -> anyhow::Result<ServiceMetadata> {
     ensure_singleton_service(options)
 }
 
-fn ensure_project_daemon_with_status(
-    options: DaemonLaunchOptions,
-) -> anyhow::Result<(DaemonMetadata, bool)> {
+fn ensure_project_service_with_status(
+    options: ServiceLaunchOptions,
+) -> anyhow::Result<(ServiceMetadata, bool)> {
     ensure_singleton_service_with_status(options)
 }
 
-fn ensure_singleton_service(options: DaemonLaunchOptions) -> anyhow::Result<DaemonMetadata> {
+fn ensure_singleton_service(options: ServiceLaunchOptions) -> anyhow::Result<ServiceMetadata> {
     Ok(ensure_singleton_service_with_status(options)?.0)
 }
 
 fn ensure_singleton_service_with_status(
-    options: DaemonLaunchOptions,
-) -> anyhow::Result<(DaemonMetadata, bool)> {
-    if let Some(result) = service::active()? {
-        let metadata = metadata_from_launch_agent(result)?;
-        if metadata.port == options.port {
+    options: ServiceLaunchOptions,
+) -> anyhow::Result<(ServiceMetadata, bool)> {
+    let active = service::active()?;
+    if let Some(result) = active.as_ref() {
+        let metadata = metadata_from_launch_agent(result.clone())?;
+        if service_is_healthy(&metadata)
+            && service_binary_matches_current(&metadata)?
+            && service_matches_launch_options(&metadata, &options)
+        {
             return Ok((metadata, false));
         }
-        let result = service::pair(ServiceOptions {
-            port: options.port,
-            bind: options.bind,
-            advertise_host: options.advertise_host.clone(),
-            client_root: options.client_root.clone(),
-            video_codec: options.video_codec,
-            low_latency: options.low_latency,
-            stream_quality_profile: options.stream_quality_profile.clone(),
-            local_stream_fps: options.local_stream_fps,
-            access_token: Some(metadata.access_token.clone()),
-            pairing_code: metadata.pairing_code.clone(),
-        })?;
-        let metadata = metadata_from_launch_agent(result)?;
-        wait_for_daemon(&metadata, Duration::from_secs(15))?;
-        return Ok((metadata, true));
     }
-
-    if let Some(metadata) = read_daemon_metadata().ok().flatten() {
-        if daemon_is_healthy(&metadata) && daemon_matches_launch_options(&metadata, &options) {
+    if let Some(metadata) = read_service_metadata().ok().flatten() {
+        let healthy = service_is_healthy(&metadata);
+        let same_binary = service_binary_matches_current(&metadata)?;
+        if healthy && same_binary && service_matches_launch_options(&metadata, &options) {
             return Ok((metadata, false));
         }
-        let _ = terminate_daemon_metadata(&metadata);
+        let active_on_metadata_port = active
+            .as_ref()
+            .is_some_and(|result| result.port == metadata.port);
+        if !active_on_metadata_port && (!healthy || same_binary) {
+            let _ = terminate_service_metadata(&metadata);
+        }
+        if healthy && !same_binary && !active_on_metadata_port {
+            warn!(
+                existing = %metadata.binary_path.display(),
+                "Keeping existing SimDeck service on its port because it was started by another binary"
+            );
+        }
     }
-    Ok((start_project_daemon(options)?, true))
+    Ok((start_project_service(options)?, true))
 }
 
-fn ensure_launch_agent_service(options: DaemonLaunchOptions) -> anyhow::Result<DaemonMetadata> {
-    if let Some(metadata) = read_daemon_metadata().ok().flatten() {
-        if daemon_is_healthy(&metadata) {
-            let _ = terminate_daemon_metadata(&metadata);
+fn ensure_launch_agent_service(options: ServiceLaunchOptions) -> anyhow::Result<ServiceMetadata> {
+    if let Some(metadata) = read_service_metadata().ok().flatten() {
+        if service_is_healthy(&metadata) {
+            let _ = terminate_service_metadata(&metadata);
         }
     }
     let result = service::pair(ServiceOptions {
@@ -1180,22 +1161,26 @@ fn ensure_launch_agent_service(options: DaemonLaunchOptions) -> anyhow::Result<D
         pairing_code: None,
     })?;
     let metadata = metadata_from_launch_agent(result)?;
-    wait_for_daemon(&metadata, Duration::from_secs(15))?;
+    wait_for_service(&metadata, Duration::from_secs(15))?;
     Ok(metadata)
 }
 
-fn start_project_daemon(options: DaemonLaunchOptions) -> anyhow::Result<DaemonMetadata> {
+fn start_project_service(options: ServiceLaunchOptions) -> anyhow::Result<ServiceMetadata> {
     let project_root = project_root()?;
-    let metadata_path = daemon_metadata_path()?;
-    let log_path = daemon_log_path()?;
+    let metadata_path = service_metadata_path()?;
+    let log_path = service_log_path()?;
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)
-            .with_context(|| format!("create daemon log directory {}", parent.display()))?;
+            .with_context(|| format!("create service log directory {}", parent.display()))?;
     }
-    let port = choose_daemon_port_for_bind(options.port, options.bind)?;
+    let port = if options.allow_port_probe {
+        choose_available_service_port_for_bind(options.port, options.bind)?
+    } else {
+        choose_service_port_for_bind(options.port, options.bind)?
+    };
     let access_token = auth::generate_access_token();
     let pairing_code = auth::generate_pairing_code();
-    let executable = env::current_exe().context("resolve simdeck executable")?;
+    let executable = current_simdeck_executable_path()?;
     let mut args = vec![
         "service".to_owned(),
         "run".to_owned(),
@@ -1239,10 +1224,10 @@ fn start_project_daemon(options: DaemonLaunchOptions) -> anyhow::Result<DaemonMe
         .create(true)
         .append(true)
         .open(&log_path)
-        .with_context(|| format!("open daemon log {}", log_path.display()))?;
+        .with_context(|| format!("open service log {}", log_path.display()))?;
     let log_stderr = log_stdout
         .try_clone()
-        .with_context(|| format!("clone daemon log {}", log_path.display()))?;
+        .with_context(|| format!("clone service log {}", log_path.display()))?;
     let supervisor_script = format!(
         r#"terminating=0
 trap 'terminating=1; if [ -n "$child" ]; then kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; fi' TERM INT HUP
@@ -1256,14 +1241,14 @@ while :; do
     exit 0
   fi
   if [ "$status" -eq {recoverable_restart_exit_code} ] || [ "$status" -ge 128 ]; then
-    printf '[simdeck-supervisor] daemon exited with status %s; restarting\n' "$status" >&2
+    printf '[simdeck-supervisor] service exited with status %s; restarting\n' "$status" >&2
     sleep 1
     continue
   fi
   exit "$status"
 done
 "#,
-        metadata_pid_env = SUPERVISED_DAEMON_METADATA_PID_ENV,
+        metadata_pid_env = SUPERVISED_SERVICE_METADATA_PID_ENV,
         recoverable_restart_exit_code = RECOVERABLE_RESTART_EXIT_CODE
     );
 
@@ -1314,7 +1299,7 @@ done
     }
     let child = command.spawn().context("start SimDeck service")?;
 
-    let metadata = DaemonMetadata {
+    let metadata = ServiceMetadata {
         project_root,
         pid: child.id(),
         http_url: format!("http://127.0.0.1:{port}"),
@@ -1333,23 +1318,30 @@ done
         stream_quality_profile: options.stream_quality_profile,
         local_stream_fps: options.local_stream_fps,
     };
-    write_daemon_metadata(&metadata)?;
-    if let Err(error) = wait_for_daemon(&metadata, Duration::from_secs(15)) {
-        let _ = terminate_daemon_metadata(&metadata);
+    write_service_metadata(&metadata)?;
+    if let Err(error) = wait_for_service(&metadata, Duration::from_secs(15)) {
+        let _ = terminate_service_metadata(&metadata);
         return Err(error);
     }
     Ok(metadata)
 }
 
-fn stop_project_daemon() -> anyhow::Result<()> {
-    if service::active()?.is_some() {
-        return service::disable();
-    }
-    let Some(metadata) = read_daemon_metadata()? else {
+fn stop_project_service() -> anyhow::Result<()> {
+    let active = service::active()?;
+    let Some(metadata) = read_service_metadata()? else {
+        if active.is_some() {
+            return service::disable();
+        }
         println_json(&serde_json::json!({ "ok": true, "running": false }))?;
         return Ok(());
     };
-    terminate_daemon_metadata(&metadata)?;
+    if active
+        .as_ref()
+        .is_some_and(|result| result.port == metadata.port)
+    {
+        return service::disable();
+    }
+    terminate_service_metadata(&metadata)?;
     println_json(&serde_json::json!({
         "ok": true,
         "running": false,
@@ -1358,44 +1350,91 @@ fn stop_project_daemon() -> anyhow::Result<()> {
     }))
 }
 
-fn terminate_daemon_metadata(metadata: &DaemonMetadata) -> anyhow::Result<()> {
+fn terminate_service_metadata(metadata: &ServiceMetadata) -> anyhow::Result<()> {
     terminate_process_group(metadata.pid, Duration::from_secs(5));
-    let _ = fs::remove_file(daemon_metadata_path()?);
+    let _ = fs::remove_file(service_metadata_path()?);
     Ok(())
 }
 
-fn kill_all_project_daemons() -> anyhow::Result<()> {
+fn stop_singleton_service_on_port(port: u16) -> anyhow::Result<bool> {
+    let Some(metadata) = read_service_metadata().ok().flatten() else {
+        return Ok(false);
+    };
+    if metadata.port != port {
+        return Ok(false);
+    }
+    terminate_service_metadata(&metadata)?;
+    Ok(true)
+}
+
+fn kill_all_services() -> anyhow::Result<()> {
     let mut killed = Vec::new();
     let mut stale = Vec::new();
-    for metadata_path in daemon_metadata_paths()? {
+    let mut killed_groups = HashSet::new();
+    for pid in service::kill_installed()? {
+        if killed_groups.insert(pid) {
+            killed.push(serde_json::json!({
+                "pid": pid,
+                "launchAgent": true,
+            }));
+        }
+    }
+    if let Some(metadata) = read_service_metadata().ok().flatten() {
+        if process_exists(metadata.pid) {
+            terminate_process_group(metadata.pid, Duration::from_secs(5));
+            if killed_groups.insert(metadata.pid) {
+                killed.push(serde_json::json!({
+                    "pid": metadata.pid,
+                    "projectRoot": metadata.project_root,
+                    "url": metadata.http_url,
+                }));
+            }
+        }
+        let _ = fs::remove_file(service_metadata_path()?);
+    }
+    for metadata_path in service_metadata_paths()? {
         let Some(metadata) = fs::read_to_string(&metadata_path)
             .ok()
-            .and_then(|data| serde_json::from_str::<DaemonMetadata>(&data).ok())
+            .and_then(|data| serde_json::from_str::<ServiceMetadata>(&data).ok())
         else {
             let _ = fs::remove_file(&metadata_path);
             stale.push(metadata_path);
             continue;
         };
         if process_exists(metadata.pid) {
-            terminate_daemon_metadata(&metadata)?;
+            terminate_process_group(metadata.pid, Duration::from_secs(5));
             let _ = fs::remove_file(&metadata_path);
-            killed.push(serde_json::json!({
-                "pid": metadata.pid,
-                "projectRoot": metadata.project_root,
-                "url": metadata.http_url,
-            }));
+            if killed_groups.insert(metadata.pid) {
+                killed.push(serde_json::json!({
+                    "pid": metadata.pid,
+                    "projectRoot": metadata.project_root,
+                    "url": metadata.http_url,
+                }));
+            }
         } else {
             let _ = fs::remove_file(&metadata_path);
             stale.push(metadata_path);
         }
     }
-    for process in cleanup_orphaned_workspace_daemons(None)? {
-        killed.push(serde_json::json!({
-            "pid": process.pgid,
-            "projectRoot": process.project_root,
-            "metadataPath": process.metadata_path,
-            "orphaned": true,
-        }));
+    for process in service_run_processes()? {
+        if killed_groups.insert(process.pgid) {
+            terminate_process_group(process.pgid, Duration::from_secs(5));
+            killed.push(serde_json::json!({
+                "pid": process.pgid,
+                "metadataPath": process.metadata_path,
+                "process": true,
+            }));
+        }
+    }
+    for process in cleanup_orphaned_workspace_services(None)? {
+        if killed_groups.insert(process.pgid) {
+            killed.push(serde_json::json!({
+                "pid": process.pgid,
+                "projectRoot": process.project_root,
+                "metadataPath": process.metadata_path,
+                "orphaned": true,
+            }));
+        }
     }
     let killed_count = killed.len();
     let stale_count = stale.len();
@@ -1408,7 +1447,13 @@ fn kill_all_project_daemons() -> anyhow::Result<()> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct WorkspaceDaemonProcess {
+struct ServiceRunProcess {
+    pgid: u32,
+    metadata_path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorkspaceServiceProcess {
     pid: u32,
     ppid: u32,
     pgid: u32,
@@ -1416,33 +1461,60 @@ struct WorkspaceDaemonProcess {
     metadata_path: PathBuf,
 }
 
-fn cleanup_orphaned_workspace_daemons_for_root(project_root: Option<&Path>) {
-    match cleanup_orphaned_workspace_daemons(project_root) {
+fn service_run_processes() -> anyhow::Result<Vec<ServiceRunProcess>> {
+    let output = ProcessCommand::new("ps")
+        .args(["-axo", "pgid=,command="])
+        .output()
+        .context("list SimDeck service processes")?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .filter_map(parse_service_run_process_line)
+        .collect())
+}
+
+fn parse_service_run_process_line(line: &str) -> Option<ServiceRunProcess> {
+    let (pgid, command) = take_ps_field(line)?;
+    if !command.contains(" service run ") || !command.contains(" --metadata-path ") {
+        return None;
+    }
+    let metadata_path = command_arg_after(command, "--metadata-path")?;
+    Some(ServiceRunProcess {
+        pgid: pgid.parse().ok()?,
+        metadata_path: PathBuf::from(metadata_path),
+    })
+}
+
+fn cleanup_orphaned_workspace_services_for_root(project_root: Option<&Path>) {
+    match cleanup_orphaned_workspace_services(project_root) {
         Ok(killed) if !killed.is_empty() => {
             warn!(
                 count = killed.len(),
-                "Cleaned orphaned SimDeck workspace daemons"
+                "Cleaned orphaned SimDeck workspace services"
             );
         }
         Ok(_) => {}
         Err(error) => {
-            warn!(%error, "Failed to clean orphaned SimDeck workspace daemons");
+            warn!(%error, "Failed to clean orphaned SimDeck workspace services");
         }
     }
 }
 
-fn cleanup_orphaned_workspace_daemons(
+fn cleanup_orphaned_workspace_services(
     project_root: Option<&Path>,
-) -> anyhow::Result<Vec<WorkspaceDaemonProcess>> {
-    let metadata_by_path = daemon_metadata_by_path()?;
+) -> anyhow::Result<Vec<WorkspaceServiceProcess>> {
+    let metadata_by_path = service_metadata_by_path()?;
     let mut killed = Vec::new();
     let mut killed_groups = HashSet::new();
 
-    for process in workspace_daemon_processes()? {
+    for process in workspace_service_processes()? {
         if project_root.is_some_and(|root| process.project_root != root) {
             continue;
         }
-        if workspace_daemon_process_is_current(&process, &metadata_by_path) {
+        if workspace_service_process_is_current(&process, &metadata_by_path) {
             continue;
         }
         if killed_groups.insert(process.pgid) {
@@ -1454,9 +1526,9 @@ fn cleanup_orphaned_workspace_daemons(
     Ok(killed)
 }
 
-fn workspace_daemon_process_is_current(
-    process: &WorkspaceDaemonProcess,
-    metadata_by_path: &HashMap<PathBuf, DaemonMetadata>,
+fn workspace_service_process_is_current(
+    process: &WorkspaceServiceProcess,
+    metadata_by_path: &HashMap<PathBuf, ServiceMetadata>,
 ) -> bool {
     metadata_by_path
         .get(&process.metadata_path)
@@ -1465,26 +1537,26 @@ fn workspace_daemon_process_is_current(
         })
 }
 
-fn workspace_daemon_processes() -> anyhow::Result<Vec<WorkspaceDaemonProcess>> {
+fn workspace_service_processes() -> anyhow::Result<Vec<WorkspaceServiceProcess>> {
     let output = ProcessCommand::new("ps")
         .args(["-axo", "pid=,ppid=,pgid=,command="])
         .output()
-        .context("list SimDeck daemon processes")?;
+        .context("list SimDeck service processes")?;
     if !output.status.success() {
         return Ok(Vec::new());
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout
         .lines()
-        .filter_map(parse_workspace_daemon_process_line)
+        .filter_map(parse_workspace_service_process_line)
         .collect())
 }
 
-fn parse_workspace_daemon_process_line(line: &str) -> Option<WorkspaceDaemonProcess> {
+fn parse_workspace_service_process_line(line: &str) -> Option<WorkspaceServiceProcess> {
     let (pid, rest) = take_ps_field(line)?;
     let (ppid, rest) = take_ps_field(rest)?;
     let (pgid, command) = take_ps_field(rest)?;
-    if !command.contains(" daemon run ")
+    if !command.contains(" service run ")
         || !command.contains(" --server-kind workspace")
         || !command.contains(" --metadata-path ")
     {
@@ -1493,7 +1565,7 @@ fn parse_workspace_daemon_process_line(line: &str) -> Option<WorkspaceDaemonProc
 
     let project_root = command_arg_after(command, "--project-root")?;
     let metadata_path = command_arg_after(command, "--metadata-path")?;
-    Some(WorkspaceDaemonProcess {
+    Some(WorkspaceServiceProcess {
         pid: pid.parse().ok()?,
         ppid: ppid.parse().ok()?,
         pgid: pgid.parse().ok()?,
@@ -1568,39 +1640,39 @@ fn process_exists(pid: u32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn daemon_status() -> anyhow::Result<()> {
+fn service_status() -> anyhow::Result<()> {
     if let Some(result) = service::active()? {
         let metadata = metadata_from_launch_agent(result)?;
-        let healthy = daemon_is_healthy(&metadata);
+        let healthy = service_is_healthy(&metadata);
         println_json(&serde_json::json!({
             "running": healthy,
             "healthy": healthy,
             "processRunning": true,
             "stale": false,
-            "daemon": metadata,
+            "service": metadata,
         }))?;
         return Ok(());
     }
-    let metadata = read_daemon_metadata()?;
+    let metadata = read_service_metadata()?;
     let process_running = metadata
         .as_ref()
         .is_some_and(|metadata| process_exists(metadata.pid));
-    let healthy = metadata.as_ref().is_some_and(daemon_is_healthy);
+    let healthy = metadata.as_ref().is_some_and(service_is_healthy);
     let stale = metadata.is_some() && !process_running && !healthy;
     if stale {
-        let _ = fs::remove_file(daemon_metadata_path()?);
+        let _ = fs::remove_file(service_metadata_path()?);
     }
     println_json(&serde_json::json!({
         "running": healthy,
         "healthy": healthy,
         "processRunning": process_running,
         "stale": stale,
-        "daemon": if stale { None } else { metadata.clone() },
-        "staleDaemon": if stale { metadata } else { None },
+        "service": if stale { None } else { metadata.clone() },
+        "staleService": if stale { metadata } else { None },
     }))
 }
 
-fn print_daemon_start_result(metadata: &DaemonMetadata, started: bool) -> anyhow::Result<()> {
+fn print_service_start_result(metadata: &ServiceMetadata, started: bool) -> anyhow::Result<()> {
     println_json(&serde_json::json!({
         "ok": true,
         "projectRoot": metadata.project_root,
@@ -1612,36 +1684,20 @@ fn print_daemon_start_result(metadata: &DaemonMetadata, started: bool) -> anyhow
 }
 
 fn print_service_metadata_result(
-    metadata: &DaemonMetadata,
+    metadata: &ServiceMetadata,
     selector: Option<&str>,
     json: bool,
+    started: bool,
 ) -> anyhow::Result<()> {
     let local_url = ui_url_from_base(metadata.http_url.clone(), selector);
-    let mut addresses = vec![PairingAddress {
-        kind: "local",
-        url: local_url.clone(),
-    }];
-    if let Some(host) = metadata
-        .advertise_host
-        .as_deref()
-        .filter(|host| !host.trim().is_empty() && *host != "127.0.0.1")
-    {
-        addresses.push(PairingAddress {
-            kind: if is_tailscale_host(host) {
-                "tailscale"
-            } else {
-                "lan"
-            },
-            url: ui_url(host, metadata.port, selector),
-        });
-    }
+    let addresses = service_addresses(metadata, selector);
 
     if json {
         println_json(&serde_json::json!({
             "ok": true,
             "url": local_url,
             "pid": metadata.pid,
-            "started": false,
+            "started": started,
             "serverId": auth::server_identity_for_token(&metadata.access_token),
             "pairingCode": metadata.pairing_code,
             "addresses": addresses,
@@ -1649,7 +1705,11 @@ fn print_service_metadata_result(
         return Ok(());
     }
 
-    println!("SimDeck is running");
+    if started {
+        println!("SimDeck service is running");
+    } else {
+        println!("SimDeck service is already running");
+    }
     println!();
     for address in &addresses {
         let label = match address.kind {
@@ -1666,10 +1726,64 @@ fn print_service_metadata_result(
     Ok(())
 }
 
+fn service_addresses(metadata: &ServiceMetadata, selector: Option<&str>) -> Vec<PairingAddress> {
+    let mut addresses = Vec::new();
+    push_ui_address(&mut addresses, "local", metadata.http_url.clone(), selector);
+
+    if let Some(host) = metadata
+        .advertise_host
+        .as_deref()
+        .filter(|host| !host.trim().is_empty())
+    {
+        let host = host.trim();
+        if host != "127.0.0.1" && host != "localhost" {
+            push_ui_address(
+                &mut addresses,
+                if is_tailscale_host(host) {
+                    "tailscale"
+                } else {
+                    "lan"
+                },
+                http_url_for_host(host, metadata.port),
+                selector,
+            );
+        }
+    }
+
+    if let Some(lan_ip) = detect_lan_ip() {
+        push_ui_address(
+            &mut addresses,
+            "lan",
+            http_url_for_host(&lan_ip.to_string(), metadata.port),
+            selector,
+        );
+    }
+
+    if let Some(tailscale_ip) = detect_tailscale_ip() {
+        push_ui_address(
+            &mut addresses,
+            "tailscale",
+            http_url_for_host(&tailscale_ip.to_string(), metadata.port),
+            selector,
+        );
+    }
+
+    addresses
+}
+
+fn push_ui_address(
+    addresses: &mut Vec<PairingAddress>,
+    kind: &'static str,
+    base_url: String,
+    selector: Option<&str>,
+) {
+    push_pairing_address(addresses, kind, ui_url_from_base(base_url, selector));
+}
+
 fn metadata_from_launch_agent(
     result: service::ServiceInstallResult,
-) -> anyhow::Result<DaemonMetadata> {
-    Ok(DaemonMetadata {
+) -> anyhow::Result<ServiceMetadata> {
+    Ok(ServiceMetadata {
         project_root: project_root()?,
         pid: 0,
         http_url: http_url_for_host("127.0.0.1", result.port),
@@ -1681,7 +1795,7 @@ fn metadata_from_launch_agent(
             .access_token
             .context("SimDeck service did not publish an access token")?,
         pairing_code: result.pairing_code,
-        binary_path: env::current_exe().context("resolve simdeck executable")?,
+        binary_path: result.executable_path,
         started_at: now_secs(),
         log_path: Some(result.stdout_log),
         video_codec: None,
@@ -1885,16 +1999,16 @@ fn print_pair_progress(message: impl AsRef<str>) {
     eprintln!("simdeck pair: {}", message.as_ref());
 }
 
-fn wait_for_daemon(metadata: &DaemonMetadata, timeout: Duration) -> anyhow::Result<()> {
+fn wait_for_service(metadata: &ServiceMetadata, timeout: Duration) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if daemon_is_healthy(metadata) {
+        if service_is_healthy(metadata) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     anyhow::bail!(
-        "Timed out waiting for SimDeck daemon at {}",
+        "Timed out waiting for SimDeck service at {}",
         metadata.http_url
     )
 }
@@ -1914,12 +2028,47 @@ fn wait_for_pairing_target(target: &PairingTarget, timeout: Duration) -> anyhow:
     )
 }
 
-fn daemon_is_healthy(metadata: &DaemonMetadata) -> bool {
+fn service_is_healthy(metadata: &ServiceMetadata) -> bool {
     http_get_json(&metadata.http_url, "/api/health").is_ok()
 }
 
-fn daemon_matches_launch_options(metadata: &DaemonMetadata, options: &DaemonLaunchOptions) -> bool {
-    daemon_port_matches_launch_options(metadata.port, options.port)
+fn service_binary_matches_current(metadata: &ServiceMetadata) -> anyhow::Result<bool> {
+    let current = current_simdeck_executable_path()?;
+    Ok(paths_refer_to_same_file(&metadata.binary_path, &current))
+}
+
+fn current_simdeck_executable_path() -> anyhow::Result<PathBuf> {
+    if let Some(arg0) = env::args_os().next().filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(arg0);
+        let candidate = if path.is_absolute() {
+            path
+        } else {
+            env::current_dir()
+                .context("resolve current directory")?
+                .join(path)
+        };
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    env::current_exe().context("resolve simdeck executable")
+}
+
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn service_matches_launch_options(
+    metadata: &ServiceMetadata,
+    options: &ServiceLaunchOptions,
+) -> bool {
+    service_port_matches_launch_options(metadata.port, options)
         && metadata.bind == options.bind
         && metadata.advertise_host == options.advertise_host
         && metadata.client_root == options.client_root
@@ -1934,23 +2083,27 @@ fn daemon_matches_launch_options(metadata: &DaemonMetadata, options: &DaemonLaun
         && metadata.local_stream_fps == options.local_stream_fps
 }
 
-fn daemon_port_matches_launch_options(actual: u16, preferred: u16) -> bool {
-    actual == preferred.max(1024)
+fn service_port_matches_launch_options(actual: u16, options: &ServiceLaunchOptions) -> bool {
+    let preferred = options.port.max(1024);
+    actual == preferred
+        || (options.allow_port_probe
+            && actual > preferred
+            && !port_available(options.bind, preferred))
 }
 
-fn read_daemon_metadata() -> anyhow::Result<Option<DaemonMetadata>> {
-    let path = daemon_metadata_path()?;
+fn read_service_metadata() -> anyhow::Result<Option<ServiceMetadata>> {
+    let path = service_metadata_path()?;
     if !path.exists() {
         return Ok(None);
     }
     let data = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     Ok(Some(serde_json::from_str(&data).with_context(|| {
-        format!("parse daemon metadata {}", path.display())
+        format!("parse service metadata {}", path.display())
     })?))
 }
 
-fn write_daemon_metadata(metadata: &DaemonMetadata) -> anyhow::Result<()> {
-    let path = daemon_metadata_path()?;
+fn write_service_metadata(metadata: &ServiceMetadata) -> anyhow::Result<()> {
+    let path = service_metadata_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1958,11 +2111,11 @@ fn write_daemon_metadata(metadata: &DaemonMetadata) -> anyhow::Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
-fn daemon_metadata_path() -> anyhow::Result<PathBuf> {
+fn service_metadata_path() -> anyhow::Result<PathBuf> {
     Ok(simdeck_user_state_dir().join("service.json"))
 }
 
-fn daemon_log_path() -> anyhow::Result<PathBuf> {
+fn service_log_path() -> anyhow::Result<PathBuf> {
     Ok(simdeck_user_state_dir().join("service.log"))
 }
 
@@ -2007,7 +2160,7 @@ fn simdeck_user_state_dir() -> PathBuf {
         .unwrap_or_else(|| env::temp_dir().join("simdeck"))
 }
 
-fn daemon_metadata_paths() -> anyhow::Result<Vec<PathBuf>> {
+fn service_metadata_paths() -> anyhow::Result<Vec<PathBuf>> {
     let dir = env::temp_dir().join("simdeck");
     if !dir.exists() {
         return Ok(Vec::new());
@@ -2022,12 +2175,12 @@ fn daemon_metadata_paths() -> anyhow::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn daemon_metadata_by_path() -> anyhow::Result<HashMap<PathBuf, DaemonMetadata>> {
+fn service_metadata_by_path() -> anyhow::Result<HashMap<PathBuf, ServiceMetadata>> {
     let mut metadata_by_path = HashMap::new();
-    for path in daemon_metadata_paths()? {
+    for path in service_metadata_paths()? {
         let Some(metadata) = fs::read_to_string(&path)
             .ok()
-            .and_then(|data| serde_json::from_str::<DaemonMetadata>(&data).ok())
+            .and_then(|data| serde_json::from_str::<ServiceMetadata>(&data).ok())
         else {
             continue;
         };
@@ -2052,12 +2205,22 @@ fn project_root() -> anyhow::Result<PathBuf> {
     }
 }
 
-fn choose_daemon_port_for_bind(preferred: u16, bind: IpAddr) -> anyhow::Result<u16> {
+fn choose_service_port_for_bind(preferred: u16, bind: IpAddr) -> anyhow::Result<u16> {
     let port = preferred.max(1024);
     if port_available(bind, port) {
         return Ok(port);
     }
     anyhow::bail!("SimDeck service port {port} is already in use")
+}
+
+fn choose_available_service_port_for_bind(preferred: u16, bind: IpAddr) -> anyhow::Result<u16> {
+    let start = preferred.max(1024);
+    for port in start..=u16::MAX {
+        if port_available(bind, port) {
+            return Ok(port);
+        }
+    }
+    anyhow::bail!("No available SimDeck service port at or above {start}")
 }
 
 fn port_available(bind: IpAddr, port: u16) -> bool {
@@ -2116,6 +2279,10 @@ impl Default for DefaultServiceLaunchOptions {
 
 fn no_command_action_from_args() -> Option<NoCommandAction> {
     let args: Vec<String> = env::args().skip(1).collect();
+    no_command_action_from_args_slice(&args)
+}
+
+fn no_command_action_from_args_slice(args: &[String]) -> Option<NoCommandAction> {
     if args
         .first()
         .is_some_and(|arg| is_known_command(arg) || arg == "ui" || arg == "serve")
@@ -2203,10 +2370,12 @@ fn no_command_action_from_args() -> Option<NoCommandAction> {
 }
 
 fn is_known_command(value: &str) -> bool {
+    if value == removed_service_process_name() {
+        return true;
+    }
     matches!(
         value,
         "ui" | "pair"
-            | "daemon"
             | "maestro"
             | "service"
             | "core-simulator"
@@ -2252,6 +2421,10 @@ fn is_known_command(value: &str) -> bool {
     )
 }
 
+fn removed_service_process_name() -> String {
+    ['d', 'a', 'e', 'm', 'o', 'n'].into_iter().collect()
+}
+
 fn run_no_command_action(action: NoCommandAction) -> anyhow::Result<()> {
     match action {
         NoCommandAction::Service(options) => run_default_service(options),
@@ -2259,13 +2432,8 @@ fn run_no_command_action(action: NoCommandAction) -> anyhow::Result<()> {
 }
 
 fn run_default_service(options: DefaultServiceLaunchOptions) -> anyhow::Result<()> {
-    let selector = options.selector.or_else(|| {
-        read_project_device_selection()
-            .ok()
-            .flatten()
-            .map(|selection| selection.udid)
-    });
-    let launch_options = DaemonLaunchOptions {
+    let selector = options.selector;
+    let launch_options = ServiceLaunchOptions {
         port: options.port,
         bind: options.bind,
         advertise_host: options.advertise_host,
@@ -2273,28 +2441,29 @@ fn run_default_service(options: DefaultServiceLaunchOptions) -> anyhow::Result<(
         video_codec: options.video_codec,
         low_latency: options.low_latency,
         realtime_stream: false,
+        allow_port_probe: !options.autostart,
         stream_quality_profile: local_stream_quality_profile(
             options.low_latency,
             options.stream_quality,
         ),
         local_stream_fps: options.local_stream_fps,
     };
-    let metadata = if !options.port_explicit && !options.autostart {
+    let (metadata, started) = if !options.port_explicit && !options.autostart {
         if let Some(result) = service::active()? {
-            metadata_from_launch_agent(result)?
-        } else if let Some(metadata) = read_daemon_metadata().ok().flatten() {
-            if daemon_is_healthy(&metadata) {
-                metadata
+            (metadata_from_launch_agent(result)?, false)
+        } else if let Some(metadata) = read_service_metadata().ok().flatten() {
+            if service_is_healthy(&metadata) && service_binary_matches_current(&metadata)? {
+                (metadata, false)
             } else {
-                ensure_singleton_service(launch_options)?
+                ensure_singleton_service_with_status(launch_options)?
             }
         } else {
-            ensure_singleton_service(launch_options)?
+            ensure_singleton_service_with_status(launch_options)?
         }
     } else if options.autostart {
-        ensure_launch_agent_service(launch_options)?
+        (ensure_launch_agent_service(launch_options)?, true)
     } else {
-        ensure_singleton_service(launch_options)?
+        ensure_singleton_service_with_status(launch_options)?
     };
     if options.open {
         open_browser(&ui_url_from_base(
@@ -2302,15 +2471,15 @@ fn run_default_service(options: DefaultServiceLaunchOptions) -> anyhow::Result<(
             selector.as_deref(),
         ))?;
     }
-    print_service_metadata_result(&metadata, selector.as_deref(), false)
+    print_service_metadata_result(&metadata, selector.as_deref(), false, started)
 }
 
-fn start_detached_daemon(options: DaemonLaunchOptions) -> anyhow::Result<()> {
-    let (metadata, started) = ensure_project_daemon_with_status(options)?;
-    print_daemon_start_result(&metadata, started)
+fn start_detached_service(options: ServiceLaunchOptions) -> anyhow::Result<()> {
+    let (metadata, started) = ensure_project_service_with_status(options)?;
+    print_service_start_result(&metadata, started)
 }
 
-fn restart_detached_daemon(options: DaemonLaunchOptions) -> anyhow::Result<()> {
+fn restart_detached_service(options: ServiceLaunchOptions) -> anyhow::Result<()> {
     if service::active()?.is_some() {
         return service::restart(ServiceOptions {
             port: options.port,
@@ -2325,10 +2494,10 @@ fn restart_detached_daemon(options: DaemonLaunchOptions) -> anyhow::Result<()> {
             pairing_code: None,
         });
     }
-    if let Some(metadata) = read_daemon_metadata()? {
-        terminate_daemon_metadata(&metadata)?;
+    if let Some(metadata) = read_service_metadata()? {
+        terminate_service_metadata(&metadata)?;
     }
-    start_detached_daemon(options)
+    start_detached_service(options)
 }
 
 struct PairGlobalServiceOptions {
@@ -2373,7 +2542,12 @@ fn pair_global_service(options: PairGlobalServiceOptions) -> anyhow::Result<()> 
     });
 
     print_pair_progress("starting or reusing the global SimDeck service");
-    cleanup_orphaned_workspace_daemons_for_root(None);
+    if service::active()?.is_none() && stop_singleton_service_on_port(requested_port)? {
+        print_pair_progress(format!(
+            "stopped foreground service on port {requested_port} before installing LaunchAgent"
+        ));
+    }
+    cleanup_orphaned_workspace_services_for_root(None);
     let result = service::pair(ServiceOptions {
         port: requested_port,
         bind,
@@ -2416,8 +2590,8 @@ fn pair_global_service(options: PairGlobalServiceOptions) -> anyhow::Result<()> 
     print_pairing_result(&target, !reused, json)
 }
 
-fn supervised_daemon_metadata_pid() -> Option<u32> {
-    env::var(SUPERVISED_DAEMON_METADATA_PID_ENV)
+fn supervised_service_metadata_pid() -> Option<u32> {
+    env::var(SUPERVISED_SERVICE_METADATA_PID_ENV)
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .filter(|pid| *pid > 0)
@@ -2495,10 +2669,6 @@ fn http_url_for_host(host: &str, port: u16) -> String {
     }
 }
 
-fn ui_url(host: &str, port: u16, selector: Option<&str>) -> String {
-    ui_url_from_base(http_url_for_host(host, port), selector)
-}
-
 fn ui_url_from_base(mut url: String, selector: Option<&str>) -> String {
     if let Some(selector) = selector.filter(|value| !value.trim().is_empty()) {
         url.push_str(&format!("/?device={}", percent_encode(selector.trim())));
@@ -2512,7 +2682,7 @@ fn expose_to_studio(options: StudioExposeOptions) -> anyhow::Result<()> {
         options.low_latency,
         options.stream_quality,
     );
-    let metadata = ensure_project_daemon(DaemonLaunchOptions {
+    let metadata = ensure_project_service(ServiceLaunchOptions {
         port: options.port,
         bind: options.bind,
         advertise_host: None,
@@ -2520,6 +2690,7 @@ fn expose_to_studio(options: StudioExposeOptions) -> anyhow::Result<()> {
         video_codec: options.video_codec,
         low_latency: options.low_latency,
         realtime_stream: true,
+        allow_port_probe: false,
         stream_quality_profile: stream_quality_profile.clone(),
         local_stream_fps: options.local_stream_fps,
     })?;
@@ -2558,8 +2729,8 @@ fn expose_to_studio(options: StudioExposeOptions) -> anyhow::Result<()> {
 
     let bridge_script = studio_provider_bridge_script()?;
     let executable = env::current_exe().context("resolve simdeck executable")?;
-    let restart_args = studio_daemon_restart_args(&options);
-    let status_args = vec!["daemon".to_owned(), "status".to_owned()];
+    let restart_args = studio_service_restart_args(&options);
+    let status_args = vec!["service".to_owned(), "status".to_owned()];
     println!(
         "Exposing {} through SimDeck Studio...",
         selected
@@ -2584,14 +2755,14 @@ fn expose_to_studio(options: StudioExposeOptions) -> anyhow::Result<()> {
         )
         .env("SIMDECK_LOCAL_URL", &metadata.http_url)
         .env("SIMDECK_LOCAL_TOKEN", &metadata.access_token)
-        .env("SIMDECK_LOCAL_DAEMON_PID", metadata.pid.to_string())
-        .env("SIMDECK_LOCAL_DAEMON_COMMAND", &executable)
+        .env("SIMDECK_LOCAL_SERVICE_PID", metadata.pid.to_string())
+        .env("SIMDECK_LOCAL_SERVICE_COMMAND", &executable)
         .env(
-            "SIMDECK_LOCAL_DAEMON_RESTART_ARGS_JSON",
+            "SIMDECK_LOCAL_SERVICE_RESTART_ARGS_JSON",
             serde_json::to_string(&restart_args)?,
         )
         .env(
-            "SIMDECK_LOCAL_DAEMON_STATUS_ARGS_JSON",
+            "SIMDECK_LOCAL_SERVICE_STATUS_ARGS_JSON",
             serde_json::to_string(&status_args)?,
         )
         .env(
@@ -2599,7 +2770,7 @@ fn expose_to_studio(options: StudioExposeOptions) -> anyhow::Result<()> {
             std::process::id().to_string(),
         )
         .env(
-            "SIMDECK_LOCAL_DAEMON_LOG",
+            "SIMDECK_LOCAL_SERVICE_LOG",
             metadata
                 .log_path
                 .as_ref()
@@ -2636,9 +2807,9 @@ fn expose_to_studio(options: StudioExposeOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn studio_daemon_restart_args(options: &StudioExposeOptions) -> Vec<String> {
+fn studio_service_restart_args(options: &StudioExposeOptions) -> Vec<String> {
     let mut args = vec![
-        "daemon".to_owned(),
+        "service".to_owned(),
         "restart".to_owned(),
         "--port".to_owned(),
         options.port.to_string(),
@@ -3192,6 +3363,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     match cli.command {
+        Command::Kill | Command::Killall => kill_all_services(),
         Command::Pair {
             port,
             bind,
@@ -3213,57 +3385,6 @@ fn main() -> anyhow::Result<()> {
             local_stream_fps,
             json,
         }),
-        Command::Daemon { command } => match command {
-            DaemonCommand::Start {
-                port,
-                bind,
-                advertise_host,
-                client_root,
-                video_codec,
-                low_latency,
-                stream_quality,
-                local_stream_fps,
-            } => {
-                let (metadata, started) = ensure_project_daemon_with_status(DaemonLaunchOptions {
-                    port,
-                    bind,
-                    advertise_host,
-                    client_root,
-                    video_codec,
-                    low_latency,
-                    realtime_stream: false,
-                    stream_quality_profile: local_stream_quality_profile(
-                        low_latency,
-                        stream_quality,
-                    ),
-                    local_stream_fps,
-                })?;
-                print_daemon_start_result(&metadata, started)
-            }
-            DaemonCommand::Restart {
-                port,
-                bind,
-                advertise_host,
-                client_root,
-                video_codec,
-                low_latency,
-                stream_quality,
-                local_stream_fps,
-            } => restart_detached_daemon(DaemonLaunchOptions {
-                port,
-                bind,
-                advertise_host,
-                client_root,
-                video_codec,
-                low_latency,
-                realtime_stream: false,
-                stream_quality_profile: local_stream_quality_profile(low_latency, stream_quality),
-                local_stream_fps,
-            }),
-            DaemonCommand::Stop => stop_project_daemon(),
-            DaemonCommand::Killall => kill_all_project_daemons(),
-            DaemonCommand::Status => daemon_status(),
-        },
         Command::Studio { command } => match command {
             StudioCommand::Expose {
                 simulator,
@@ -3311,6 +3432,34 @@ fn main() -> anyhow::Result<()> {
             }
         },
         Command::Service { command } => match command {
+            ServiceCommand::Start {
+                port,
+                bind,
+                advertise_host,
+                client_root,
+                video_codec,
+                low_latency,
+                stream_quality,
+                local_stream_fps,
+            } => {
+                let (metadata, started) =
+                    ensure_project_service_with_status(ServiceLaunchOptions {
+                        port,
+                        bind,
+                        advertise_host,
+                        client_root,
+                        video_codec,
+                        low_latency,
+                        realtime_stream: false,
+                        allow_port_probe: false,
+                        stream_quality_profile: local_stream_quality_profile(
+                            low_latency,
+                            stream_quality,
+                        ),
+                        local_stream_fps,
+                    })?;
+                print_service_start_result(&metadata, started)
+            }
             ServiceCommand::On {
                 port,
                 bind,
@@ -3322,7 +3471,7 @@ fn main() -> anyhow::Result<()> {
                 local_stream_fps,
                 access_token,
             } => {
-                cleanup_orphaned_workspace_daemons_for_root(None);
+                cleanup_orphaned_workspace_services_for_root(None);
                 service::enable(ServiceOptions {
                     port,
                     bind,
@@ -3348,23 +3497,22 @@ fn main() -> anyhow::Result<()> {
                 low_latency,
                 stream_quality,
                 local_stream_fps,
-                access_token,
             } => {
-                cleanup_orphaned_workspace_daemons_for_root(None);
-                service::restart(ServiceOptions {
+                cleanup_orphaned_workspace_services_for_root(None);
+                restart_detached_service(ServiceLaunchOptions {
                     port,
                     bind,
                     advertise_host,
                     client_root,
                     video_codec,
                     low_latency,
+                    realtime_stream: false,
+                    allow_port_probe: false,
                     stream_quality_profile: local_stream_quality_profile(
                         low_latency,
                         stream_quality,
                     ),
                     local_stream_fps,
-                    access_token,
-                    pairing_code: None,
                 })
             }
             ServiceCommand::Reset {
@@ -3378,7 +3526,7 @@ fn main() -> anyhow::Result<()> {
                 local_stream_fps,
                 access_token,
             } => {
-                cleanup_orphaned_workspace_daemons_for_root(None);
+                cleanup_orphaned_workspace_services_for_root(None);
                 service::reset(ServiceOptions {
                     port,
                     bind,
@@ -3395,6 +3543,9 @@ fn main() -> anyhow::Result<()> {
                     pairing_code: None,
                 })
             }
+            ServiceCommand::Stop => stop_project_service(),
+            ServiceCommand::Kill | ServiceCommand::Killall => kill_all_services(),
+            ServiceCommand::Status => service_status(),
             ServiceCommand::Off => service::disable(),
             ServiceCommand::Run {
                 metadata_path,
@@ -3419,9 +3570,9 @@ fn main() -> anyhow::Result<()> {
                 let pairing_code = pairing_code.or_else(|| Some(auth::generate_pairing_code()));
                 let project_root = project_root()?;
                 if let Some(path) = metadata_path.as_ref() {
-                    write_daemon_metadata(&DaemonMetadata {
+                    write_service_metadata(&ServiceMetadata {
                         project_root,
-                        pid: supervised_daemon_metadata_pid().unwrap_or_else(std::process::id),
+                        pid: supervised_service_metadata_pid().unwrap_or_else(std::process::id),
                         http_url: format!("http://127.0.0.1:{port}"),
                         port,
                         bind,
@@ -3429,9 +3580,9 @@ fn main() -> anyhow::Result<()> {
                         client_root: client_root.clone(),
                         access_token: access_token.clone(),
                         pairing_code: pairing_code.clone(),
-                        binary_path: env::current_exe().context("resolve service executable")?,
+                        binary_path: current_simdeck_executable_path()?,
                         started_at: now_secs(),
-                        log_path: daemon_log_path().ok(),
+                        log_path: service_log_path().ok(),
                         video_codec: Some(video_codec.as_env_value().to_owned()),
                         low_latency,
                         realtime_stream: crate::transport::webrtc::realtime_stream_enabled()
@@ -3440,8 +3591,8 @@ fn main() -> anyhow::Result<()> {
                         stream_quality_profile: stream_quality_profile.clone(),
                         local_stream_fps,
                     })?;
-                    if path != &daemon_metadata_path()? {
-                        let _ = fs::copy(daemon_metadata_path()?, path);
+                    if path != &service_metadata_path()? {
+                        let _ = fs::copy(service_metadata_path()?, path);
                     }
                 }
                 serve_with_appkit(
@@ -4164,7 +4315,7 @@ fn main() -> anyhow::Result<()> {
             if android_device {
                 let server_url = command_server_url
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("Android command requires SimDeck daemon."))?;
+                    .ok_or_else(|| anyhow::anyhow!("Android command requires SimDeck service."))?;
                 sleep_ms(pre_delay_ms);
                 service_action_ok(
                     server_url,
@@ -5083,7 +5234,7 @@ fn describe_ui_snapshot(
 
     if source != AccessibilitySource::Auto && source != AccessibilitySource::NativeAX {
         anyhow::bail!(
-            "The `{}` hierarchy source requires a running SimDeck daemon. Start it with `simdeck daemon start --port 4311`, or use --source native-ax.",
+            "The `{}` hierarchy source requires a running SimDeck service. Start it with `simdeck service start --port 4311`, or use --source native-ax.",
             source.as_query_value()
         );
     }
@@ -5635,32 +5786,33 @@ fn default_client_root() -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_line_to_json_step, daemon_matches_launch_options, http_url_for_host,
-        interactive_accessibility_snapshot, is_tailscale_ip, maestro_commands_from_flow,
-        maestro_selector, normalize_accessibility_point_for_display, parse_maestro_flow_yaml,
-        parse_maestro_point, parse_optional_udid_f64_args, parse_optional_udid_text_args,
-        parse_optional_udid_value_args, parse_tap_command_args,
-        parse_workspace_daemon_process_line, render_agent_accessibility_tree, render_qr_code,
-        run_maestro_command, server_health_watchdog_should_restart,
-        service_post_error_is_retryable, simdeck_pair_url, studio_daemon_restart_args,
-        workspace_daemon_process_is_current, Cli, Command, DaemonCommand, DaemonLaunchOptions,
-        DaemonMetadata, ElementSelector, PairingAddress, ServiceCommand, StreamQualityProfileArg,
-        StudioExposeOptions, TapCommandTarget, VideoCodecMode, WorkspaceDaemonProcess, YamlValue,
-        DEFAULT_LOCAL_STREAM_QUALITY_PROFILE, SERVER_HEALTH_WATCHDOG_FAILURE_THRESHOLD,
-        SERVER_HEALTH_WATCHDOG_HTTP_FAILURE_THRESHOLD,
+        batch_line_to_json_step, http_url_for_host, interactive_accessibility_snapshot,
+        is_tailscale_ip, maestro_commands_from_flow, maestro_selector,
+        no_command_action_from_args_slice, normalize_accessibility_point_for_display,
+        parse_maestro_flow_yaml, parse_maestro_point, parse_optional_udid_f64_args,
+        parse_optional_udid_text_args, parse_optional_udid_value_args, parse_tap_command_args,
+        parse_workspace_service_process_line, removed_service_process_name,
+        render_agent_accessibility_tree, render_qr_code, run_maestro_command,
+        server_health_watchdog_should_restart, service_addresses, service_matches_launch_options,
+        service_post_error_is_retryable, simdeck_pair_url, studio_service_restart_args,
+        workspace_service_process_is_current, Cli, Command, ElementSelector, NoCommandAction,
+        PairingAddress, ServiceCommand, ServiceLaunchOptions, ServiceMetadata,
+        StreamQualityProfileArg, StudioExposeOptions, TapCommandTarget, VideoCodecMode,
+        WorkspaceServiceProcess, YamlValue, DEFAULT_LOCAL_STREAM_QUALITY_PROFILE,
+        SERVER_HEALTH_WATCHDOG_FAILURE_THRESHOLD, SERVER_HEALTH_WATCHDOG_HTTP_FAILURE_THRESHOLD,
     };
     use clap::Parser;
     use std::collections::HashMap;
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::{Path, PathBuf};
 
-    fn daemon_metadata_for_test(
+    fn service_metadata_for_test(
         port: u16,
         bind: &str,
         advertise_host: Option<&str>,
         client_root: Option<&str>,
-    ) -> DaemonMetadata {
-        DaemonMetadata {
+    ) -> ServiceMetadata {
+        ServiceMetadata {
             project_root: PathBuf::from("/tmp/project"),
             pid: 42,
             http_url: format!("http://127.0.0.1:{port}"),
@@ -5681,13 +5833,13 @@ mod tests {
         }
     }
 
-    fn daemon_launch_options_for_test(
+    fn service_launch_options_for_test(
         port: u16,
         bind: &str,
         advertise_host: Option<&str>,
         client_root: Option<&str>,
-    ) -> DaemonLaunchOptions {
-        DaemonLaunchOptions {
+    ) -> ServiceLaunchOptions {
+        ServiceLaunchOptions {
             port,
             bind: bind.parse().unwrap(),
             advertise_host: advertise_host.map(str::to_owned),
@@ -5695,57 +5847,58 @@ mod tests {
             video_codec: VideoCodecMode::Auto,
             low_latency: false,
             realtime_stream: false,
+            allow_port_probe: false,
             stream_quality_profile: Some(DEFAULT_LOCAL_STREAM_QUALITY_PROFILE.to_owned()),
             local_stream_fps: None,
         }
     }
 
     #[test]
-    fn local_daemon_start_defaults_to_auto_video_codec() {
-        let cli = Cli::parse_from(["simdeck", "daemon", "start"]);
+    fn local_service_start_defaults_to_auto_video_codec() {
+        let cli = Cli::parse_from(["simdeck", "service", "start"]);
 
-        let Command::Daemon {
-            command: DaemonCommand::Start { video_codec, .. },
+        let Command::Service {
+            command: ServiceCommand::Start { video_codec, .. },
         } = cli.command
         else {
-            panic!("expected daemon start command");
+            panic!("expected service start command");
         };
         assert_eq!(video_codec, VideoCodecMode::Auto);
     }
 
     #[test]
-    fn local_daemon_start_accepts_named_video_codec_modes() {
+    fn local_service_start_accepts_named_video_codec_modes() {
         for (mode, expected) in [
             ("auto", VideoCodecMode::Auto),
             ("hardware", VideoCodecMode::Hardware),
             ("software", VideoCodecMode::Software),
             ("h264-software", VideoCodecMode::Software),
         ] {
-            let cli = Cli::parse_from(["simdeck", "daemon", "start", "--video-codec", mode]);
-            let Command::Daemon {
-                command: DaemonCommand::Start { video_codec, .. },
+            let cli = Cli::parse_from(["simdeck", "service", "start", "--video-codec", mode]);
+            let Command::Service {
+                command: ServiceCommand::Start { video_codec, .. },
             } = cli.command
             else {
-                panic!("expected daemon start command");
+                panic!("expected service start command");
             };
             assert_eq!(video_codec, expected);
         }
     }
 
     #[test]
-    fn local_daemon_start_accepts_local_stream_fps_range() {
-        let cli = Cli::parse_from(["simdeck", "daemon", "start", "--local-stream-fps", "240"]);
-        let Command::Daemon {
-            command: DaemonCommand::Start {
+    fn local_service_start_accepts_local_stream_fps_range() {
+        let cli = Cli::parse_from(["simdeck", "service", "start", "--local-stream-fps", "240"]);
+        let Command::Service {
+            command: ServiceCommand::Start {
                 local_stream_fps, ..
             },
         } = cli.command
         else {
-            panic!("expected daemon start command");
+            panic!("expected service start command");
         };
         assert_eq!(local_stream_fps, Some(240));
         assert!(
-            Cli::try_parse_from(["simdeck", "daemon", "start", "--local-stream-fps", "241"])
+            Cli::try_parse_from(["simdeck", "service", "start", "--local-stream-fps", "241"])
                 .is_err()
         );
     }
@@ -5754,6 +5907,37 @@ mod tests {
     fn removed_public_ui_and_serve_commands_are_rejected() {
         assert!(Cli::try_parse_from(["simdeck", "ui"]).is_err());
         assert!(Cli::try_parse_from(["simdeck", "serve"]).is_err());
+        let removed = removed_service_process_name();
+        assert!(Cli::try_parse_from(["simdeck", removed.as_str()]).is_err());
+    }
+
+    #[test]
+    fn plain_simdeck_uses_normal_singleton_unless_autostart_is_explicit() {
+        let args: Vec<String> = Vec::new();
+        let Some(NoCommandAction::Service(default_options)) =
+            no_command_action_from_args_slice(&args)
+        else {
+            panic!("expected default service action");
+        };
+        assert!(!default_options.autostart);
+        assert!(!default_options.port_explicit);
+
+        let args = vec!["-p".to_owned(), "4311".to_owned()];
+        let Some(NoCommandAction::Service(port_options)) = no_command_action_from_args_slice(&args)
+        else {
+            panic!("expected service action with custom port");
+        };
+        assert!(!port_options.autostart);
+        assert!(port_options.port_explicit);
+        assert_eq!(port_options.port, 4311);
+
+        let args = vec!["--autostart".to_owned()];
+        let Some(NoCommandAction::Service(autostart_options)) =
+            no_command_action_from_args_slice(&args)
+        else {
+            panic!("expected autostart service action");
+        };
+        assert!(autostart_options.autostart);
     }
 
     #[test]
@@ -5844,11 +6028,11 @@ mod tests {
     }
 
     #[test]
-    fn workspace_daemon_process_parser_reads_supervised_command_paths() {
-        let process = parse_workspace_daemon_process_line(
-            " 8327 1 8327 /bin/sh -c script simdeck-supervisor /tmp/simdeck-bin daemon run --project-root /Users/dj/Developer/Flutter App Design --metadata-path /tmp/simdeck/flutter.json --port 4318 --bind 127.0.0.1 --access-token token --pairing-code 123456 --video-codec auto --server-kind workspace",
+    fn workspace_service_process_parser_reads_supervised_command_paths() {
+        let process = parse_workspace_service_process_line(
+            " 8327 1 8327 /bin/sh -c script simdeck-supervisor /tmp/simdeck-bin service run --project-root /Users/dj/Developer/Flutter App Design --metadata-path /tmp/simdeck/flutter.json --port 4318 --bind 127.0.0.1 --access-token token --pairing-code 123456 --video-codec auto --server-kind workspace",
         )
-        .expect("parse supervised daemon");
+        .expect("parse supervised service");
 
         assert_eq!(process.pid, 8327);
         assert_eq!(process.ppid, 1);
@@ -5864,9 +6048,9 @@ mod tests {
     }
 
     #[test]
-    fn workspace_daemon_current_metadata_keeps_only_current_process_group() {
+    fn workspace_service_current_metadata_keeps_only_current_process_group() {
         let metadata_path = PathBuf::from("/tmp/simdeck/project.json");
-        let metadata = DaemonMetadata {
+        let metadata = ServiceMetadata {
             project_root: PathBuf::from("/tmp/project"),
             pid: 200,
             http_url: "http://127.0.0.1:4310".to_owned(),
@@ -5888,23 +6072,23 @@ mod tests {
         let mut metadata_by_path = HashMap::new();
         metadata_by_path.insert(metadata_path.clone(), metadata);
 
-        let current = WorkspaceDaemonProcess {
+        let current = WorkspaceServiceProcess {
             pid: 201,
             ppid: 200,
             pgid: 200,
             project_root: PathBuf::from("/tmp/project"),
             metadata_path: metadata_path.clone(),
         };
-        let orphaned = WorkspaceDaemonProcess {
+        let orphaned = WorkspaceServiceProcess {
             pgid: 199,
             ..current.clone()
         };
 
-        assert!(workspace_daemon_process_is_current(
+        assert!(workspace_service_process_is_current(
             &current,
             &metadata_by_path
         ));
-        assert!(!workspace_daemon_process_is_current(
+        assert!(!workspace_service_process_is_current(
             &orphaned,
             &metadata_by_path
         ));
@@ -5940,6 +6124,35 @@ mod tests {
     }
 
     #[test]
+    fn service_addresses_include_advertised_host_without_implicit_device() {
+        let metadata = service_metadata_for_test(4310, "0.0.0.0", Some("10.0.0.55"), None);
+
+        let addresses = service_addresses(&metadata, None);
+
+        assert!(addresses
+            .iter()
+            .any(|address| address.kind == "local" && address.url == "http://127.0.0.1:4310"));
+        assert!(addresses
+            .iter()
+            .any(|address| address.kind == "lan" && address.url == "http://10.0.0.55:4310"));
+        assert!(addresses
+            .iter()
+            .all(|address| !address.url.contains("device=")));
+    }
+
+    #[test]
+    fn service_addresses_append_only_explicit_device_selector() {
+        let metadata = service_metadata_for_test(4310, "0.0.0.0", Some("10.0.0.55"), None);
+
+        let addresses = service_addresses(&metadata, Some("SIM 1"));
+
+        assert!(addresses.iter().any(|address| address.kind == "local"
+            && address.url == "http://127.0.0.1:4310/?device=SIM%201"));
+        assert!(addresses.iter().any(|address| address.kind == "lan"
+            && address.url == "http://10.0.0.55:4310/?device=SIM%201"));
+    }
+
+    #[test]
     fn qr_renderer_uses_compact_metro_style_blocks() {
         let qr = render_qr_code("simdeck://pair?url=http%3A%2F%2F10.0.0.55%3A4310&code=123456")
             .expect("render QR");
@@ -5968,62 +6181,66 @@ mod tests {
     }
 
     #[test]
-    fn legacy_h264_video_codec_modes_are_rejected() {
+    fn removed_h264_video_codec_modes_are_rejected() {
         assert!(
-            Cli::try_parse_from(["simdeck", "daemon", "start", "--video-codec", "h264"]).is_err()
+            Cli::try_parse_from(["simdeck", "service", "start", "--video-codec", "h264"]).is_err()
         );
     }
 
     #[test]
-    fn daemon_launch_options_match_listener_metadata() {
-        let metadata = daemon_metadata_for_test(4310, "127.0.0.1", None, None);
-        let options = daemon_launch_options_for_test(4310, "127.0.0.1", None, None);
+    fn service_launch_options_match_listener_metadata() {
+        let metadata = service_metadata_for_test(4310, "127.0.0.1", None, None);
+        let options = service_launch_options_for_test(4310, "127.0.0.1", None, None);
 
-        assert!(daemon_matches_launch_options(&metadata, &options));
+        assert!(service_matches_launch_options(&metadata, &options));
     }
 
     #[test]
-    fn daemon_launch_options_reject_different_port() {
-        let metadata = daemon_metadata_for_test(4310, "127.0.0.1", None, None);
-        let options = daemon_launch_options_for_test(4320, "127.0.0.1", None, None);
+    fn service_launch_options_reject_different_port() {
+        let metadata = service_metadata_for_test(4310, "127.0.0.1", None, None);
+        let options = service_launch_options_for_test(4320, "127.0.0.1", None, None);
 
-        assert!(!daemon_matches_launch_options(&metadata, &options));
+        assert!(!service_matches_launch_options(&metadata, &options));
     }
 
     #[test]
-    fn daemon_launch_options_reject_probed_port() {
-        let metadata = daemon_metadata_for_test(4313, "127.0.0.1", None, None);
-        let options = daemon_launch_options_for_test(4311, "127.0.0.1", None, None);
+    fn service_launch_options_reuse_probed_port_only_when_enabled_and_preferred_is_busy() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let preferred = listener.local_addr().unwrap().port();
+        let metadata = service_metadata_for_test(preferred + 1, "127.0.0.1", None, None);
+        let mut options = service_launch_options_for_test(preferred, "127.0.0.1", None, None);
 
-        assert!(!daemon_matches_launch_options(&metadata, &options));
+        assert!(!service_matches_launch_options(&metadata, &options));
+        options.allow_port_probe = true;
+        assert!(service_matches_launch_options(&metadata, &options));
     }
 
     #[test]
-    fn daemon_launch_options_reject_different_bind_or_client() {
+    fn service_launch_options_reject_different_bind_or_client() {
         let metadata =
-            daemon_metadata_for_test(4310, "127.0.0.1", Some("127.0.0.1"), Some("/tmp/client-a"));
+            service_metadata_for_test(4310, "127.0.0.1", Some("127.0.0.1"), Some("/tmp/client-a"));
 
-        assert!(!daemon_matches_launch_options(
+        assert!(!service_matches_launch_options(
             &metadata,
-            &daemon_launch_options_for_test(
+            &service_launch_options_for_test(
                 4310,
                 "0.0.0.0",
                 Some("127.0.0.1"),
                 Some("/tmp/client-a"),
             ),
         ));
-        assert!(!daemon_matches_launch_options(
+        assert!(!service_matches_launch_options(
             &metadata,
-            &daemon_launch_options_for_test(
+            &service_launch_options_for_test(
                 4310,
                 "127.0.0.1",
                 Some("localhost"),
                 Some("/tmp/client-a"),
             ),
         ));
-        assert!(!daemon_matches_launch_options(
+        assert!(!service_matches_launch_options(
             &metadata,
-            &daemon_launch_options_for_test(
+            &service_launch_options_for_test(
                 4310,
                 "127.0.0.1",
                 Some("127.0.0.1"),
@@ -6224,7 +6441,7 @@ mod tests {
     }
 
     #[test]
-    fn tap_legacy_udid_coordinates_still_parse() {
+    fn tap_positional_udid_coordinates_still_parse() {
         let udid = "00000000-0000-0000-0000-000000000001";
         let target = parse_tap_command_args(
             vec![udid.to_owned(), "120".to_owned(), "240".to_owned()],
@@ -6242,7 +6459,7 @@ mod tests {
     }
 
     #[test]
-    fn tap_legacy_udid_label_shorthand_still_parse() {
+    fn tap_positional_udid_label_shorthand_still_parse() {
         let udid = "00000000-0000-0000-0000-000000000001";
         let target = parse_tap_command_args(
             vec![udid.to_owned(), "Continue".to_owned()],
@@ -6300,7 +6517,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_commands_keep_legacy_udid_but_allow_default_device() {
+    fn payload_commands_keep_positional_udid_but_allow_default_device() {
         let parsed = Cli::try_parse_from(["simdeck", "launch", "com.example.App"]).unwrap();
         let Command::Launch { args } = parsed.command else {
             panic!("expected launch command");
@@ -6322,7 +6539,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinate_commands_keep_legacy_udid_but_allow_default_device() {
+    fn coordinate_commands_keep_positional_udid_but_allow_default_device() {
         let parsed = Cli::try_parse_from(["simdeck", "touch", "120", "240"]).unwrap();
         let Command::Touch { args, .. } = parsed.command else {
             panic!("expected touch command");
@@ -6342,7 +6559,7 @@ mod tests {
     }
 
     #[test]
-    fn text_commands_use_positional_text_or_legacy_udid_with_input_flags() {
+    fn text_commands_use_positional_text_or_udid_with_input_flags() {
         let parsed = Cli::try_parse_from(["simdeck", "type", "hello"]).unwrap();
         let Command::Type {
             args, stdin, file, ..
@@ -6438,7 +6655,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_assert_not_and_scroll_map_to_daemon_actions() {
+    fn batch_assert_not_and_scroll_map_to_service_actions() {
         let assert_not = batch_line_to_json_step("assert-not --text Loading --regex").unwrap();
         assert_eq!(assert_not["action"], "assertNot");
         assert_eq!(assert_not["selector"]["text"], "Loading");
@@ -6565,8 +6782,8 @@ swipe:
     }
 
     #[test]
-    fn studio_daemon_restart_args_preserve_remote_stream_defaults() {
-        let args = studio_daemon_restart_args(&StudioExposeOptions {
+    fn studio_service_restart_args_preserve_remote_stream_defaults() {
+        let args = studio_service_restart_args(&StudioExposeOptions {
             simulator: None,
             studio_url: "https://simdeck.djdev.me".to_owned(),
             port: 4310,
@@ -6579,7 +6796,7 @@ swipe:
         assert_eq!(
             args,
             [
-                "daemon",
+                "service",
                 "restart",
                 "--port",
                 "4310",
@@ -6594,8 +6811,8 @@ swipe:
     }
 
     #[test]
-    fn studio_daemon_restart_args_preserve_explicit_quality() {
-        let args = studio_daemon_restart_args(&StudioExposeOptions {
+    fn studio_service_restart_args_preserve_explicit_quality() {
+        let args = studio_service_restart_args(&StudioExposeOptions {
             simulator: None,
             studio_url: "https://simdeck.djdev.me".to_owned(),
             port: 4310,

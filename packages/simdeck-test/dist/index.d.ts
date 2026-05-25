@@ -1,7 +1,7 @@
 export type SimDeckLaunchOptions = {
     cliPath?: string;
     projectRoot?: string;
-    keepDaemon?: boolean;
+    keepService?: boolean;
     isolated?: boolean;
     port?: number;
     videoCodec?: "auto" | "hardware" | "software" | "h264-software";

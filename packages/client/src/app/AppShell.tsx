@@ -477,15 +477,9 @@ export function AppShell({
     updateSimulator,
   } = useSimulatorList({ remote: remoteStream });
   const providerDisconnected = isProviderDisconnected(listError);
-  const [debugVisible, setDebugVisible] = useState(() =>
-    readStoredFlag(DEBUG_VISIBLE_STORAGE_KEY),
-  );
-  const [hierarchyVisible, setHierarchyVisible] = useState(() =>
-    readStoredFlag(HIERARCHY_VISIBLE_STORAGE_KEY),
-  );
-  const [devToolsVisible, setDevToolsVisible] = useState(() =>
-    readStoredFlag(DEVTOOLS_VISIBLE_STORAGE_KEY, false),
-  );
+  const [debugVisible, setDebugVisible] = useState(false);
+  const [hierarchyVisible, setHierarchyVisible] = useState(false);
+  const [devToolsVisible, setDevToolsVisible] = useState(false);
   const [selectedUDID, setSelectedUDID] = useState(initialSelectedUDID ?? "");
   const [search, setSearch] = useState("");
   const openURLValueRef = useRef(

@@ -62,7 +62,7 @@ pub struct ConnectedInspector {
 pub struct PublishedInspector {
     pub access_token: String,
     pub available_sources: Vec<String>,
-    pub daemon_id: String,
+    pub service_id: String,
     pub info: Value,
     pub process_identifier: i64,
     pub server_url: String,
@@ -88,7 +88,7 @@ impl Default for InspectorRegistryFile {
 #[derive(Clone)]
 pub struct InspectorRegistryAdvertisement {
     access_token: String,
-    daemon_id: String,
+    service_id: String,
     path: PathBuf,
     server_url: String,
 }
@@ -434,7 +434,7 @@ impl InspectorRegistryAdvertisement {
     pub fn new(config: &crate::config::Config) -> Self {
         Self {
             access_token: config.access_token.clone(),
-            daemon_id: format!("{}:{}", process::id(), config.http_port),
+            service_id: format!("{}:{}", process::id(), config.http_port),
             path: inspector_registry_path(),
             server_url: registry_server_url(config),
         }
@@ -443,13 +443,13 @@ impl InspectorRegistryAdvertisement {
     #[cfg(test)]
     pub fn for_test(
         path: PathBuf,
-        daemon_id: impl Into<String>,
+        service_id: impl Into<String>,
         server_url: impl Into<String>,
         access_token: impl Into<String>,
     ) -> Self {
         Self {
             access_token: access_token.into(),
-            daemon_id: daemon_id.into(),
+            service_id: service_id.into(),
             path,
             server_url: server_url.into(),
         }
@@ -460,12 +460,12 @@ impl InspectorRegistryAdvertisement {
         let mut registry = read_registry_file(&self.path);
         prune_registry_file(&mut registry);
         registry.inspectors.retain(|entry| {
-            !(entry.process_identifier == process_identifier && entry.daemon_id == self.daemon_id)
+            !(entry.process_identifier == process_identifier && entry.service_id == self.service_id)
         });
         registry.inspectors.push(PublishedInspector {
             access_token: self.access_token.clone(),
             available_sources: inspector_available_sources(&info),
-            daemon_id: self.daemon_id.clone(),
+            service_id: self.service_id.clone(),
             info,
             process_identifier,
             server_url: self.server_url.clone(),
@@ -479,7 +479,7 @@ impl InspectorRegistryAdvertisement {
         let mut registry = read_registry_file(&self.path);
         let original_len = registry.inspectors.len();
         registry.inspectors.retain(|entry| {
-            !(entry.process_identifier == process_identifier && entry.daemon_id == self.daemon_id)
+            !(entry.process_identifier == process_identifier && entry.service_id == self.service_id)
         });
         prune_registry_file(&mut registry);
         if registry.inspectors.len() != original_len {
@@ -846,7 +846,7 @@ mod tests {
     fn registry_entry(path: &Path) -> InspectorRegistryAdvertisement {
         InspectorRegistryAdvertisement::for_test(
             path.to_path_buf(),
-            "daemon-a",
+            "service-a",
             "http://127.0.0.1:4310",
             "token-a",
         )
@@ -893,7 +893,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let entry = &entries[0];
         assert_eq!(entry.process_identifier, 123);
-        assert_eq!(entry.daemon_id, "daemon-a");
+        assert_eq!(entry.service_id, "service-a");
         assert_eq!(entry.server_url, "http://127.0.0.1:4310");
         assert_eq!(entry.access_token, "token-a");
         assert_eq!(
@@ -1061,7 +1061,7 @@ mod tests {
                     PublishedInspector {
                         access_token: "stale-token".to_owned(),
                         available_sources: vec!["nativescript".to_owned()],
-                        daemon_id: "stale-daemon".to_owned(),
+                        service_id: "stale-service".to_owned(),
                         info: inspector_info(),
                         process_identifier: 111,
                         server_url: "http://127.0.0.1:4311".to_owned(),
@@ -1070,7 +1070,7 @@ mod tests {
                     PublishedInspector {
                         access_token: "fresh-token".to_owned(),
                         available_sources: vec!["react-native".to_owned()],
-                        daemon_id: "fresh-daemon".to_owned(),
+                        service_id: "fresh-service".to_owned(),
                         info: inspector_info(),
                         process_identifier: 222,
                         server_url: "http://127.0.0.1:4312".to_owned(),
@@ -1085,7 +1085,7 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].process_identifier, 222);
-        assert_eq!(entries[0].daemon_id, "fresh-daemon");
+        assert_eq!(entries[0].service_id, "fresh-service");
 
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("json.lock"));

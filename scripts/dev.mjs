@@ -77,7 +77,7 @@ const cli = spawn(
     "service",
     "run",
     "--metadata-path",
-    resolve(ROOT, "build/dev-daemon.json"),
+    resolve(ROOT, "build/dev-service.json"),
     "--port",
     SERVER_PORT,
     "--access-token",

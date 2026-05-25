@@ -240,17 +240,17 @@ static BOOL XCWPrivateBootErrorMeansAlreadyBooted(NSError *error) {
 
         SEL bootWithErrorSelector = sel_registerName("bootWithError:");
         if ([targetDevice respondsToSelector:bootWithErrorSelector]) {
-            NSError *legacyBootError = nil;
+            NSError *fallbackBootError = nil;
             booted = ((BOOL(*)(id, SEL, NSError **))objc_msgSend)(
                 targetDevice,
                 bootWithErrorSelector,
-                &legacyBootError
+                &fallbackBootError
             );
-            if (booted || XCWPrivateBootErrorMeansAlreadyBooted(legacyBootError)) {
+            if (booted || XCWPrivateBootErrorMeansAlreadyBooted(fallbackBootError)) {
                 return YES;
             }
-            if (legacyBootError != nil) {
-                bootError = legacyBootError;
+            if (fallbackBootError != nil) {
+                bootError = fallbackBootError;
             }
         }
 

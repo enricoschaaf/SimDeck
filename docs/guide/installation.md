@@ -83,8 +83,8 @@ npm install -g simdeck@latest
 npm uninstall -g simdeck
 ```
 
-Stop a running daemon before uninstalling:
+Stop a running service before uninstalling:
 
 ```sh
-simdeck daemon stop
+simdeck service stop
 ```

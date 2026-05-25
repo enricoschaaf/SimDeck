@@ -71,7 +71,7 @@ Most successful commands print JSON so they can be piped into tools such as `jq`
 ```sh
 simdeck --help
 simdeck tap --help
-simdeck daemon status
+simdeck service status
 ```
 
 ## Next

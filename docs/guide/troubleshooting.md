@@ -7,14 +7,14 @@ Use this page when SimDeck does not start, cannot see a device, shows a bad stre
 ```sh
 simdeck --version
 xcode-select -p
-simdeck daemon status
+simdeck service status
 simdeck list
 ```
 
 If the background service may be stale:
 
 ```sh
-simdeck daemon stop
+simdeck service stop
 simdeck
 ```
 
@@ -41,7 +41,7 @@ lsof -nP -iTCP:4310 -sTCP:LISTEN
 If it is an old service:
 
 ```sh
-simdeck daemon stop
+simdeck service stop
 ```
 
 ### Native binary is missing
@@ -112,13 +112,13 @@ Android IDs in SimDeck use `android:<avd-name>`.
 Try software encoding:
 
 ```sh
-simdeck daemon restart --video-codec software
+simdeck service restart --video-codec software
 ```
 
 For CI or virtualized Macs:
 
 ```sh
-simdeck daemon restart --video-codec software --stream-quality ci-software
+simdeck service restart --video-codec software --stream-quality ci-software
 ```
 
 ### Stream stutters or refreshes repeatedly
@@ -126,7 +126,7 @@ simdeck daemon restart --video-codec software --stream-quality ci-software
 Lower the quality:
 
 ```sh
-simdeck daemon restart --stream-quality low
+simdeck service restart --stream-quality low
 ```
 
 Check metrics:
@@ -213,4 +213,4 @@ Include:
 - Xcode version
 - The command you ran
 - Service output, or `build/cli.log` when using `npm run dev`
-- `simdeck daemon status` without sharing the token publicly
+- `simdeck service status` without sharing the token publicly

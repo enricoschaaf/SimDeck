@@ -18,6 +18,10 @@ simdeck -p 4311
 `--open` opens the local browser URL. `-p` or `--port` selects a non-default
 port; the default is `4310`.
 
+When that port is already used by a SimDeck service from another binary,
+`simdeck` leaves it running and uses the next available port. This keeps source
+checkout builds fast without touching your installed service.
+
 ## Autostart
 
 ```sh
@@ -36,21 +40,25 @@ code, and renders the QR/deep link for the native iOS app.
 ## Manage
 
 ```sh
-simdeck daemon status
-simdeck daemon stop
-simdeck daemon restart
+simdeck service status
+simdeck service stop
+simdeck service kill
+simdeck service killall
+simdeck service restart
 simdeck service reset
 simdeck service off
 ```
 
-`daemon status`, `daemon stop`, and `daemon restart` manage the same singleton
+`service status`, `service stop`, and `service restart` manage the same singleton
 service that `simdeck` uses. `service reset` rotates the LaunchAgent token and
-pairing code. `service off` removes the LaunchAgent.
+pairing code. `service off` removes the LaunchAgent. `service kill` and
+`service killall` stop every SimDeck service process they can find, including
+services started by another SimDeck binary.
 
 ## Options
 
-These options are accepted by `simdeck`, `daemon start`, `daemon restart`,
-`service on`, and `service restart`:
+These options are accepted by `simdeck`, `service start`, `service restart`,
+`service on`, and `service reset`:
 
 | Flag                         | Default     | Use it when                                |
 | ---------------------------- | ----------- | ------------------------------------------ |

@@ -4,18 +4,19 @@ Replace `simdeck` with `./build/simdeck` when running from a source checkout.
 
 ## UI and service
 
-| Command                          | Purpose                                     |
-| -------------------------------- | ------------------------------------------- |
-| `simdeck`                        | Start or reuse the service and print URLs   |
-| `simdeck <name-or-udid>`         | Start and select a device                   |
-| `simdeck --open`                 | Open the browser UI                         |
-| `simdeck -p 4311`                | Use a non-default service port              |
-| `simdeck -a`                     | Register the service for login autostart    |
-| `simdeck pair`                   | Show native iOS pairing code and QR         |
-| `simdeck daemon status`          | Show service URL, PID, token, and log path  |
-| `simdeck daemon stop`            | Stop the current background service         |
-| `simdeck daemon restart`         | Restart the current background service      |
-| `simdeck service on/off/restart` | Manage the optional always-on macOS service |
+| Command                        | Purpose                                     |
+| ------------------------------ | ------------------------------------------- |
+| `simdeck`                      | Start or reuse the service and print URLs   |
+| `simdeck <name-or-udid>`       | Start and select a device                   |
+| `simdeck --open`               | Open the browser UI                         |
+| `simdeck -p 4311`              | Use a non-default service port              |
+| `simdeck -a`                   | Register the service for login autostart    |
+| `simdeck pair`                 | Show native iOS pairing code and QR         |
+| `simdeck service status`       | Show service URL, PID, token, and log path  |
+| `simdeck service stop`         | Stop the current background service         |
+| `simdeck service kill`         | Stop every SimDeck service process          |
+| `simdeck service restart`      | Restart the current background service      |
+| `simdeck service on/off/reset` | Manage the optional always-on macOS service |
 
 Examples:
 
@@ -23,11 +24,14 @@ Examples:
 simdeck -p 4320 --open
 simdeck --open
 simdeck pair
-simdeck daemon restart --video-codec software --stream-quality low
+simdeck service kill
+simdeck service restart --video-codec software --stream-quality low
 ```
 
 `simdeck` starts or reuses one local service. It uses port 4310 unless you pass
-`-p` or `--port`. Normal commands reuse that same warm service.
+`-p` or `--port`. If that port belongs to a SimDeck service from another
+binary, `simdeck` keeps it running and uses the next available port. Normal
+commands reuse the matching warm service.
 
 `simdeck pair` installs or refreshes the LaunchAgent-backed service. It binds
 the service for LAN access, preserves an existing service token and pairing code

@@ -9,7 +9,7 @@ import path from "node:path";
 export type SimDeckLaunchOptions = {
   cliPath?: string;
   projectRoot?: string;
-  keepDaemon?: boolean;
+  keepService?: boolean;
   isolated?: boolean;
   port?: number;
   videoCodec?: "auto" | "hardware" | "software" | "h264-software";
@@ -207,7 +207,7 @@ export type SimDeckSession = {
   close(): void;
 };
 
-type DaemonStartResult = {
+type ServiceStartResult = {
   ok: boolean;
   projectRoot: string;
   pid: number;
@@ -215,7 +215,7 @@ type DaemonStartResult = {
   started: boolean;
 };
 
-type DaemonConnection = DaemonStartResult & {
+type ServiceConnection = ServiceStartResult & {
   child?: ChildProcess;
   isolatedRoot?: string;
 };
@@ -224,9 +224,9 @@ export async function connect(
   options: SimDeckLaunchOptions = {},
 ): Promise<SimDeckSession> {
   const cliPath = options.cliPath ?? "simdeck";
-  const result: DaemonConnection = options.isolated
-    ? await startIsolatedDaemon(cliPath, options)
-    : runJson<DaemonStartResult>(cliPath, ["daemon", "start"], {
+  const result: ServiceConnection = options.isolated
+    ? await startIsolatedService(cliPath, options)
+    : runJson<ServiceStartResult>(cliPath, ["service", "start"], {
         cwd: options.projectRoot,
       });
   const endpoint = result.url;
@@ -693,7 +693,7 @@ export async function connect(
         );
       },
       close: () => {
-        if (options.keepDaemon) {
+        if (options.keepService) {
           return;
         }
         if (result.child) {
@@ -704,7 +704,7 @@ export async function connect(
           return;
         }
         if (result.started) {
-          spawnSync(cliPath, ["daemon", "stop"], { cwd: options.projectRoot });
+          spawnSync(cliPath, ["service", "stop"], { cwd: options.projectRoot });
         }
       },
     };
@@ -713,10 +713,10 @@ export async function connect(
   return createSession(options.udid);
 }
 
-async function startIsolatedDaemon(
+async function startIsolatedService(
   cliPath: string,
   options: SimDeckLaunchOptions,
-): Promise<DaemonConnection> {
+): Promise<ServiceConnection> {
   const port = options.port ?? (await freePortPair());
   const projectRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "simdeck-test-project-"),
@@ -780,7 +780,7 @@ async function waitForHealth(
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(
-        `SimDeck isolated daemon exited with ${child.exitCode}.\n${output()}`,
+        `SimDeck isolated service exited with ${child.exitCode}.\n${output()}`,
       );
     }
     try {
@@ -792,7 +792,7 @@ async function waitForHealth(
     }
   }
   throw new Error(
-    `Timed out waiting for isolated SimDeck daemon: ${
+    `Timed out waiting for isolated SimDeck service: ${
       lastError instanceof Error ? lastError.message : String(lastError)
     }\n${output()}`,
   );

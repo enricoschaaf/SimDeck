@@ -31,7 +31,7 @@
       },
       {
         "command": "simdeck.stopServer",
-        "title": "SimDeck: Stop Project Daemon"
+        "title": "SimDeck: Stop Project Service"
       },
       {
         "command": "simdeck.showOutput",
@@ -44,7 +44,7 @@
         "simdeck.serverUrl": {
           "type": "string",
           "default": "http://127.0.0.1:4310",
-          "description": "Preferred URL loaded inside the simulator webview. If this URL is not reachable, the extension tries the default always-on service URL before auto-starting a project daemon."
+          "description": "Preferred URL loaded inside the simulator webview. If this URL is not reachable, the extension tries the default always-on service URL before auto-starting a project service."
         },
         "simdeck.cliPath": {
           "type": "string",
@@ -56,22 +56,17 @@
           "default": 4311,
           "minimum": 1,
           "maximum": 65535,
-          "description": "Preferred port used when the extension auto-starts the project daemon."
+          "description": "Preferred port used when the extension auto-starts the project service."
         },
         "simdeck.bindAddress": {
           "type": "string",
           "default": "127.0.0.1",
-          "description": "Bind address used when the extension auto-starts the project daemon."
+          "description": "Bind address used when the extension auto-starts the project service."
         },
-        "simdeck.autoStartDaemon": {
+        "simdeck.autoStartService": {
           "type": "boolean",
           "default": true,
-          "description": "Start or reuse a daemon with `simdeck ui` when opening the simulator view if neither the preferred URL nor the default service URL is already reachable."
-        },
-        "simdeck.autoStartServer": {
-          "type": "boolean",
-          "default": true,
-          "description": "Deprecated. Use `simdeck.autoStartDaemon`."
+          "description": "Start or reuse a service with `simdeck service start` when opening the simulator view if neither the preferred URL nor the default service URL is already reachable."
         }
       }
     }

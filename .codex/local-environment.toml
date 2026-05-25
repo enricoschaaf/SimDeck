@@ -14,7 +14,7 @@ npm run codex:cache:save
 '''
 
 [[actions]]
-name = "Build and Restart Daemon"
+name = "Build and Restart Service"
 icon = "run"
 command = '''
 cd "$CODEX_WORKTREE_PATH"

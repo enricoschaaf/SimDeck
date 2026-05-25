@@ -91,7 +91,7 @@ simdeck pair
 ```
 
 `-a` registers the service as a macOS LaunchAgent. `pair` also enables the
-LaunchAgent and prints the native iOS pairing QR. See [Service](/guide/daemon)
+LaunchAgent and prints the native iOS pairing QR. See [Service](/guide/service)
 for details.
 
 ## Next

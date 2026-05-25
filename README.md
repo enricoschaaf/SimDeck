@@ -88,6 +88,8 @@ Normal service restarts preserve that token so paired clients stay connected.
 Use `simdeck service reset` only when you want to rotate the service token and
 restart the LaunchAgent.
 The service uses port 4310 unless you pass `-p` or `--port`.
+Use `simdeck service kill` when you want to stop every SimDeck service process,
+including services started from another checkout or installed binary.
 
 CLI commands automatically use the same warm service:
 

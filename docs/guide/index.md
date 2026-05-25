@@ -42,7 +42,7 @@ Use `simdeck --open` to open the browser, `simdeck -p 4311` for a custom port, a
 
 - [Install](/guide/installation): requirements and setup.
 - [Quick start](/guide/quick-start): first browser session.
-- [Service](/guide/daemon): local service, autostart, and pairing.
+- [Service](/guide/service): local service, autostart, and pairing.
 - [Video and streaming](/guide/video): stream quality and codec choices.
 - [LAN access](/guide/lan-access): pairing and remote browser access.
 - [Testing](/guide/testing): `simdeck/test` and integration tests.

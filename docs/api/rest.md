@@ -6,7 +6,7 @@ Use the CLI for most automation. Use the API when you are building a custom clie
 
 ## Authentication
 
-Browser sessions loaded from the SimDeck server receive auth automatically. Direct callers should send the service token from `simdeck daemon status`:
+Browser sessions loaded from the SimDeck server receive auth automatically. Direct callers should send the service token from `simdeck service status`:
 
 ```text
 X-SimDeck-Token: <token>
@@ -355,7 +355,7 @@ Log query parameters:
 | ------ | ------------------------------------------- | --------------------------------------- |
 | `GET`  | `/api/inspector/connect`                    | WebSocket for in-app runtime inspectors |
 | `GET`  | `/api/inspector/poll?processIdentifier=...` | Long-poll fallback                      |
-| `POST` | `/api/inspector/request`                    | Protected daemon-to-daemon relay        |
+| `POST` | `/api/inspector/request`                    | Protected service-to-service relay      |
 | `POST` | `/api/inspector/response`                   | Response for polled requests            |
 
 Most clients should call `/api/simulators/{udid}/inspector/request` instead of these hub routes.

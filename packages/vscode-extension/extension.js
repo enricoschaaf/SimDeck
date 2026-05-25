@@ -27,9 +27,9 @@ function activate(context) {
       }
     }),
     vscode.commands.registerCommand("simdeck.stopServer", async () => {
-      await stopProjectDaemon(context);
+      await stopProjectService(context);
       await vscode.window.showInformationMessage(
-        "Stopped the SimDeck project daemon.",
+        "Stopped the SimDeck project service.",
       );
     }),
     vscode.commands.registerCommand("simdeck.showOutput", () => {
@@ -58,14 +58,14 @@ async function resolveSimulatorUrl(context) {
   }
 
   const config = vscode.workspace.getConfiguration("simdeck");
-  const autoStart = getAutoStartDaemon(config);
+  const autoStart = getAutoStartService(config);
   if (!autoStart) {
     throw new Error(
-      `SimDeck is not reachable at ${serverUrl} or ${DEFAULT_SERVICE_URL}. Enable auto-start or launch the daemon manually.`,
+      `SimDeck is not reachable at ${serverUrl} or ${DEFAULT_SERVICE_URL}. Enable auto-start or launch the service manually.`,
     );
   }
 
-  return await startProjectDaemon(context);
+  return await startProjectService(context);
 }
 
 async function resolveExistingServiceUrl(preferredUrl) {
@@ -84,52 +84,44 @@ function serviceUrlCandidates(preferredUrl) {
   return [DEFAULT_SERVICE_URL];
 }
 
-function getAutoStartDaemon(config) {
-  const daemonSetting = config.inspect("autoStartDaemon");
-  if (
-    daemonSetting?.workspaceValue !== undefined ||
-    daemonSetting?.workspaceFolderValue !== undefined ||
-    daemonSetting?.globalValue !== undefined
-  ) {
-    return config.get("autoStartDaemon", true);
-  }
-  return config.get("autoStartServer", true);
+function getAutoStartService(config) {
+  return config.get("autoStartService", true);
 }
 
-async function startProjectDaemon(context) {
+async function startProjectService(context) {
   const config = vscode.workspace.getConfiguration("simdeck");
   const cliPath = resolveCliPath(context, config.get("cliPath", ""));
   const port = String(config.get("port", 4311));
   const bindAddress = config.get("bindAddress", "127.0.0.1");
-  const args = ["ui", "--port", port, "--bind", bindAddress];
+  const args = ["service", "start", "--port", port, "--bind", bindAddress];
 
-  outputChannel.appendLine(`Starting SimDeck project daemon using ${cliPath}`);
+  outputChannel.appendLine(`Starting SimDeck project service using ${cliPath}`);
   const result = await runCli(context, cliPath, args);
   outputChannel.append(result.stderr);
 
   const deadline = Date.now() + 15000;
-  const metadata = parseJsonOutput(result.stdout, "simdeck ui");
-  const daemonUrl = metadata.url;
-  if (typeof daemonUrl !== "string" || daemonUrl.length === 0) {
-    throw new Error("simdeck ui did not return a daemon URL.");
+  const metadata = parseJsonOutput(result.stdout, "simdeck service start");
+  const serviceUrl = metadata.url;
+  if (typeof serviceUrl !== "string" || serviceUrl.length === 0) {
+    throw new Error("simdeck service start did not return a service URL.");
   }
 
   while (Date.now() < deadline) {
-    if (await isServerHealthy(daemonUrl)) {
-      outputChannel.appendLine(`SimDeck daemon ready at ${daemonUrl}`);
-      return daemonUrl;
+    if (await isServerHealthy(serviceUrl)) {
+      outputChannel.appendLine(`SimDeck service ready at ${serviceUrl}`);
+      return serviceUrl;
     }
     await delay(250);
   }
 
-  throw new Error(`Timed out waiting for SimDeck at ${daemonUrl}.`);
+  throw new Error(`Timed out waiting for SimDeck at ${serviceUrl}.`);
 }
 
-async function stopProjectDaemon(context) {
+async function stopProjectService(context) {
   const config = vscode.workspace.getConfiguration("simdeck");
   const cliPath = resolveCliPath(context, config.get("cliPath", ""));
-  outputChannel.appendLine(`Stopping SimDeck project daemon using ${cliPath}`);
-  const result = await runCli(context, cliPath, ["daemon", "stop"]);
+  outputChannel.appendLine(`Stopping SimDeck project service using ${cliPath}`);
+  const result = await runCli(context, cliPath, ["service", "stop"]);
   outputChannel.append(result.stderr);
 }
 

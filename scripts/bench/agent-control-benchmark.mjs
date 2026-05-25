@@ -65,7 +65,7 @@ async function main() {
     reps: options.reps,
     versions,
     notes: [
-      "Cold rows stop tool daemons where practical before measuring the next first command.",
+      "Cold rows stop tool services where practical before measuring the next first command.",
       "Setup/reset work is excluded from action timings and uses xcrun/simdeck to normalize Settings state.",
       "Argent has no selector tap/wait primitive in this comparison, so comparable navigation uses AX-derived coordinates.",
     ],
@@ -101,17 +101,17 @@ async function benchmarkSimDeck(udid) {
   section("simdeck");
 
   await sample("simdeck", "tool-start", "cold", 1, async () => {
-    run(simdeckBin, ["daemon", "stop"], {
+    run(simdeckBin, ["service", "stop"], {
       allowFailure: true,
       timeoutMs: 5000,
     });
-    return run(simdeckBin, ["daemon", "start", "--port", "4310"], {
+    return run(simdeckBin, ["service", "start", "--port", "4310"], {
       timeoutMs: 20000,
     });
   });
 
   await sample("simdeck", "tool-start", "hot", 1, async () =>
-    run(simdeckBin, ["daemon", "start", "--port", "4310"], {
+    run(simdeckBin, ["service", "start", "--port", "4310"], {
       timeoutMs: 10000,
     }),
   );
@@ -1033,9 +1033,9 @@ function agentDevicePids() {
     }
     if (
       command.includes("agent-device") &&
-      (command.includes("internal/daemon") ||
+      (command.includes("internal/service") ||
         command.includes("AgentDeviceRunnerUITests") ||
-        command.includes("agent-device-daemon"))
+        command.includes("agent-device-service"))
     ) {
       pids.push(pid);
     }

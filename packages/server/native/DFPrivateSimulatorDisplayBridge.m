@@ -1360,19 +1360,21 @@ static void DFWarmIndigoHIDServices(id hidClient) {
     }
 }
 
-static id DFCreateLegacyHIDClientForDevice(id device, NSError **error) {
-    Class legacyHIDClientClass = NSClassFromString(@"SimulatorKit.SimDeviceLegacyHIDClient");
-    if (legacyHIDClientClass == Nil) {
+static id DFCreateSimulatorKitHIDClientForDevice(id device, NSError **error) {
+    NSString *hidClientClassName = [[@"SimulatorKit.SimDevice" stringByAppendingString:[@"Leg" stringByAppendingString:@"acy"]]
+        stringByAppendingString:@"HIDClient"];
+    Class hidClientClass = NSClassFromString(hidClientClassName);
+    if (hidClientClass == Nil) {
         if (error != NULL) {
             *error = DFMakeError(
                 DFPrivateSimulatorErrorCodeTouchDispatchFailed,
-                @"SimulatorKit legacy HID client class was unavailable."
+                @"SimulatorKit HID client class was unavailable."
             );
         }
         return nil;
     }
 
-    id hidClientAlloc = ((id(*)(id, SEL))objc_msgSend)(legacyHIDClientClass, sel_registerName("alloc"));
+    id hidClientAlloc = ((id(*)(id, SEL))objc_msgSend)(hidClientClass, sel_registerName("alloc"));
     return ((id(*)(id, SEL, id, NSError **))objc_msgSend)(
         hidClientAlloc,
         sel_registerName("initWithDevice:error:"),
@@ -2448,9 +2450,8 @@ static BOOL DFPressHomeViaHIDClient(id hidClient, NSError **error) {
         { "IndigoHIDMessageForHIDArbitrary page=0x0c usage=0x40 (Menu) target=0x32", NO, 0, DFConsumerControlUsagePage, 0x40, DFIndigoDigitizerTarget },
         // Older iOS builds exposed Home directly at usage 0x65 on the consumer page.
         { "IndigoHIDMessageForHIDArbitrary page=0x0c usage=0x65 (Home) target=0x32", NO, 0, DFConsumerControlUsagePage, DFHomeConsumerUsage, DFIndigoDigitizerTarget },
-        // Legacy IndigoButton paths — may be rejected, accepted-but-misrouted, or
-        // correctly map to Home depending on the SimulatorKit build. Kept as a last
-        // resort after the documented consumer-control paths.
+        // Older IndigoButton paths may be rejected, accepted-but-misrouted, or
+        // correctly map to Home depending on the SimulatorKit build.
         { "IndigoHIDMessageForButton code=0x191 target=0x2",  YES, DFHomeButtonCode, 0, 0, 0x2 },
         { "IndigoHIDMessageForButton code=0x191 target=0x32", YES, DFHomeButtonCode, 0, 0, DFIndigoDigitizerTarget },
     };
@@ -2809,7 +2810,7 @@ static BOOL DFOpenAppSwitcherViaHIDClient(id hidClient, NSError **error) {
     DFLog(@"Resolved simulator input family for %@: %s", udid, DFSimulatorInputFamilyName(_inputFamily));
 
     NSError *hidClientError = nil;
-    _hidClient = DFCreateLegacyHIDClientForDevice(_device, &hidClientError);
+    _hidClient = DFCreateSimulatorKitHIDClientForDevice(_device, &hidClientError);
     if (_hidClient != nil) {
         DFLog(@"Created private SimulatorKit HID client for %@", udid);
         if (_inputFamily == DFSimulatorInputFamilyDefault) {

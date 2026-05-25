@@ -10,18 +10,18 @@ run("npm", ["run", "build:cli"]);
 run("npm", ["run", "build:client"]);
 run("node", ["scripts/codex-worktree-cache.mjs", "save", "--best-effort"]);
 
-const daemonArgs = ["daemon", "restart"];
-pushOptionalEnv(daemonArgs, "--port", "SIMDECK_DAEMON_PORT");
-pushOptionalEnv(daemonArgs, "--bind", "SIMDECK_DAEMON_BIND");
-pushOptionalEnv(daemonArgs, "--advertise-host", "SIMDECK_ADVERTISE_HOST");
-pushOptionalEnv(daemonArgs, "--video-codec", "SIMDECK_VIDEO_CODEC");
-pushOptionalEnv(daemonArgs, "--stream-quality", "SIMDECK_STREAM_QUALITY");
-pushOptionalEnv(daemonArgs, "--local-stream-fps", "SIMDECK_LOCAL_STREAM_FPS");
+const serviceArgs = ["service", "restart"];
+pushOptionalEnv(serviceArgs, "--port", "SIMDECK_SERVICE_PORT");
+pushOptionalEnv(serviceArgs, "--bind", "SIMDECK_SERVICE_BIND");
+pushOptionalEnv(serviceArgs, "--advertise-host", "SIMDECK_ADVERTISE_HOST");
+pushOptionalEnv(serviceArgs, "--video-codec", "SIMDECK_VIDEO_CODEC");
+pushOptionalEnv(serviceArgs, "--stream-quality", "SIMDECK_STREAM_QUALITY");
+pushOptionalEnv(serviceArgs, "--local-stream-fps", "SIMDECK_LOCAL_STREAM_FPS");
 if (truthy(process.env.SIMDECK_LOW_LATENCY)) {
-  daemonArgs.push("--low-latency");
+  serviceArgs.push("--low-latency");
 }
 
-run("./build/simdeck", daemonArgs);
+run("./build/simdeck", serviceArgs);
 
 function run(command, args) {
   console.log(`\n$ ${[command, ...args].join(" ")}`);

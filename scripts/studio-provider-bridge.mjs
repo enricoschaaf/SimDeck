@@ -51,15 +51,15 @@ const localUnavailableRestartMs = Math.max(
 const providerId =
   process.env.SIMDECK_STUDIO_PROVIDER_ID || stableLocalProviderId();
 const parentPid = Number(process.env.SIMDECK_PROVIDER_PARENT_PID || 0);
-let localDaemonPid = Number(process.env.SIMDECK_LOCAL_DAEMON_PID || 0);
-let localDaemonLog = process.env.SIMDECK_LOCAL_DAEMON_LOG || "";
-const localDaemonCommand = process.env.SIMDECK_LOCAL_DAEMON_COMMAND || "";
-const localDaemonRestartArgs = parseJsonArrayEnv(
-  "SIMDECK_LOCAL_DAEMON_RESTART_ARGS_JSON",
+let localServicePid = Number(process.env.SIMDECK_LOCAL_SERVICE_PID || 0);
+let localServiceLog = process.env.SIMDECK_LOCAL_SERVICE_LOG || "";
+const localServiceCommand = process.env.SIMDECK_LOCAL_SERVICE_COMMAND || "";
+const localServiceRestartArgs = parseJsonArrayEnv(
+  "SIMDECK_LOCAL_SERVICE_RESTART_ARGS_JSON",
 );
-const localDaemonStatusArgs = parseJsonArrayEnv(
-  "SIMDECK_LOCAL_DAEMON_STATUS_ARGS_JSON",
-) ?? ["daemon", "status"];
+const localServiceStatusArgs = parseJsonArrayEnv(
+  "SIMDECK_LOCAL_SERVICE_STATUS_ARGS_JSON",
+) ?? ["service", "status"];
 
 let stopped = false;
 let lastRegisterAt = 0;
@@ -156,7 +156,7 @@ async function registerProvider() {
   try {
     let metadata = await localProviderMetadata();
     updateLocalAvailability(metadata);
-    await maybeRestartLocalDaemon(metadata);
+    await maybeRestartLocalService(metadata);
     if (!metadata.ok && !localUnavailableSince) {
       metadata = await localProviderMetadata();
       updateLocalAvailability(metadata);
@@ -177,13 +177,13 @@ async function registerProvider() {
     lastRegisterAt = Date.now();
     if (
       !stopped &&
-      shouldStopForLocalMetadata(metadata, localDaemonProcessExited())
+      shouldStopForLocalMetadata(metadata, localServiceProcessExited())
     ) {
       providerMarkedTerminal = true;
       stopped = true;
       await markProviderFailed(
         metadata.failureReason ||
-          "Local SimDeck daemon supervisor process exited.",
+          "Local SimDeck service supervisor process exited.",
       );
     }
   } catch (error) {
@@ -193,20 +193,20 @@ async function registerProvider() {
   }
 }
 
-export function shouldStopForLocalMetadata(metadata, daemonProcessExited) {
-  return !metadata.ok && daemonProcessExited;
+export function shouldStopForLocalMetadata(metadata, serviceProcessExited) {
+  return !metadata.ok && serviceProcessExited;
 }
 
-function localDaemonProcessExited() {
+function localServiceProcessExited() {
   if (
-    Number.isInteger(localDaemonPid) &&
-    localDaemonPid > 0 &&
-    !processIsRunning(localDaemonPid)
+    Number.isInteger(localServicePid) &&
+    localServicePid > 0 &&
+    !processIsRunning(localServicePid)
   ) {
     console.error(
-      `[simdeck-provider-bridge] local SimDeck daemon process ${localDaemonPid} is no longer running.`,
+      `[simdeck-provider-bridge] local SimDeck service process ${localServicePid} is no longer running.`,
     );
-    printRecentDaemonLog();
+    printRecentServiceLog();
     return true;
   }
   return false;
@@ -225,12 +225,12 @@ function updateLocalAvailability(metadata) {
   if (Date.now() - lastLocalUnavailableLogAt >= localUnavailableLogIntervalMs) {
     lastLocalUnavailableLogAt = Date.now();
     console.error(
-      `[simdeck-provider-bridge] local SimDeck HTTP unavailable for ${elapsed}ms while daemon supervisor is still running; keeping Studio bridge alive.`,
+      `[simdeck-provider-bridge] local SimDeck HTTP unavailable for ${elapsed}ms while service supervisor is still running; keeping Studio bridge alive.`,
     );
     if (metadata.failureReason) {
       console.error(`[simdeck-provider-bridge] ${metadata.failureReason}`);
     }
-    printRecentDaemonLog();
+    printRecentServiceLog();
   }
 }
 
@@ -243,32 +243,32 @@ function processIsRunning(pid) {
   }
 }
 
-function printRecentDaemonLog() {
-  const lines = recentDaemonLogLines();
+function printRecentServiceLog() {
+  const lines = recentServiceLogLines();
   if (!lines) {
     return;
   }
-  console.error("[simdeck-provider-bridge] recent daemon log:");
+  console.error("[simdeck-provider-bridge] recent service log:");
   console.error(lines);
 }
 
-function recentDaemonLogLines() {
-  if (!localDaemonLog) {
+function recentServiceLogLines() {
+  if (!localServiceLog) {
     return "";
   }
   try {
-    const data = fs.readFileSync(localDaemonLog, "utf8");
+    const data = fs.readFileSync(localServiceLog, "utf8");
     return data.split(/\r?\n/).filter(Boolean).slice(-20).join("\n");
   } catch {
     return "";
   }
 }
 
-async function maybeRestartLocalDaemon(metadata) {
+async function maybeRestartLocalService(metadata) {
   if (metadata.ok || stopped || !localUnavailableSince) {
     return;
   }
-  if (!localDaemonCommand || !localDaemonRestartArgs) {
+  if (!localServiceCommand || !localServiceRestartArgs) {
     return;
   }
   const elapsed = Date.now() - localUnavailableSince;
@@ -284,10 +284,10 @@ async function maybeRestartLocalDaemon(metadata) {
   }
 
   lastLocalRestartAt = Date.now();
-  localRestartInFlight = restartLocalDaemon()
+  localRestartInFlight = restartLocalService()
     .catch((error) => {
       console.error(
-        `[simdeck-provider-bridge] local SimDeck daemon restart failed: ${describeError(error)}`,
+        `[simdeck-provider-bridge] local SimDeck service restart failed: ${describeError(error)}`,
       );
     })
     .finally(() => {
@@ -296,43 +296,43 @@ async function maybeRestartLocalDaemon(metadata) {
   await localRestartInFlight;
 }
 
-async function restartLocalDaemon() {
+async function restartLocalService() {
   console.error(
-    `[simdeck-provider-bridge] local SimDeck HTTP has been unavailable for ${Date.now() - localUnavailableSince}ms; restarting local daemon.`,
+    `[simdeck-provider-bridge] local SimDeck HTTP has been unavailable for ${Date.now() - localUnavailableSince}ms; restarting local service.`,
   );
-  printRecentDaemonLog();
-  await execFileAsync(localDaemonCommand, localDaemonRestartArgs, {
+  printRecentServiceLog();
+  await execFileAsync(localServiceCommand, localServiceRestartArgs, {
     timeout: 90_000,
     windowsHide: true,
   });
   const { stdout } = await execFileAsync(
-    localDaemonCommand,
-    localDaemonStatusArgs,
+    localServiceCommand,
+    localServiceStatusArgs,
     {
       timeout: 15_000,
       windowsHide: true,
     },
   );
   const status = JSON.parse(stdout);
-  const daemon = status.daemon ?? status;
-  if (daemon.httpUrl) {
-    localUrl = String(daemon.httpUrl).replace(/\/$/, "");
+  const service = status.service ?? status;
+  if (service.httpUrl) {
+    localUrl = String(service.httpUrl).replace(/\/$/, "");
   }
-  if (daemon.accessToken) {
-    localToken = String(daemon.accessToken);
+  if (service.accessToken) {
+    localToken = String(service.accessToken);
   }
-  if (daemon.pid) {
-    localDaemonPid = Number(daemon.pid);
+  if (service.pid) {
+    localServicePid = Number(service.pid);
   }
-  if (daemon.logPath) {
-    localDaemonLog = String(daemon.logPath);
+  if (service.logPath) {
+    localServiceLog = String(service.logPath);
   }
   responseCache.clear();
   inFlightCache.clear();
   localUnavailableSince = 0;
   lastLocalUnavailableLogAt = 0;
   console.error(
-    `[simdeck-provider-bridge] local SimDeck daemon restarted at ${localUrl}.`,
+    `[simdeck-provider-bridge] local SimDeck service restarted at ${localUrl}.`,
   );
 }
 
@@ -605,7 +605,7 @@ async function handleLocalProxyFailure(error) {
     ok: false,
     simulator: null,
   });
-  await maybeRestartLocalDaemon({
+  await maybeRestartLocalService({
     failureReason: message,
     health: null,
     ok: false,

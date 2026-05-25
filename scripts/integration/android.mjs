@@ -63,7 +63,7 @@ async function main() {
         videoCodec: "software",
       }),
     );
-    console.log(`daemon ${session.endpoint}`);
+    console.log(`service ${session.endpoint}`);
 
     const target = await measuredStep("resolve Android AVD", () =>
       resolveAndroidDevice(),

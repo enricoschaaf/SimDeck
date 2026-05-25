@@ -102,7 +102,7 @@ for (const [platform, action, startStep, waitStep] of [
     assert.match(
       artifactStep,
       /artifact_candidates\+=\$'\\n'"\$\{ARTIFACT_PREFIX\}"/,
-      "default artifact lookup should include legacy prefix-only artifacts",
+      "default artifact lookup should include prefix-only artifacts",
     );
     assert.match(
       artifactStep,
@@ -162,7 +162,7 @@ for (const [platform, action, startStep, waitStep] of [
     );
   });
 
-  test(`${platform} PR comment relies on the packaged CLI daemon supervisor`, () => {
+  test(`${platform} PR comment relies on the packaged CLI service supervisor`, () => {
     const startStepBody = stepSlice(
       action,
       "Install tools, start SimDeck and tunnel",
@@ -171,14 +171,14 @@ for (const [platform, action, startStep, waitStep] of [
 
     assert.doesNotMatch(
       startStepBody,
-      /simdeck-daemon-supervisor\.sh/,
-      "action should not carry a second workflow-local daemon supervisor",
+      /simdeck-service-supervisor\.sh/,
+      "action should not carry a second workflow-local service supervisor",
     );
     assert.match(startStepBody, /simdeck service run/);
     assert.match(startStepBody, /echo "\$!" > simdeck\.pid/);
   });
 
-  test(`${platform} PR comment keepalive tolerates transient daemon restarts`, () => {
+  test(`${platform} PR comment keepalive tolerates transient service restarts`, () => {
     const keepaliveStepBody = stepSlice(
       action,
       "Keep session alive",
@@ -187,23 +187,23 @@ for (const [platform, action, startStep, waitStep] of [
 
     assert.match(
       keepaliveStepBody,
-      /SIMDECK_DAEMON_HEALTH_GRACE_SECONDS/,
-      "keepalive should have a grace window for daemon restarts",
+      /SIMDECK_SERVICE_HEALTH_GRACE_SECONDS/,
+      "keepalive should have a grace window for service restarts",
     );
     assert.match(
       keepaliveStepBody,
       /health_failure_started/,
-      "keepalive should track continuous daemon health failures",
+      "keepalive should track continuous service health failures",
     );
     assert.match(
       keepaliveStepBody,
-      /cat simdeck-daemon\.log/,
-      "keepalive should print daemon logs when the grace window expires",
+      /cat simdeck-service\.log/,
+      "keepalive should print service logs when the grace window expires",
     );
     assert.match(
       keepaliveStepBody,
       /continue/,
-      "keepalive should continue polling after transient daemon failures",
+      "keepalive should continue polling after transient service failures",
     );
   });
 
@@ -270,7 +270,7 @@ set -euo pipefail
 count="$(cat "${countPath}" 2>/dev/null || echo 0)"
 count="$((count + 1))"
 echo "$count" > "${countPath}"
-echo "$$:\${SIMDECK_DAEMON_METADATA_PID:-}:\$*" >> "${logPath}"
+echo "$$:\${SIMDECK_SERVICE_METADATA_PID:-}:\$*" >> "${logPath}"
 if [[ "$count" == "1" ]]; then
   exit 75
 fi
@@ -307,7 +307,7 @@ exit 0
 );
 
 darwinTest(
-  "npm CLI wrapper does not restart non-daemon commands on exit 75",
+  "npm CLI wrapper does not restart non-service commands on exit 75",
   () => {
     const root = mkdtempSync(join(tmpdir(), "simdeck-wrapper-test-"));
     try {
@@ -326,7 +326,7 @@ darwinTest(
         nativePath,
         `#!/usr/bin/env bash
 set -euo pipefail
-echo "$$:\${SIMDECK_DAEMON_METADATA_PID:-}:\$*" >> "${logPath}"
+echo "$$:\${SIMDECK_SERVICE_METADATA_PID:-}:\$*" >> "${logPath}"
 exit 75
 `,
       );

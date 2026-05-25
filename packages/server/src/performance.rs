@@ -1020,7 +1020,7 @@ struct RUsageInfoV6 {
     ri_cpu_time_qos_maintenance: u64,
     ri_cpu_time_qos_background: u64,
     ri_cpu_time_qos_utility: u64,
-    ri_cpu_time_qos_legacy: u64,
+    ri_cpu_time_qos_other: u64,
     ri_cpu_time_qos_user_initiated: u64,
     ri_cpu_time_qos_user_interactive: u64,
     ri_billed_system_time: u64,

@@ -39,7 +39,7 @@ pairing a native client.
 Loopback browser sessions are authenticated automatically. Direct API callers should send the token from:
 
 ```sh
-simdeck daemon status
+simdeck service status
 ```
 
 Use either header:
@@ -57,7 +57,7 @@ Authorization: Bearer <token>
 - Stop the service when the shared session is done:
 
   ```sh
-  simdeck daemon stop
+  simdeck service stop
   ```
 
 ## Troubleshooting

@@ -75,7 +75,7 @@ Useful fields:
 If `overloadState` is `overloaded` or dropped frames keep increasing, lower stream quality or restart with software encoding:
 
 ```sh
-simdeck daemon restart --video-codec software --stream-quality low
+simdeck service restart --video-codec software --stream-quality low
 ```
 
 ## Submit client stats

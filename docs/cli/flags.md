@@ -5,7 +5,7 @@ Pass `--help` to any command for the generated flag list:
 ```sh
 simdeck --help
 simdeck tap --help
-simdeck daemon restart --help
+simdeck service restart --help
 ```
 
 ## Global
@@ -21,7 +21,7 @@ project default from `simdeck use <udid>`, then auto-inference from the service.
 
 ## Server options
 
-Used by `simdeck`, `daemon start`, `daemon restart`, `service on`, and `service restart`.
+Used by `simdeck`, `service start`, `service restart`, `service on`, and `service reset`.
 
 | Flag                         | Default        | Notes                                                                             |
 | ---------------------------- | -------------- | --------------------------------------------------------------------------------- |
@@ -48,7 +48,7 @@ Alias: `snapshot`.
 | `--include-hidden`    | Include hidden nodes when supported                                                                                                          |
 | `-i`, `--interactive` | Keep only actionable elements plus ancestors                                                                                                 |
 | `--point <x>,<y>`     | Describe the element at a screen point                                                                                                       |
-| `--direct`            | Skip daemon and use native accessibility directly                                                                                            |
+| `--direct`            | Skip service and use native accessibility directly                                                                                           |
 
 ## Input
 

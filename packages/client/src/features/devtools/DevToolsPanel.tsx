@@ -38,10 +38,6 @@ const WEBKIT_FRAME_HEALTH_REMOUNT_COOLDOWN_MS = 4000;
 const WEBKIT_FRAME_HEALTH_MAX_REMOUNTS = 3;
 const SAFARI_AUTO_TARGET_ID = "webkit:safari:auto";
 const DEVTOOLS_PANEL_WIDTH_STORAGE_KEY = "xcw-devtools-panel-width";
-const LEGACY_PANEL_WIDTH_STORAGE_KEYS = [
-  "xcw-chrome-devtools-panel-width",
-  "xcw-webkit-panel-width",
-];
 const DEVTOOLS_PANEL_DEFAULT_WIDTH = 720;
 const DEVTOOLS_PANEL_MIN_WIDTH = 420;
 const DEVTOOLS_PANEL_MIN_VIEWPORT_WIDTH = 340;
@@ -1658,16 +1654,11 @@ function readStoredPanelWidth(): number {
     return DEVTOOLS_PANEL_DEFAULT_WIDTH;
   }
 
-  for (const storageKey of [
-    DEVTOOLS_PANEL_WIDTH_STORAGE_KEY,
-    ...LEGACY_PANEL_WIDTH_STORAGE_KEYS,
-  ]) {
-    const value = Number.parseFloat(
-      window.localStorage.getItem(storageKey) ?? "",
-    );
-    if (Number.isFinite(value)) {
-      return clampPanelWidth(value);
-    }
+  const value = Number.parseFloat(
+    window.localStorage.getItem(DEVTOOLS_PANEL_WIDTH_STORAGE_KEY) ?? "",
+  );
+  if (Number.isFinite(value)) {
+    return clampPanelWidth(value);
   }
   return clampPanelWidth(DEVTOOLS_PANEL_DEFAULT_WIDTH);
 }

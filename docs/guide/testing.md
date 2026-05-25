@@ -140,7 +140,7 @@ npm run test:stress -- --udid <udid> --iterations 2000 --concurrency 16
 
 ```sh
 npm run build:cli
-npm run test:stress:daemon -- --iterations 30 --concurrency 3
+npm run test:stress:service -- --iterations 30 --concurrency 3
 ```
 
 This starts isolated temporary services, hits health and metrics, stops

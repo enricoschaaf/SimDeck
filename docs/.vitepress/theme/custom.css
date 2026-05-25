@@ -1166,6 +1166,14 @@ html:not(.sd-home-active) .VPNavBar.screen-open {
 }
 
 @media (max-width: 640px) {
+  .sd-home::before {
+    bottom: auto;
+    height: calc(100svh + 96px);
+    height: calc(100lvh + max(96px, env(safe-area-inset-bottom)));
+    background-size: auto calc(170svh + 96px);
+    background-size: auto calc(170lvh + 96px);
+  }
+
   .sd-hero,
   .sd-story,
   .sd-close {

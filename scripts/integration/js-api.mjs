@@ -103,7 +103,7 @@ async function main() {
       }),
     { phase: phaseSetup },
   );
-  console.log(`daemon ${session.endpoint}`);
+  console.log(`service ${session.endpoint}`);
 
   await measuredStep(
     "JS boot simulator",

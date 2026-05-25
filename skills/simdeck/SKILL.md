@@ -14,7 +14,7 @@ Pass `-p <port>` or `--port <port>` when the service should use a non-default
 port. Pass `-a` or `--autostart` when the service should also be registered as
 a macOS LaunchAgent.
 
-Example response from `simdeck daemon status`:
+Example response from `simdeck`:
 
 ```json
 {
@@ -33,24 +33,27 @@ simdeck --open
 simdeck -p 4311
 simdeck -a
 simdeck pair # prints LAN/Tailscale pairing URLs, code, and iOS QR
-simdeck daemon stop
-simdeck daemon restart
+simdeck service stop
+simdeck service kill # stops all SimDeck services from any binary
+simdeck service restart
 ```
 
-Usually `http://127.0.0.1:4310` or
-`http://127.0.0.1:4310?device=<UDID>`. Use `simdeck -p 4311` when the default
-port is not the right fit.
+Usually `http://127.0.0.1:4310`. Pass a simulator name or UDID to `simdeck`
+when the browser URL should open with `?device=<UDID>`. Use `simdeck -p 4311`
+when the default port is not the right fit.
 Use `simdeck pair` when a native iOS client needs to pair. It starts or
 refreshes the LaunchAgent-backed service, detects LAN and Tailscale IPv4
 addresses, and prints a QR with a `simdeck://pair` URL. Normal service restarts
 preserve the token and pairing code; use `simdeck service reset` only when you
 need to rotate them.
+Use `simdeck service kill` or `simdeck service killall` when you need a clean
+slate across installed and source-checkout binaries.
 
 Always first run `simdeck` and open the reported URL in the in-app browser using the Browser tool if available.
 
 If Browser Use is not available, only then use `simdeck --open`; it opens the default browser and may take focus away from the app.
 
-## Device And App
+## Device and app
 
 Start by choosing a project default device. `simdeck use <UDID>` stores the
 selection for the current workspace/CWD so later commands can omit the UDID.
@@ -85,7 +88,7 @@ Build apps with project tooling.
 Android devices use IDs like `android:Pixel_8_API_36`. `simdeck list` discovers
 AVDs from the Android SDK.
 
-## Fast Agent Inspection
+## Fast agent inspection
 
 Use targeted checks for test loops. `describe` is a diagnostic snapshot of the whole hierarchy. For verification, prefer the service APIs exposed by `simdeck/test`: `action`, `query`, `waitFor`, `assert`, selector `tap`, and `batch`.
 
@@ -197,7 +200,7 @@ simdeck pasteboard get
 
 Use `--stdin` or `--file` for text with quotes, newlines, shell variables, or shell-sensitive characters.
 
-## Timing, Batch
+## Timing and batch
 
 ```bash
 simdeck tap --label "Continue" --wait-timeout-ms 5000
@@ -259,7 +262,7 @@ simdeck sample --seconds 3
 
 Use screenshots for still evidence, `--with-bezel` when the device frame matters, and `record` for short MP4 screen recordings. Use `stats` for simulator app CPU, memory, disk write, network receive/send rates, connections, hang, and crash/termination signals. Use `sample` only when a short CPU stack capture is worth the extra pause. Prefer describe for token-efficient state dumps, if they have enough context.
 
-## Default Loop
+## Default loop
 
 1. Start UI, list, `simdeck use <UDID>`, boot/select the device, open viewer if in-app browser available
 2. Build with project tools; install and launch with SimDeck.

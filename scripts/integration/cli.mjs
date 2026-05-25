@@ -719,7 +719,7 @@ function startServer() {
       "service",
       "run",
       "--metadata-path",
-      path.join(tempRoot, "daemon.json"),
+      path.join(tempRoot, "service.json"),
       "--port",
       String(serverPort),
       "--client-root",
@@ -735,10 +735,10 @@ function startServer() {
     },
   );
   serverProcess.stdout.on("data", (data) =>
-    process.stdout.write(`[daemon] ${data}`),
+    process.stdout.write(`[service] ${data}`),
   );
   serverProcess.stderr.on("data", (data) =>
-    process.stderr.write(`[daemon] ${data}`),
+    process.stderr.write(`[service] ${data}`),
   );
 }
 

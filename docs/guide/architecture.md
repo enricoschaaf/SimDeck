@@ -31,7 +31,7 @@ The browser opens a live stream for the selected device. SimDeck sends fresh fra
 Tune this from the user-facing controls or with:
 
 ```sh
-simdeck daemon restart --video-codec software --stream-quality low
+simdeck service restart --video-codec software --stream-quality low
 ```
 
 ## Inspector flow

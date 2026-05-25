@@ -213,8 +213,9 @@ jobs:
           }
 
           start_simdeck_server() {
-            echo "Starting SimDeck server"
-            ./build/simdeck serve \
+            echo "Starting SimDeck service"
+            ./build/simdeck service run \
+              --metadata-path "$PWD/build/provider-service.json" \
               --port 4310 \
               --bind 127.0.0.1 \
               --access-token "$PROVIDER_TOKEN" \
@@ -223,7 +224,7 @@ jobs:
               --stream-quality "${SIMDECK_STREAM_QUALITY:-ci-software}" \
               >> simdeck.log 2>&1 &
             simdeck_pid="$!"
-            echo "SimDeck server pid: $simdeck_pid"
+            echo "SimDeck service pid: $simdeck_pid"
             wait_for_simdeck_health
           }
 
@@ -325,7 +326,7 @@ jobs:
                 exit 1
               fi
               simdeck_restarts=$((simdeck_restarts + 1))
-              echo "Restarting SimDeck server ($simdeck_restarts/2)"
+              echo "Restarting SimDeck service ($simdeck_restarts/2)"
               start_simdeck_server
               register || true
               continue

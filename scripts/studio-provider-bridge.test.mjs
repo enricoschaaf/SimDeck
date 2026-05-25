@@ -50,11 +50,11 @@ test("keeps provider bridge alive when only local HTTP is unavailable", () => {
   assert.equal(shouldStopForLocalMetadata({ ok: false }, false), false);
 });
 
-test("stops provider bridge when local daemon supervisor exits", () => {
+test("stops provider bridge when local service supervisor exits", () => {
   assert.equal(shouldStopForLocalMetadata({ ok: false }, true), true);
 });
 
-test("does not stop provider bridge while local daemon metadata is healthy", () => {
+test("does not stop provider bridge while local service metadata is healthy", () => {
   assert.equal(shouldStopForLocalMetadata({ ok: true }, true), false);
 });
 

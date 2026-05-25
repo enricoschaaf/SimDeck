@@ -129,7 +129,7 @@ should be registered as a LaunchAgent.
 Use software H.264 when macOS screen recording starves the hardware encoder:
 
 ```sh
-./build/simdeck daemon restart --video-codec h264-software
+./build/simdeck service restart --video-codec h264-software
 ```
 
 For LAN access:
@@ -186,4 +186,4 @@ only booted simulator, in that order. For agent navigation, prefer
 - If you change a CLI flag, REST route, stream contract, or inspector method, update the matching page under `docs/` in the same pass.
 - If you expand the private framework bridge, document the Xcode/runtime assumptions here.
 - If a feature depends on a booted simulator, fail with a clear JSON error instead of silently returning an empty asset.
-- Do not reintroduce legacy `/stream.h264` handling. The supported live path is the Rust-managed WebRTC H.264 offer endpoint.
+- Do not reintroduce removed `/stream.h264` handling. The supported live path is the Rust-managed WebRTC H.264 offer endpoint.

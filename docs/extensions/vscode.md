@@ -22,21 +22,21 @@ The extension tries the configured server URL first. If it is not reachable and 
 
 ## Commands
 
-| Command                        | Purpose                   |
-| ------------------------------ | ------------------------- |
-| `SimDeck: Open Simulator View` | Open the webview panel    |
-| `SimDeck: Stop Service`        | Run `simdeck daemon stop` |
-| `SimDeck: Show Output`         | Open extension logs       |
+| Command                        | Purpose                    |
+| ------------------------------ | -------------------------- |
+| `SimDeck: Open Simulator View` | Open the webview panel     |
+| `SimDeck: Stop Service`        | Run `simdeck service stop` |
+| `SimDeck: Show Output`         | Open extension logs        |
 
 ## Settings
 
-| Setting                   | Default                 | Purpose                       |
-| ------------------------- | ----------------------- | ----------------------------- |
-| `simdeck.serverUrl`       | `http://127.0.0.1:4310` | Preferred service URL         |
-| `simdeck.cliPath`         | empty                   | Explicit path to the CLI      |
-| `simdeck.port`            | `4310`                  | Port for auto-started service |
-| `simdeck.bindAddress`     | `127.0.0.1`             | Bind address for auto-start   |
-| `simdeck.autoStartDaemon` | `true`                  | Start the service when needed |
+| Setting                    | Default                 | Purpose                       |
+| -------------------------- | ----------------------- | ----------------------------- |
+| `simdeck.serverUrl`        | `http://127.0.0.1:4310` | Preferred service URL         |
+| `simdeck.cliPath`          | empty                   | Explicit path to the CLI      |
+| `simdeck.port`             | `4310`                  | Port for auto-started service |
+| `simdeck.bindAddress`      | `127.0.0.1`             | Bind address for auto-start   |
+| `simdeck.autoStartService` | `true`                  | Start the service when needed |
 
 CLI resolution order:
 
@@ -51,7 +51,7 @@ Set `simdeck.serverUrl` to the remote SimDeck URL and disable auto-start:
 ```json
 {
   "simdeck.serverUrl": "http://192.168.1.50:4310",
-  "simdeck.autoStartDaemon": false
+  "simdeck.autoStartService": false
 }
 ```
 

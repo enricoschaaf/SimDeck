@@ -35,14 +35,14 @@ The server log is written to `build/cli.log`.
 
 ## Repository map
 
-| Folder                    | Purpose                                                |
-| ------------------------- | ------------------------------------------------------ |
-| `packages/server/`        | CLI entrypoint, daemon, API, stream transport, metrics |
-| `packages/server/native/` | macOS simulator bridge                                 |
-| `packages/client/`        | Browser UI                                             |
-| `packages/`               | Inspectors, VS Code extension, and `simdeck/test`      |
-| `scripts/`                | Build, package, and test helpers                       |
-| `docs/`                   | VitePress documentation                                |
+| Folder                    | Purpose                                                 |
+| ------------------------- | ------------------------------------------------------- |
+| `packages/server/`        | CLI entrypoint, service, API, stream transport, metrics |
+| `packages/server/native/` | macOS simulator bridge                                  |
+| `packages/client/`        | Browser UI                                              |
+| `packages/`               | Inspectors, VS Code extension, and `simdeck/test`       |
+| `scripts/`                | Build, package, and test helpers                        |
+| `docs/`                   | VitePress documentation                                 |
 
 ## Working rules
 
@@ -119,7 +119,7 @@ For simulator or stream bugs, include:
 - Reproduction steps.
 - `simdeck --version`.
 - macOS and Xcode versions.
-- Foreground daemon output or `build/cli.log`.
+- Foreground service output or `build/cli.log`.
 - Any relevant screenshots or CLI output.
 
 ## License

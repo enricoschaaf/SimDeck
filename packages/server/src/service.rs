@@ -9,7 +9,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const SERVICE_LABEL: &str = "org.nativescript.simdeck";
-const LEGACY_SERVICE_LABELS: &[&str] = &["dev.nativescript.simdeck"];
 const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_millis(750);
 const SERVICE_KILL_GRACE: Duration = Duration::from_millis(500);
 
@@ -17,6 +16,7 @@ const SERVICE_KILL_GRACE: Duration = Duration::from_millis(500);
 pub struct ServiceInstallResult {
     pub service: String,
     pub plist_path: PathBuf,
+    pub executable_path: PathBuf,
     pub stdout_log: PathBuf,
     pub stderr_log: PathBuf,
     pub port: u16,
@@ -113,6 +113,7 @@ pub fn active() -> anyhow::Result<Option<ServiceInstallResult>> {
     Ok(Some(ServiceInstallResult {
         service: SERVICE_LABEL.to_owned(),
         plist_path,
+        executable_path: installed_executable_path(&arguments),
         stdout_log: log_dir.join("simdeck.log"),
         stderr_log: log_dir.join("simdeck.err.log"),
         port,
@@ -137,13 +138,12 @@ fn install(mut options: ServiceOptions) -> anyhow::Result<ServiceInstallResult> 
         Some(path) => path.clone(),
         None => default_client_root()?,
     };
-    let executable = std::env::current_exe().context("resolve current executable path")?;
+    let executable = current_executable_path()?;
     let stdout_log = log_dir.join("simdeck.log");
     let stderr_log = log_dir.join("simdeck.err.log");
 
     let domain = launchctl_domain()?;
     unload_existing_services(&domain)?;
-    remove_legacy_service_plists()?;
 
     options.port = choose_service_port_for_bind(options.port, options.bind)?;
     let plist = plist_contents(
@@ -165,6 +165,7 @@ fn install(mut options: ServiceOptions) -> anyhow::Result<ServiceInstallResult> 
     Ok(ServiceInstallResult {
         service: SERVICE_LABEL.to_owned(),
         plist_path,
+        executable_path: executable,
         stdout_log,
         stderr_log,
         port: options.port,
@@ -192,14 +193,7 @@ fn print_install_result(result: &ServiceInstallResult) -> anyhow::Result<()> {
 
 pub fn disable() -> anyhow::Result<()> {
     let plist_path = plist_path()?;
-    let domain = launchctl_domain()?;
-
-    unload_existing_services(&domain)?;
-    for path in service_plist_paths()? {
-        if path.exists() {
-            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
-        }
-    }
+    let _ = kill_installed()?;
 
     println!(
         "{}",
@@ -210,6 +204,17 @@ pub fn disable() -> anyhow::Result<()> {
         }))?
     );
     Ok(())
+}
+
+pub fn kill_installed() -> anyhow::Result<Vec<u32>> {
+    let domain = launchctl_domain()?;
+    let killed = unload_existing_services(&domain)?;
+    for path in service_plist_paths()? {
+        if path.exists() {
+            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+        }
+    }
+    Ok(killed)
 }
 
 fn plist_path() -> anyhow::Result<PathBuf> {
@@ -223,9 +228,7 @@ fn plist_path_for_label(label: &str) -> anyhow::Result<PathBuf> {
 }
 
 fn service_labels() -> Vec<&'static str> {
-    std::iter::once(SERVICE_LABEL)
-        .chain(LEGACY_SERVICE_LABELS.iter().copied())
-        .collect()
+    vec![SERVICE_LABEL]
 }
 
 fn service_plist_paths() -> anyhow::Result<Vec<PathBuf>> {
@@ -233,16 +236,6 @@ fn service_plist_paths() -> anyhow::Result<Vec<PathBuf>> {
         .into_iter()
         .map(plist_path_for_label)
         .collect()
-}
-
-fn remove_legacy_service_plists() -> anyhow::Result<()> {
-    for label in LEGACY_SERVICE_LABELS {
-        let path = plist_path_for_label(label)?;
-        if path.exists() {
-            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
-        }
-    }
-    Ok(())
 }
 
 fn log_dir() -> anyhow::Result<PathBuf> {
@@ -273,6 +266,7 @@ fn reuse_running_service_if_matching(
     Ok(Some(ServiceInstallResult {
         service: SERVICE_LABEL.to_owned(),
         plist_path,
+        executable_path: installed_executable_path(&arguments),
         stdout_log: log_dir.join("simdeck.log"),
         stderr_log: log_dir.join("simdeck.err.log"),
         port: options.port,
@@ -392,6 +386,30 @@ fn installed_arguments_from_plist(plist_path: &Path) -> anyhow::Result<Option<Ve
     Ok(Some(arguments))
 }
 
+fn installed_executable_path(arguments: &[String]) -> PathBuf {
+    arguments
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("simdeck"))
+}
+
+fn current_executable_path() -> anyhow::Result<PathBuf> {
+    if let Some(arg0) = env::args_os().next().filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(arg0);
+        let candidate = if path.is_absolute() {
+            path
+        } else {
+            env::current_dir()
+                .context("resolve current directory")?
+                .join(path)
+        };
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    env::current_exe().context("resolve current executable path")
+}
+
 fn argument_value(arguments: &[String], name: &str) -> Option<String> {
     arguments
         .windows(2)
@@ -434,7 +452,8 @@ fn launchctl_domain() -> anyhow::Result<String> {
     Ok(format!("gui/{uid}"))
 }
 
-fn unload_existing_services(domain: &str) -> anyhow::Result<()> {
+fn unload_existing_services(domain: &str) -> anyhow::Result<Vec<u32>> {
+    let mut killed = Vec::new();
     for label in service_labels() {
         let plist_path = plist_path_for_label(label)?;
         let old_pid = launchagent_pid(domain, label);
@@ -449,9 +468,10 @@ fn unload_existing_services(domain: &str) -> anyhow::Result<()> {
         }
         if let Some(pid) = old_pid {
             terminate_process_group(pid, SERVICE_SHUTDOWN_GRACE);
+            killed.push(pid);
         }
     }
-    Ok(())
+    Ok(killed)
 }
 
 fn launchagent_pid(domain: &str, label: &str) -> Option<u32> {
@@ -738,7 +758,6 @@ mod tests {
     #[test]
     fn service_label_matches_bundle_identifier() {
         assert_eq!(SERVICE_LABEL, "org.nativescript.simdeck");
-        assert!(LEGACY_SERVICE_LABELS.contains(&"dev.nativescript.simdeck"));
     }
 
     #[test]

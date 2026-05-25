@@ -28,7 +28,7 @@ import App from "./App";
 AppRegistry.registerComponent("Example", () => App);
 ```
 
-The auto entrypoint no-ops outside development, reads `EXPO_PUBLIC_SIMDECK_PORT` when present, and otherwise scans common SimDeck daemon ports. Set `EXPO_PUBLIC_SIMDECK_SOURCE_ROOT` when Metro reports project-relative source paths.
+The auto entrypoint no-ops outside development, reads `EXPO_PUBLIC_SIMDECK_PORT` when present, and otherwise scans common SimDeck service ports. Set `EXPO_PUBLIC_SIMDECK_SOURCE_ROOT` when Metro reports project-relative source paths.
 
 If you need explicit options, call the manual API before registering the app:
 

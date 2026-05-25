@@ -4092,7 +4092,7 @@ enum InspectorSessionTransport {
     Tcp {
         port: u16,
     },
-    RemoteDaemon {
+    RemoteService {
         server_url: String,
         access_token: String,
     },
@@ -4249,7 +4249,7 @@ fn inspector_session_from_published(inspector: PublishedInspector) -> InspectorS
         push_unique_source(&mut available_sources, &source);
     }
     InspectorSession {
-        transport: InspectorSessionTransport::RemoteDaemon {
+        transport: InspectorSessionTransport::RemoteService {
             server_url: inspector.server_url,
             access_token: inspector.access_token,
         },
@@ -4899,11 +4899,11 @@ async fn query_inspector_session(
         InspectorSessionTransport::Tcp { port } => {
             query_inspector_agent_on_port(*port, method, params).await
         }
-        InspectorSessionTransport::RemoteDaemon {
+        InspectorSessionTransport::RemoteService {
             server_url,
             access_token,
         } => {
-            query_remote_daemon_inspector(
+            query_remote_service_inspector(
                 server_url,
                 access_token,
                 session.process_identifier,
@@ -5192,12 +5192,12 @@ fn inspector_metadata(
     process_identifier: i64,
     transport: &InspectorSessionTransport,
 ) -> Value {
-    let (transport_name, port, daemon_url) = match transport {
+    let (transport_name, port, service_url) = match transport {
         InspectorSessionTransport::Connected => ("websocket", Value::Null, Value::Null),
         InspectorSessionTransport::Tcp { port } => {
             ("tcp+ndjson", Value::Number((*port).into()), Value::Null)
         }
-        InspectorSessionTransport::RemoteDaemon { server_url, .. } => (
+        InspectorSessionTransport::RemoteService { server_url, .. } => (
             "remote-websocket",
             Value::Null,
             Value::String(server_url.clone()),
@@ -5208,7 +5208,7 @@ fn inspector_metadata(
         "bundleName": info.get("bundleName").cloned().unwrap_or(Value::Null),
         "coordinateSpace": hierarchy.get("coordinateSpace").cloned().unwrap_or(Value::Null),
         "displayScale": hierarchy.get("displayScale").cloned().unwrap_or_else(|| info.get("displayScale").cloned().unwrap_or(Value::Null)),
-        "daemonUrl": daemon_url,
+        "serviceUrl": service_url,
         "host": INSPECTOR_AGENT_HOST,
         "port": port,
         "processIdentifier": process_identifier,
@@ -5283,14 +5283,14 @@ async fn query_inspector_agent_on_port(
     ))
 }
 
-async fn query_remote_daemon_inspector(
+async fn query_remote_service_inspector(
     server_url: &str,
     access_token: &str,
     process_identifier: i64,
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
-    let endpoint = InspectorDaemonEndpoint::parse(server_url)?;
+    let endpoint = InspectorServiceEndpoint::parse(server_url)?;
     let body = json_value!({
         "processIdentifier": process_identifier,
         "method": method,
@@ -5310,9 +5310,9 @@ async fn query_remote_daemon_inspector(
         TcpStream::connect((endpoint.host.as_str(), endpoint.port)),
     )
     .await
-    .map_err(|_| format!("Timed out connecting to published SimDeck daemon at {server_url}."))?
+    .map_err(|_| format!("Timed out connecting to published SimDeck service at {server_url}."))?
     .map_err(|error| {
-        format!("Unable to connect to published SimDeck daemon at {server_url}: {error}")
+        format!("Unable to connect to published SimDeck service at {server_url}: {error}")
     })?;
     stream
         .write_all(request.as_bytes())
@@ -5343,12 +5343,12 @@ async fn query_remote_daemon_inspector(
         .ok_or_else(|| format!("Published inspector method {method} did not include a result."))
 }
 
-struct InspectorDaemonEndpoint {
+struct InspectorServiceEndpoint {
     host: String,
     port: u16,
 }
 
-impl InspectorDaemonEndpoint {
+impl InspectorServiceEndpoint {
     fn parse(server_url: &str) -> Result<Self, String> {
         let authority = server_url
             .trim()
@@ -6296,11 +6296,11 @@ mod tests {
     }
 
     #[test]
-    fn published_inspector_session_uses_remote_daemon_transport() {
+    fn published_inspector_session_uses_remote_service_transport() {
         let session = inspector_session_from_published(PublishedInspector {
             access_token: "secret-token".to_owned(),
             available_sources: vec![SOURCE_REACT_NATIVE.to_owned()],
-            daemon_id: "daemon-a".to_owned(),
+            service_id: "service-a".to_owned(),
             info: json!({
                 "bundleIdentifier": "com.example.App",
                 "protocolVersion": "1.0"
@@ -6311,12 +6311,12 @@ mod tests {
         });
 
         assert_eq!(inspector_session_score(&session), 0);
-        let InspectorSessionTransport::RemoteDaemon {
+        let InspectorSessionTransport::RemoteService {
             server_url,
             access_token,
         } = &session.transport
         else {
-            panic!("published inspector should use remote daemon transport");
+            panic!("published inspector should use remote service transport");
         };
         assert_eq!(server_url, "http://127.0.0.1:4310");
         assert_eq!(access_token, "secret-token");
@@ -6328,7 +6328,7 @@ mod tests {
             &session.transport,
         );
         assert_eq!(metadata["transport"], "remote-websocket");
-        assert_eq!(metadata["daemonUrl"], "http://127.0.0.1:4310");
+        assert_eq!(metadata["serviceUrl"], "http://127.0.0.1:4310");
         assert!(metadata["port"].is_null());
     }
 
@@ -6337,7 +6337,7 @@ mod tests {
         let session = inspector_session_from_published(PublishedInspector {
             access_token: "secret-token".to_owned(),
             available_sources: vec![SOURCE_UIKIT.to_owned()],
-            daemon_id: "daemon-a".to_owned(),
+            service_id: "service-a".to_owned(),
             info: json!({
                 "bundleIdentifier": "com.example.FlutterApp",
                 "processIdentifier": 42,
@@ -6469,13 +6469,13 @@ mod tests {
     #[test]
     fn parse_ui_application_service_line_extracts_pid_and_service() {
         let service = parse_ui_application_service_line(
-            "   41210      - \tUIKitApplication:com.apple.mobilesafari[2777][rb-legacy]",
+            "   41210      - \tUIKitApplication:com.apple.mobilesafari[2777][rb-running]",
         )
         .unwrap();
         assert_eq!(service.pid, 41210);
         assert_eq!(
             service.service_name,
-            "UIKitApplication:com.apple.mobilesafari[2777][rb-legacy]"
+            "UIKitApplication:com.apple.mobilesafari[2777][rb-running]"
         );
     }
 

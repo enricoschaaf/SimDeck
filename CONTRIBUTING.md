@@ -58,7 +58,7 @@ After a successful build, run the CLI directly:
 
 ```sh
 ./build/simdeck list
-./build/simdeck daemon start --port 4310
+./build/simdeck service start --port 4310
 ```
 
 Or install the local checkout globally so the `simdeck` command is on your
@@ -163,14 +163,14 @@ The cleanup script saves fresh caches with:
 npm run codex:cache:save
 ```
 
-The environment also exposes a **Build and Restart Daemon** Run action:
+The environment also exposes a **Build and Restart Service** Run action:
 
 ```sh
 npm run codex:run
 ```
 
 It builds the Rust CLI and React client, saves the refreshed caches, and runs
-`./build/simdeck daemon restart` for the current workspace.
+`./build/simdeck service restart` for the current workspace.
 
 ## Releasing
 

@@ -26,9 +26,9 @@ simdeck
 Lower quality when the stream stutters, the machine is under load, or you are using a remote browser:
 
 ```sh
-simdeck daemon restart --stream-quality low
-simdeck daemon restart --stream-quality tiny
-simdeck daemon restart --stream-quality ci-software
+simdeck service restart --stream-quality low
+simdeck service restart --stream-quality tiny
+simdeck service restart --stream-quality ci-software
 ```
 
 Common profiles:
@@ -47,9 +47,9 @@ The browser also has stream controls for transport, resolution, FPS, and refresh
 ## Pick a codec
 
 ```sh
-simdeck daemon restart --video-codec auto
-simdeck daemon restart --video-codec hardware
-simdeck daemon restart --video-codec software
+simdeck service restart --video-codec auto
+simdeck service restart --video-codec hardware
+simdeck service restart --video-codec software
 ```
 
 | Codec      | Use it for                                                                          |
@@ -66,7 +66,7 @@ encoder while preserving explicit `--video-codec hardware` behavior.
 For very constrained software sessions:
 
 ```sh
-simdeck daemon restart --video-codec software --low-latency
+simdeck service restart --video-codec software --low-latency
 ```
 
 ## WebRTC and fallback
@@ -91,7 +91,7 @@ SIMDECK_WEBRTC_ICE_SERVERS=turns:turn.example.com:5349?transport=tcp \
 SIMDECK_WEBRTC_ICE_USERNAME=simdeck \
 SIMDECK_WEBRTC_ICE_CREDENTIAL=secret \
 SIMDECK_WEBRTC_ICE_TRANSPORT_POLICY=relay \
-simdeck daemon start --video-codec software --stream-quality low
+simdeck service start --video-codec software --stream-quality low
 ```
 
 ## Stream diagnostics
@@ -124,13 +124,13 @@ Signals worth watching:
 2. Restart with software encoding:
 
    ```sh
-   simdeck daemon restart --video-codec software
+   simdeck service restart --video-codec software
    ```
 
 3. Lower stream quality:
 
    ```sh
-   simdeck daemon restart --stream-quality low
+   simdeck service restart --stream-quality low
    ```
 
 4. Restart Apple's simulator service:

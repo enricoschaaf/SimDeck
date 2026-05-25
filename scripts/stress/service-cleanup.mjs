@@ -18,31 +18,31 @@ const binary = resolve(
   ),
 );
 const iterations = positiveInt(
-  args.iterations ?? process.env.SIMDECK_DAEMON_STRESS_ITERATIONS,
+  args.iterations ?? process.env.SIMDECK_SERVICE_STRESS_ITERATIONS,
   20,
 );
 const concurrency = positiveInt(
-  args.concurrency ?? process.env.SIMDECK_DAEMON_STRESS_CONCURRENCY,
+  args.concurrency ?? process.env.SIMDECK_SERVICE_STRESS_CONCURRENCY,
   2,
 );
 const basePort = positiveInt(
-  args["base-port"] ?? process.env.SIMDECK_DAEMON_STRESS_BASE_PORT,
+  args["base-port"] ?? process.env.SIMDECK_SERVICE_STRESS_BASE_PORT,
   45100,
 );
 const settleMs = positiveInt(
-  args["settle-ms"] ?? process.env.SIMDECK_DAEMON_STRESS_SETTLE_MS,
+  args["settle-ms"] ?? process.env.SIMDECK_SERVICE_STRESS_SETTLE_MS,
   750,
 );
 const maxStopMs = positiveInt(
-  args["max-stop-ms"] ?? process.env.SIMDECK_DAEMON_STRESS_MAX_STOP_MS,
+  args["max-stop-ms"] ?? process.env.SIMDECK_SERVICE_STRESS_MAX_STOP_MS,
   8000,
 );
 const requestsPerIteration = positiveInt(
-  args.requests ?? process.env.SIMDECK_DAEMON_STRESS_REQUESTS,
+  args.requests ?? process.env.SIMDECK_SERVICE_STRESS_REQUESTS,
   3,
 );
 const keepTemp = booleanArg(
-  args["keep-temp"] ?? process.env.SIMDECK_DAEMON_STRESS_KEEP_TEMP,
+  args["keep-temp"] ?? process.env.SIMDECK_SERVICE_STRESS_KEEP_TEMP,
 );
 
 if (!existsSync(binary)) {
@@ -113,14 +113,14 @@ if (!summary.ok) {
 }
 
 async function runIteration(worker, iteration) {
-  const tempRoot = await mkdtemp(join(tmpdir(), "simdeck-daemon-stress-"));
+  const tempRoot = await mkdtemp(join(tmpdir(), "simdeck-service-stress-"));
   const projectRoot = join(tempRoot, "project");
   mkdirSync(projectRoot, { recursive: true });
   writeFileSync(
     join(projectRoot, "package.json"),
     JSON.stringify({
       private: true,
-      name: `simdeck-daemon-stress-${iteration}`,
+      name: `simdeck-service-stress-${iteration}`,
     }),
   );
 
@@ -136,7 +136,7 @@ async function runIteration(worker, iteration) {
   try {
     killPortListeners(port);
     const startArgs = [
-      "daemon",
+      "service",
       "start",
       "--port",
       String(port),
@@ -161,7 +161,7 @@ async function runIteration(worker, iteration) {
     }
     if (!metadata.pid || !Number.isFinite(Number(metadata.pid))) {
       failures.push(
-        `start did not return a daemon pid: ${JSON.stringify(metadata)}`,
+        `start did not return a service pid: ${JSON.stringify(metadata)}`,
       );
     }
 
@@ -171,7 +171,7 @@ async function runIteration(worker, iteration) {
       Number(health.httpPort) !== Number(metadata.url.split(":").pop())
     ) {
       failures.push(
-        `health payload was not for the started daemon: ${JSON.stringify(health)}`,
+        `health payload was not for the started service: ${JSON.stringify(health)}`,
       );
     }
 
@@ -199,7 +199,7 @@ async function runIteration(worker, iteration) {
     }
 
     const stoppedAt = Date.now();
-    const stop = runJson(["daemon", "stop"], { cwd: projectRoot });
+    const stop = runJson(["service", "stop"], { cwd: projectRoot });
     stopMs = Date.now() - stoppedAt;
     if (stop.ok !== true || stop.running !== false) {
       failures.push(
@@ -225,14 +225,16 @@ async function runIteration(worker, iteration) {
         `port ${port} still has listeners ${leakedListeners.join(",")}`,
       );
     }
-    const status = runJson(["daemon", "status"], { cwd: projectRoot });
+    const status = runJson(["service", "status"], { cwd: projectRoot });
     if (
       status.running ||
       status.healthy ||
       status.processRunning ||
       status.stale
     ) {
-      failures.push(`daemon status remained active: ${JSON.stringify(status)}`);
+      failures.push(
+        `service status remained active: ${JSON.stringify(status)}`,
+      );
     }
   } catch (error) {
     failures.push(error instanceof Error ? error.message : String(error));
@@ -242,7 +244,7 @@ async function runIteration(worker, iteration) {
     }
     killPortListeners(port);
     try {
-      runJson(["daemon", "stop"], { cwd: projectRoot, allowFailure: true });
+      runJson(["service", "stop"], { cwd: projectRoot, allowFailure: true });
     } catch {
       // Best effort; the assertions above carry the useful failure.
     }
