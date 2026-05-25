@@ -206,6 +206,44 @@ for (const [platform, action, startStep, waitStep] of [
       "keepalive should continue polling after transient daemon failures",
     );
   });
+
+  test(`${platform} PR comment uses the public session URL output`, () => {
+    assert.match(
+      action,
+      /session_password:/,
+      "action should expose a session password input",
+    );
+    assert.match(
+      action,
+      /ci_proxy_url:/,
+      "action should expose a CI proxy URL input",
+    );
+    assert.match(
+      action,
+      /proxy_links:/,
+      "action should expose a proxy_links input",
+    );
+    assert.match(
+      action,
+      /default: "true"/,
+      "proxy_links should default to true",
+    );
+    assert.match(
+      action,
+      /public_url=/,
+      "stream step should build a public URL output",
+    );
+    assert.match(
+      action,
+      /steps\.stream\.outputs\.public_url/,
+      "PR comments should use the public URL output",
+    );
+    assert.match(
+      action,
+      /session_password requires proxy_links: true/,
+      "password-protected sessions should not allow raw tunnel links",
+    );
+  });
 }
 
 darwinTest(

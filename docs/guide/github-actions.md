@@ -104,6 +104,7 @@ jobs:
           command_comment_author: ${{ github.event.comment.user.login }}
           build_workflow: build-ios-simulator.yml
           bundle_id: com.example.app
+          session_password: ${{ secrets.SIMDECK_PASSWORD }}
 ```
 
 ## Android comment workflow
@@ -141,6 +142,7 @@ jobs:
           command_comment_author: ${{ github.event.comment.user.login }}
           build_workflow: build-android-apk.yml
           package_name: com.example.app
+          session_password: ${{ secrets.SIMDECK_PASSWORD }}
 ```
 
 ## Version pins
@@ -198,6 +200,17 @@ Supported quality values include `tiny`, `low`, `economy`, `fast`, `smooth`, `ba
 | `avd_name`          | `SimDeck_Pixel_CI`                  | Preferred Android emulator                  |
 | `keepalive_seconds` | `1800`                              | Session lifetime after launch               |
 | `simulator_cache`   | `true`                              | Restore and save simulator cache            |
+| `proxy_links`       | `true`                              | Post SimDeck CI proxy links                 |
+| `ci_proxy_url`      | SimDeck Worker URL                  | Optional SimDeck CI proxy Worker URL        |
+| `session_password`  | empty                               | Optional password for proxy-gated sessions  |
+
+## Password-protected links
+
+Set a repository secret such as `SIMDECK_PASSWORD` and pass it as
+`session_password`. The action posts a SimDeck proxy link instead of the raw
+Cloudflare Tunnel URL by default. When a password is configured, the daemon
+token is encrypted into the proxy payload, so decoding the URL alone does not
+grant simulator access. Set `proxy_links: "false"` to post raw tunnel links.
 
 ## What the session does
 
