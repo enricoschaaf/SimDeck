@@ -2,40 +2,37 @@
 
 Replace `simdeck` with `./build/simdeck` when running from a source checkout.
 
-## UI and daemon
+## UI and service
 
 | Command                          | Purpose                                     |
 | -------------------------------- | ------------------------------------------- |
-| `simdeck`                        | Start a foreground browser session          |
+| `simdeck`                        | Start or reuse the service and print URLs   |
 | `simdeck <name-or-udid>`         | Start and select a device                   |
-| `simdeck -d`                     | Start or reuse the detached project daemon  |
-| `simdeck -k`                     | Stop the detached project daemon            |
-| `simdeck -r`                     | Restart the detached project daemon         |
-| `simdeck ui --open`              | Open the browser UI from a daemon           |
+| `simdeck --open`                 | Open the browser UI                         |
+| `simdeck -p 4311`                | Use a non-default service port              |
+| `simdeck -a`                     | Register the service for login autostart    |
 | `simdeck pair`                   | Show native iOS pairing code and QR         |
-| `simdeck daemon status`          | Show daemon URL, PID, token, and log path   |
-| `simdeck daemon stop`            | Stop the current project daemon             |
-| `simdeck daemon killall`         | Stop all project daemons                    |
+| `simdeck daemon status`          | Show service URL, PID, token, and log path  |
+| `simdeck daemon stop`            | Stop the current background service         |
+| `simdeck daemon restart`         | Restart the current background service      |
 | `simdeck service on/off/restart` | Manage the optional always-on macOS service |
 
 Examples:
 
 ```sh
-simdeck ui --port 4320 --open
-simdeck ui --open
+simdeck -p 4320 --open
+simdeck --open
 simdeck pair
 simdeck daemon restart --video-codec software --stream-quality low
 ```
 
-`simdeck pair` uses the global LaunchAgent-backed service instead of a
-project-local daemon. It binds the service for LAN access, preserves an existing
-service token and pairing code when present, detects LAN and Tailscale IPv4
-addresses, and prints a `simdeck://pair` QR for the native iOS app. The service
-uses port 4310; workspace daemons start at 4311 and probe upward.
+`simdeck` starts or reuses one local service. It uses port 4310 unless you pass
+`-p` or `--port`. Normal commands reuse that same warm service.
 
-When the service is active, `simdeck` and `simdeck ui` print the existing
-service endpoints instead of launching a project daemon. Use `simdeck daemon
-start` or `simdeck daemon restart` when you explicitly want a workspace daemon.
+`simdeck pair` installs or refreshes the LaunchAgent-backed service. It binds
+the service for LAN access, preserves an existing service token and pairing code
+when present, detects LAN and Tailscale IPv4 addresses, and prints a
+`simdeck://pair` QR for the native iOS app.
 
 `simdeck service restart` also preserves the installed service token so native
 clients remain paired across service restarts. Use `simdeck service reset` to
@@ -158,7 +155,7 @@ Use `wait-for` or `assert` steps instead of fixed sleeps when possible.
 
 ## Maestro YAML
 
-Run common Maestro flows through SimDeck's daemon-backed iOS Simulator API:
+Run common Maestro flows through SimDeck's service-backed iOS Simulator API:
 
 ```sh
 simdeck maestro test flow.yaml --artifacts-dir artifacts/maestro

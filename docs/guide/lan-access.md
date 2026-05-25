@@ -5,7 +5,7 @@ SimDeck binds to `127.0.0.1` by default. Bind to a LAN address when another devi
 ## Start a LAN session
 
 ```sh
-simdeck ui \
+simdeck \
   --bind 0.0.0.0 \
   --advertise-host 192.168.1.50 \
   --open
@@ -24,9 +24,9 @@ Enter the pairing code printed by the CLI. After pairing, the browser receives t
 Use an IP address or hostname that the remote device can resolve:
 
 ```sh
-simdeck ui --bind 0.0.0.0 --advertise-host my-mac.local --open
-simdeck ui --bind 0.0.0.0 --advertise-host 192.168.1.50 --open
-simdeck ui --bind 0.0.0.0 --advertise-host 100.101.102.103 --open
+simdeck --bind 0.0.0.0 --advertise-host my-mac.local --open
+simdeck --bind 0.0.0.0 --advertise-host 192.168.1.50 --open
+simdeck --bind 0.0.0.0 --advertise-host 100.101.102.103 --open
 ```
 
 If you bind to `0.0.0.0` but advertise `localhost`, remote browsers will try to connect to themselves.
@@ -52,9 +52,9 @@ Authorization: Bearer <token>
 ## Security checklist
 
 - Use LAN mode only on networks you trust.
-- Treat the daemon token as a secret.
+- Treat the service token as a secret.
 - Restrict the port with macOS Firewall when needed.
-- Stop the daemon when the shared session is done:
+- Stop the service when the shared session is done:
 
   ```sh
   simdeck daemon stop
@@ -65,6 +65,6 @@ Authorization: Bearer <token>
 | Symptom                       | Fix                                                               |
 | ----------------------------- | ----------------------------------------------------------------- |
 | Remote browser cannot connect | Confirm `--bind 0.0.0.0`, firewall rules, and the advertised host |
-| Pairing code is rejected      | Restart the daemon and use the newly printed code                 |
+| Pairing code is rejected      | Restart the service and use the newly printed code                |
 | Stream connects but stutters  | Use `--stream-quality low` or `--video-codec software`            |
 | API script gets `401`         | Send `X-SimDeck-Token` or `Authorization: Bearer <token>`         |

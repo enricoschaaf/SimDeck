@@ -115,6 +115,7 @@ Signals worth watching:
 | `latest_first_frame_ms`            | How long the most recent viewer waited for the first frame |
 | `frames_dropped_server`            | The server skipped frames to keep the stream fresh         |
 | `keyframe_requests`                | The client or server requested stream recovery             |
+| `stream_pipeline_resets`           | Encoder resets after the last viewer disconnects           |
 | `encoders[].encoder.overloadState` | Encoder pressure: `nominal`, `strained`, or `overloaded`   |
 
 ## Stuck stream checklist

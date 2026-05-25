@@ -5,35 +5,36 @@ Pass `--help` to any command for the generated flag list:
 ```sh
 simdeck --help
 simdeck tap --help
-simdeck daemon start --help
+simdeck daemon restart --help
 ```
 
 ## Global
 
-| Flag                  | Env                  | Purpose                          |
-| --------------------- | -------------------- | -------------------------------- |
-| `--server-url <url>`  | `SIMDECK_SERVER_URL` | Target a specific running daemon |
-| `--device <selector>` | `SIMDECK_DEVICE`     | One-off simulator override       |
+| Flag                  | Env                  | Purpose                           |
+| --------------------- | -------------------- | --------------------------------- |
+| `--server-url <url>`  | `SIMDECK_SERVER_URL` | Target a specific running service |
+| `--device <selector>` | `SIMDECK_DEVICE`     | One-off simulator override        |
 
 `SIMDECK_UDID` is also accepted for compatibility. Device commands resolve in
 this order: positional UDID, `--device`, `SIMDECK_DEVICE`, `SIMDECK_UDID`, the
-project default from `simdeck use <udid>`, then auto-inference from the daemon.
+project default from `simdeck use <udid>`, then auto-inference from the service.
 
 ## Server options
 
-Used by `simdeck ui`, `daemon start`, `daemon restart`, `service on`, and `service restart`.
+Used by `simdeck`, `daemon start`, `daemon restart`, `service on`, and `service restart`.
 
-| Flag                         | Default                                | Notes                                                                             |
-| ---------------------------- | -------------------------------------- | --------------------------------------------------------------------------------- |
-| `--port <port>`              | `4311` for daemons, `4310` for service | HTTP port. Daemons probe upward when busy                                         |
-| `--bind <ip>`                | `127.0.0.1`                            | Use `0.0.0.0` or `::` for LAN access                                              |
-| `--advertise-host <host>`    | detected                               | Host printed for remote browsers                                                  |
-| `--client-root <path>`       | bundled client                         | Static client directory                                                           |
-| `--video-codec <mode>`       | `auto`                                 | `auto`, `hardware`, or `software`                                                 |
-| `--stream-quality <profile>` | `full`                                 | `full`, `balanced`, `economy`, `low`, `tiny`, `ci-software`, and related profiles |
-| `--local-stream-fps <fps>`   | `60`                                   | Local stream frame target                                                         |
-| `--low-latency`              | off                                    | Conservative software H.264 profile                                               |
-| `--open`                     | off                                    | `ui` only                                                                         |
+| Flag                         | Default        | Notes                                                                             |
+| ---------------------------- | -------------- | --------------------------------------------------------------------------------- |
+| `--port <port>` / `-p`       | `4310`         | HTTP port                                                                         |
+| `--bind <ip>`                | `127.0.0.1`    | Use `0.0.0.0` or `::` for LAN access                                              |
+| `--advertise-host <host>`    | detected       | Host printed for remote browsers                                                  |
+| `--client-root <path>`       | bundled client | Static client directory                                                           |
+| `--video-codec <mode>`       | `auto`         | `auto`, `hardware`, or `software`                                                 |
+| `--stream-quality <profile>` | `full`         | `full`, `balanced`, `economy`, `low`, `tiny`, `ci-software`, and related profiles |
+| `--local-stream-fps <fps>`   | `60`           | Local stream frame target                                                         |
+| `--low-latency`              | off            | Conservative software H.264 profile                                               |
+| `--open`                     | off            | Open the browser after starting the service                                       |
+| `--autostart` / `-a`         | off            | Register the service as a macOS LaunchAgent                                       |
 
 ## `describe`
 

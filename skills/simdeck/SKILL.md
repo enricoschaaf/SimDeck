@@ -7,7 +7,14 @@ description: Use for simulator lifecycle, app install/launch, live viewing, UI i
 
 SimDeck automates iOS Simulators and Android emulators. Use the CLI for automation and the browser UI for live human visibility. iOS works with NativeScript, UIKit, SwiftUI, React Native, Expo, and Flutter apps; Android works through ADB, emulator lifecycle, screenshots, logs, and UIAutomator hierarchy dumps.
 
-SimDeck uses one daemon per workspace (CWD). Use `simdeck ui` and it will print JSON with `url` key. If it was already running, it prints the existing daemon URL and `started` is set to `false`. Contains workspace in `projectRoot` key. Example response:
+SimDeck uses one long-running local service. Run `simdeck` first; it starts or
+reuses the background service and prints the browser URL plus pairing code.
+Pass `--open` only when you want SimDeck to open the default browser itself.
+Pass `-p <port>` or `--port <port>` when the service should use a non-default
+port. Pass `-a` or `--autostart` when the service should also be registered as
+a macOS LaunchAgent.
+
+Example response from `simdeck daemon status`:
 
 ```json
 {
@@ -21,30 +28,27 @@ SimDeck uses one daemon per workspace (CWD). Use `simdeck ui` and it will print 
 ```
 
 ```bash
-simdeck ui
+simdeck
+simdeck --open
+simdeck -p 4311
+simdeck -a
 simdeck pair # prints LAN/Tailscale pairing URLs, code, and iOS QR
-simdeck -k # kills the daemon
-simdeck -r  # restarts the daemon
-simdeck daemon killall # kills all daemons on the machine, use with care
+simdeck daemon stop
+simdeck daemon restart
 ```
 
-Usually `http://127.0.0.1:4311` or `http://127.0.0.1:4311?device=<UDID>` for
-project daemons. The always-on LaunchAgent service stays on
-`http://127.0.0.1:4310`.
-Daemon ports may increment upward from 4311 if multiple daemons are running.
+Usually `http://127.0.0.1:4310` or
+`http://127.0.0.1:4310?device=<UDID>`. Use `simdeck -p 4311` when the default
+port is not the right fit.
 Use `simdeck pair` when a native iOS client needs to pair. It starts or
-refreshes the global LaunchAgent-backed service, detects LAN and Tailscale IPv4
-addresses, and prints a QR with a `simdeck://pair` URL that carries the pairing
-code plus alternate server addresses.
-The LaunchAgent service token is stable across `simdeck pair`, `simdeck service
-on`, and `simdeck service restart`; use `simdeck service reset` only when you
-need to rotate the token and restart the service. When that service is active,
-`simdeck` and `simdeck ui` report the service endpoints instead of starting a
-project daemon.
+refreshes the LaunchAgent-backed service, detects LAN and Tailscale IPv4
+addresses, and prints a QR with a `simdeck://pair` URL. Normal service restarts
+preserve the token and pairing code; use `simdeck service reset` only when you
+need to rotate them.
 
-Always first run `simdeck ui` to open the URL reported by the `simdeck ui` in the in-app browser using Browser Use tool if available.
+Always first run `simdeck` and open the reported URL in the in-app browser using the Browser tool if available.
 
-If Browser Use is not available, only then use `simdeck ui --open` - it would open the default browser - taking focus away from the app.
+If Browser Use is not available, only then use `simdeck --open`; it opens the default browser and may take focus away from the app.
 
 ## Device And App
 
@@ -83,7 +87,7 @@ AVDs from the Android SDK.
 
 ## Fast Agent Inspection
 
-Use targeted checks for test loops. `describe` is a diagnostic snapshot of the whole hierarchy. For verification, prefer the daemon APIs exposed by `simdeck/test`: `action`, `query`, `waitFor`, `assert`, selector `tap`, and `batch`.
+Use targeted checks for test loops. `describe` is a diagnostic snapshot of the whole hierarchy. For verification, prefer the service APIs exposed by `simdeck/test`: `action`, `query`, `waitFor`, `assert`, selector `tap`, and `batch`.
 
 ```bash
 simdeck describe
@@ -102,12 +106,12 @@ simdeck wait --label "Welcome" --timeout-ms 5000
 simdeck assert --id login.button --source auto --max-depth 8
 ```
 
-The default source is `native-ax`, which is the fastest and most universal path for agents. Use `--source auto` with the project daemon when you want richer NativeScript, React Native, Flutter, SwiftUI, or UIKit inspector data before native accessibility fallback. Use `--direct` or `--source native-ax` for the private CoreSimulator accessibility bridge. Use `--source android-uiautomator` for Android emulator UIAutomator hierarchies.
+The default source is `native-ax`, which is the fastest and most universal path for agents. Use `--source auto` when you want richer NativeScript, React Native, Flutter, SwiftUI, or UIKit inspector data before native accessibility fallback. Use `--direct` or `--source native-ax` for the private CoreSimulator accessibility bridge. Use `--source android-uiautomator` for Android emulator UIAutomator hierarchies.
 For Android IDs, `describe` uses `uiautomator dump`; use `--format agent` or
 `--format compact-json` the same way as iOS.
 Use `--interactive` or `-i` when an agent only needs controls and actionable framework nodes; SimDeck keeps ancestor context so the output is still navigable. Agent output labels nodes with refs such as `@e3`; reuse them with `simdeck press @e3`. `snapshot`, `press`, and `wait` are aliases for `describe`, `tap`, and `wait-for`.
 
-Prefer selectors, coordinates only when needed. Selector taps go through the daemon and wait for the element server-side. Use `--expect-id`, `--expect-label`, or another `--expect-*` selector when the tap should also wait for the next screen before returning.
+Prefer selectors, coordinates only when needed. Selector taps go through the service and wait for the element server-side. Use `--expect-id`, `--expect-label`, or another `--expect-*` selector when the tap should also wait for the next screen before returning.
 
 ```bash
 simdeck tap --id LoginButton --wait-timeout-ms 5000
@@ -296,5 +300,5 @@ import "expo-router/entry";
 Import it before `expo-router/entry` or `AppRegistry.registerComponent(...)`.
 The auto entrypoint no-ops outside development, reads
 `EXPO_PUBLIC_SIMDECK_PORT` when present, and otherwise scans common SimDeck
-daemon ports. Use the manual `startSimDeckReactNativeInspector(...)` API
+service ports. Use the manual `startSimDeckReactNativeInspector(...)` API
 when you need custom host/path/security options.

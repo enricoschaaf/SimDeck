@@ -6,7 +6,7 @@ Use the CLI for most automation. Use the API when you are building a custom clie
 
 ## Authentication
 
-Browser sessions loaded from the SimDeck server receive auth automatically. Direct callers should send the daemon token from `simdeck daemon status`:
+Browser sessions loaded from the SimDeck server receive auth automatically. Direct callers should send the service token from `simdeck daemon status`:
 
 ```text
 X-SimDeck-Token: <token>

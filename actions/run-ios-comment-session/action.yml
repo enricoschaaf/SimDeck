@@ -302,8 +302,7 @@ runs:
           SIMDECK_REALTIME_MIN_BITRATE="${stream_min_bitrate}" \
           SIMDECK_REALTIME_BITS_PER_PIXEL="${stream_bits_per_pixel}" \
           SIMDECK_LOCAL_STREAM_FPS="${stream_fps}" \
-          simdeck daemon run \
-          --project-root "${GITHUB_WORKSPACE}" \
+          simdeck service run \
           --metadata-path "${metadata_path}" \
           --port "${SIMDECK_PORT}" \
           --bind 127.0.0.1 \

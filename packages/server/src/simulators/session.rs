@@ -76,6 +76,14 @@ impl Drop for FrameSubscription {
             .unwrap_or(0);
         if previous <= 1 {
             self.inner.native.set_client_foreground(false);
+            *self.inner.latest_keyframe.write().unwrap() = None;
+            self.inner.last_keyframe_ms.store(0, Ordering::Relaxed);
+            self.inner.last_refresh_us.store(0, Ordering::Relaxed);
+            self.inner.native.reconfigure_video_encoder();
+            self.inner
+                .metrics
+                .stream_pipeline_resets
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 }

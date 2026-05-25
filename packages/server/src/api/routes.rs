@@ -72,6 +72,7 @@ const ACCESSIBILITY_SOURCE_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(2
 const ACCESSIBILITY_TREE_CACHE_TTL: Duration = Duration::from_secs(5);
 const NATIVE_AX_SNAPSHOT_RETRY_ATTEMPTS: usize = 5;
 const NATIVE_AX_SNAPSHOT_RETRY_DELAY: Duration = Duration::from_millis(100);
+const NATIVE_AX_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(8);
 
 static FOREGROUND_APP_CACHE: OnceLock<StdMutex<HashMap<String, CachedForegroundApp>>> =
     OnceLock::new();
@@ -5835,10 +5836,29 @@ async fn accessibility_snapshot_with_options(
     max_depth: Option<usize>,
     interactive_only: bool,
 ) -> Result<Value, AppError> {
-    run_bridge_action(state, move |bridge| {
+    let bridge = state.registry.bridge().clone();
+    let metrics = state.metrics.clone();
+    let started = Instant::now();
+    let task = task::spawn_blocking(move || {
         bridge.accessibility_snapshot_with_options(&udid, point, max_depth, interactive_only)
-    })
-    .await
+    });
+    let result = match timeout(NATIVE_AX_SNAPSHOT_TIMEOUT, task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(AppError::internal(format!(
+            "Failed to join native accessibility snapshot task: {error}"
+        ))),
+        Err(_) => Err(AppError::native(format!(
+            "Native accessibility snapshot timed out after {}ms.",
+            NATIVE_AX_SNAPSHOT_TIMEOUT.as_millis()
+        ))),
+    };
+    let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    metrics.record_accessibility_snapshot(
+        duration_ms,
+        result.is_ok(),
+        duration_ms >= NATIVE_AX_SNAPSHOT_TIMEOUT.as_millis() as u64,
+    );
+    result
 }
 
 #[cfg(test)]

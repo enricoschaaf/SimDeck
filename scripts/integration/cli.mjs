@@ -716,10 +716,8 @@ function startServer() {
   serverProcess = spawn(
     simdeck,
     [
-      "daemon",
+      "service",
       "run",
-      "--project-root",
-      root,
       "--metadata-path",
       path.join(tempRoot, "daemon.json"),
       "--port",

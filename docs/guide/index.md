@@ -2,7 +2,7 @@
 
 SimDeck is a local tool for viewing, controlling, inspecting, and automating mobile simulators.
 
-Run `simdeck` from your project. It starts a local server, serves a browser UI, and exposes the same controls through the CLI and HTTP API.
+Run `simdeck` from your project. It starts or reuses the local service, serves a browser UI, and exposes the same controls through the CLI and HTTP API.
 
 ## Core workflows
 
@@ -36,13 +36,13 @@ simdeck back
 simdeck describe --format agent --max-depth 3 --interactive
 ```
 
-Use `simdeck -d` for a detached background daemon, `simdeck -k` to stop it, and `simdeck -r` to restart it.
+Use `simdeck --open` to open the browser, `simdeck -p 4311` for a custom port, and `simdeck -a` to enable login autostart.
 
 ## Pick a page
 
 - [Install](/guide/installation): requirements and setup.
 - [Quick start](/guide/quick-start): first browser session.
-- [Daemon](/guide/daemon): foreground, detached, and always-on modes.
+- [Service](/guide/daemon): local service, autostart, and pairing.
 - [Video and streaming](/guide/video): stream quality and codec choices.
 - [LAN access](/guide/lan-access): pairing and remote browser access.
 - [Testing](/guide/testing): `simdeck/test` and integration tests.

@@ -18,6 +18,13 @@ pub struct Metrics {
     pub subscribers_disconnected: AtomicU64,
     pub max_send_queue_depth: AtomicU64,
     pub latest_first_frame_ms: AtomicU64,
+    pub stream_pipeline_resets: AtomicU64,
+    pub accessibility_snapshots: AtomicU64,
+    pub accessibility_snapshot_errors: AtomicU64,
+    pub accessibility_snapshot_timeouts: AtomicU64,
+    pub accessibility_snapshot_slow: AtomicU64,
+    pub latest_accessibility_snapshot_ms: AtomicU64,
+    pub max_accessibility_snapshot_ms: AtomicU64,
     client_stream_stats: Mutex<VecDeque<ClientStreamStats>>,
 }
 
@@ -34,6 +41,13 @@ pub struct MetricsSnapshot {
     pub avg_send_queue_depth: f64,
     pub max_send_queue_depth: u64,
     pub latest_first_frame_ms: u64,
+    pub stream_pipeline_resets: u64,
+    pub accessibility_snapshots: u64,
+    pub accessibility_snapshot_errors: u64,
+    pub accessibility_snapshot_timeouts: u64,
+    pub accessibility_snapshot_slow: u64,
+    pub latest_accessibility_snapshot_ms: u64,
+    pub max_accessibility_snapshot_ms: u64,
     pub client_streams: Vec<ClientStreamStats>,
 }
 
@@ -117,7 +131,41 @@ impl Metrics {
             avg_send_queue_depth: 1.0,
             max_send_queue_depth: self.max_send_queue_depth.load(Ordering::Relaxed),
             latest_first_frame_ms: self.latest_first_frame_ms.load(Ordering::Relaxed),
+            stream_pipeline_resets: self.stream_pipeline_resets.load(Ordering::Relaxed),
+            accessibility_snapshots: self.accessibility_snapshots.load(Ordering::Relaxed),
+            accessibility_snapshot_errors: self
+                .accessibility_snapshot_errors
+                .load(Ordering::Relaxed),
+            accessibility_snapshot_timeouts: self
+                .accessibility_snapshot_timeouts
+                .load(Ordering::Relaxed),
+            accessibility_snapshot_slow: self.accessibility_snapshot_slow.load(Ordering::Relaxed),
+            latest_accessibility_snapshot_ms: self
+                .latest_accessibility_snapshot_ms
+                .load(Ordering::Relaxed),
+            max_accessibility_snapshot_ms: self
+                .max_accessibility_snapshot_ms
+                .load(Ordering::Relaxed),
             client_streams: self.client_stream_stats_snapshot(),
+        }
+    }
+
+    pub fn record_accessibility_snapshot(&self, duration_ms: u64, ok: bool, timed_out: bool) {
+        self.accessibility_snapshots.fetch_add(1, Ordering::Relaxed);
+        self.latest_accessibility_snapshot_ms
+            .store(duration_ms, Ordering::Relaxed);
+        update_max(&self.max_accessibility_snapshot_ms, duration_ms);
+        if !ok {
+            self.accessibility_snapshot_errors
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        if timed_out {
+            self.accessibility_snapshot_timeouts
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        if duration_ms >= 2_000 {
+            self.accessibility_snapshot_slow
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -150,6 +198,16 @@ impl Metrics {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         prune_stale_client_stream_stats(&mut snapshots);
         snapshots.iter().cloned().collect()
+    }
+}
+
+fn update_max(target: &AtomicU64, value: u64) {
+    let mut current = target.load(Ordering::Relaxed);
+    while value > current {
+        match target.compare_exchange(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(next) => current = next,
+        }
     }
 }
 
@@ -293,5 +351,21 @@ mod tests {
         assert_eq!(snapshots.len(), 48);
         assert_eq!(snapshots[0].client_id, "client-12");
         assert_eq!(snapshots[47].client_id, "client-59");
+    }
+
+    #[test]
+    fn accessibility_snapshot_metrics_track_slow_errors_and_timeouts() {
+        let metrics = Metrics::default();
+
+        metrics.record_accessibility_snapshot(1_250, true, false);
+        metrics.record_accessibility_snapshot(8_000, false, true);
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.accessibility_snapshots, 2);
+        assert_eq!(snapshot.accessibility_snapshot_errors, 1);
+        assert_eq!(snapshot.accessibility_snapshot_timeouts, 1);
+        assert_eq!(snapshot.accessibility_snapshot_slow, 1);
+        assert_eq!(snapshot.latest_accessibility_snapshot_ms, 8_000);
+        assert_eq!(snapshot.max_accessibility_snapshot_ms, 8_000);
     }
 }

@@ -316,6 +316,9 @@ fn service_options_match_arguments(
         && argument_value(arguments, "--video-codec").as_deref()
             == Some(options.video_codec.as_env_value())
         && argument_value(arguments, "--server-kind").as_deref() == Some("launch-agent")
+        && arguments
+            .windows(2)
+            .any(|window| window[0] == "service" && window[1] == "run")
         && optional_argument_matches(
             arguments,
             "--advertise-host",
@@ -558,7 +561,8 @@ fn plist_contents(
 ) -> String {
     let mut program_arguments = vec![
         executable.to_string_lossy().into_owned(),
-        "serve".to_string(),
+        "service".to_string(),
+        "run".to_string(),
         "--port".to_string(),
         options.port.to_string(),
         "--bind".to_string(),
@@ -661,7 +665,8 @@ mod tests {
     fn service_arguments_for_test(options: &ServiceOptions) -> Vec<String> {
         let mut arguments = vec![
             "/tmp/simdeck".to_owned(),
-            "serve".to_owned(),
+            "service".to_owned(),
+            "run".to_owned(),
             "--port".to_owned(),
             options.port.to_string(),
             "--bind".to_owned(),

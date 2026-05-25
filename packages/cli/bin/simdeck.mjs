@@ -11,7 +11,9 @@ const launcherDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = findPackageRoot(launcherDir);
 const binaryPath = path.join(packageRoot, "build", "simdeck-bin");
 const childArgs = process.argv.slice(2);
-const isDaemonRun = childArgs[0] === "daemon" && childArgs[1] === "run";
+const isServiceRun =
+  (childArgs[0] === "daemon" || childArgs[0] === "service") &&
+  childArgs[1] === "run";
 
 if (process.platform !== "darwin") {
   console.error("simdeck only supports macOS.");
@@ -52,7 +54,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 }
 
 function spawnChild() {
-  const env = isDaemonRun
+  const env = isServiceRun
     ? {
         ...process.env,
         SIMDECK_DAEMON_METADATA_PID: String(process.pid),
@@ -72,7 +74,7 @@ function spawnChild() {
 
   child.on("exit", (code, signal) => {
     if (
-      isDaemonRun &&
+      isServiceRun &&
       !terminating &&
       (code === RECOVERABLE_RESTART_EXIT_CODE || signal)
     ) {

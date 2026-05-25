@@ -9,14 +9,14 @@ simdeck
 SimDeck prints a local browser URL, a LAN URL when one is available, and a pairing code for LAN browsers.
 
 ```text
-SimDeck is ready
+SimDeck is running
 
-Local:   http://127.0.0.1:4311
-Network: http://192.168.1.50:4311
+Local:   http://127.0.0.1:4310
+Network: http://192.168.1.50:4310
 Pair:    123 456
 ```
 
-Open the local URL. Press `q` or Ctrl-C in the terminal to stop the foreground server.
+Open the local URL. SimDeck keeps the service warm in the background.
 
 To open a specific simulator by name or UDID:
 
@@ -81,15 +81,18 @@ one of those elements directly. `snapshot`, `press`, and `wait` are aliases for
 `describe`, `tap`, and `wait-for`. Add `--expect-*` to a tap when the next
 screen should be present before the command returns.
 
-## 5. Keep it running in the background
+## 5. Keep it available
 
 ```sh
-simdeck -d
-simdeck -k
-simdeck -r
+simdeck --open
+simdeck -p 4311
+simdeck -a
+simdeck pair
 ```
 
-These are shortcuts for detached start, stop, and restart. See [Daemon](/guide/daemon) for details.
+`-a` registers the service as a macOS LaunchAgent. `pair` also enables the
+LaunchAgent and prints the native iOS pairing QR. See [Service](/guide/daemon)
+for details.
 
 ## Next
 

@@ -7,7 +7,7 @@ This page is a short mental model for users and contributors. For daily usage, s
 | Piece              | What it does                                                        |
 | ------------------ | ------------------------------------------------------------------- |
 | CLI                | Starts SimDeck and exposes scriptable commands                      |
-| Local daemon       | Serves the browser UI, API, streams, metrics, and inspector routing |
+| Local service      | Serves the browser UI, API, streams, metrics, and inspector routing |
 | Browser client     | Shows the live device, toolbar, inspector panes, and diagnostics    |
 | Native bridge      | Handles simulator-specific work on macOS                            |
 | Inspector runtimes | Optional app packages that publish richer UI trees                  |
@@ -17,12 +17,12 @@ This page is a short mental model for users and contributors. For daily usage, s
 
 Most user actions follow the same path:
 
-1. Browser, CLI, or test sends a command to the daemon.
-2. The daemon checks the selected device and starts a warm session when needed.
+1. Browser, CLI, or test sends a command to the service.
+2. The service checks the selected device and starts a warm session when needed.
 3. SimDeck performs the requested simulator or emulator action.
 4. The command returns JSON, a screenshot, a recording, logs, or updated stream state.
 
-This is why a long-lived daemon feels faster than repeatedly calling lower-level simulator tools.
+This is why a long-lived service feels faster than repeatedly calling lower-level simulator tools.
 
 ## Video flow
 
@@ -48,7 +48,7 @@ The response tells you which source was used and why a requested source fell bac
 
 | Folder                    | Purpose                                           |
 | ------------------------- | ------------------------------------------------- |
-| `packages/server/`        | CLI entrypoint, daemon, API, streaming, metrics   |
+| `packages/server/`        | CLI entrypoint, service, API, streaming, metrics  |
 | `packages/server/native/` | macOS simulator bridge                            |
 | `packages/client/`        | Browser UI                                        |
 | `packages/`               | Inspectors, VS Code extension, and `simdeck/test` |

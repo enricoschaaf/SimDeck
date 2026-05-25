@@ -67,5 +67,5 @@ Nodes may include:
 
 - Import the auto entrypoint before app registration.
 - Use a development build for source locations.
-- Set `EXPO_PUBLIC_SIMDECK_PORT=4310` if auto port scanning cannot find the daemon.
+- Set `EXPO_PUBLIC_SIMDECK_PORT=4310` if auto port scanning cannot find the service.
 - Bring the app to the foreground before inspecting.

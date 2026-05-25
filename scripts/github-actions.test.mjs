@@ -174,7 +174,7 @@ for (const [platform, action, startStep, waitStep] of [
       /simdeck-daemon-supervisor\.sh/,
       "action should not carry a second workflow-local daemon supervisor",
     );
-    assert.match(startStepBody, /simdeck daemon run/);
+    assert.match(startStepBody, /simdeck service run/);
     assert.match(startStepBody, /echo "\$!" > simdeck\.pid/);
   });
 
@@ -209,7 +209,7 @@ for (const [platform, action, startStep, waitStep] of [
 }
 
 darwinTest(
-  "npm CLI wrapper restarts daemon run after recoverable native exit",
+  "npm CLI wrapper restarts service run after recoverable native exit",
   () => {
     const root = mkdtempSync(join(tmpdir(), "simdeck-wrapper-test-"));
     try {
@@ -243,7 +243,7 @@ exit 0
 
       const result = spawnSync(
         process.execPath,
-        [wrapperPath, "daemon", "run", "--port", "4310"],
+        [wrapperPath, "service", "run", "--port", "4310"],
         {
           encoding: "utf8",
         },
@@ -251,7 +251,7 @@ exit 0
 
       assert.equal(result.status, 0, result.stderr);
       const logLines = readFileSync(logPath, "utf8").trim().split("\n");
-      assert.equal(logLines.length, 2, "daemon run should be retried once");
+      assert.equal(logLines.length, 2, "service run should be retried once");
 
       const entries = logLines.map((line) => {
         const [pid, metadataPid, args] = line.split(":");
@@ -261,7 +261,7 @@ exit 0
       assert.match(entries[0].metadataPid, /^\d+$/);
       assert.equal(entries[0].metadataPid, entries[1].metadataPid);
       assert.notEqual(entries[0].pid, entries[0].metadataPid);
-      assert.equal(entries[0].args, "daemon run --port 4310");
+      assert.equal(entries[0].args, "service run --port 4310");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
