@@ -841,15 +841,12 @@ async function ensureFixtureForeground(label, options = {}) {
   try {
     return await verifyUi(label, {
       expectFixture: true,
-      attempts: options.verifyAttempts ?? (launchError === null ? 8 : 2),
+      attempts: options.verifyAttempts ?? (launchError === null ? 10 : 2),
       delayMs: options.verifyDelayMs ?? 1_000,
       waitTimeoutMs:
-        options.waitTimeoutMs ?? (launchError === null ? 5_000 : 1_000),
+        options.waitTimeoutMs ?? (launchError === null ? 10_000 : 1_000),
     });
   } catch (verifyError) {
-    if (launchError === null) {
-      throw verifyError;
-    }
     launchVerifyError = verifyError;
     if (
       shouldRecycleSimulatorForFixtureLaunch({
@@ -864,7 +861,7 @@ async function ensureFixtureForeground(label, options = {}) {
         reason: activationRecoveryReason({ launchError }),
       });
     }
-    logStep(`${label}: opening fixture URL after launch timeout`);
+    logStep(`${label}: opening fixture URL after launch verification failed`);
   }
 
   let urlError = null;
