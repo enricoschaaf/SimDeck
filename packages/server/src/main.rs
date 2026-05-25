@@ -83,6 +83,24 @@ struct Cli {
     #[arg(long, global = true, hide = true)]
     server_url: Option<String>,
     #[arg(
+        short = 'p',
+        long,
+        value_name = "PORT",
+        help = "When run without a subcommand, start or reuse the service on this port"
+    )]
+    port: Option<u16>,
+    #[arg(
+        short = 'a',
+        long,
+        help = "When run without a subcommand, register the service as a LaunchAgent"
+    )]
+    autostart: bool,
+    #[arg(
+        long,
+        help = "When run without a subcommand, open the service URL in the default browser"
+    )]
+    open: bool,
+    #[arg(
         long,
         global = true,
         value_name = "SIMULATOR_NAME_OR_UDID",
@@ -3157,6 +3175,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
+    let _default_service_flags = (cli.port, cli.autostart, cli.open);
     let explicit_server_url = cli.server_url.clone();
     let device_selector = cli.device.clone();
     let service_url = explicit_server_url

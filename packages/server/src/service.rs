@@ -1,5 +1,6 @@
 use crate::{auth, default_client_root, ServiceOptions};
 use anyhow::{anyhow, bail, Context};
+use std::env;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
@@ -604,6 +605,12 @@ fn plist_contents(
         .map(|argument| format!("    <string>{}</string>", xml_escape(&argument)))
         .collect::<Vec<_>>()
         .join("\n");
+    let environment_xml = launch_agent_environment_xml();
+    let environment_section = if environment_xml.is_empty() {
+        String::new()
+    } else {
+        format!("  <key>EnvironmentVariables</key>\n  <dict>\n{environment_xml}\n  </dict>\n")
+    };
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -620,7 +627,7 @@ fn plist_contents(
   <true/>
   <key>KeepAlive</key>
   <true/>
-  <key>StandardOutPath</key>
+{environment_section}  <key>StandardOutPath</key>
   <string>{stdout_log}</string>
   <key>StandardErrorPath</key>
   <string>{stderr_log}</string>
@@ -629,9 +636,33 @@ fn plist_contents(
 "#,
         label = SERVICE_LABEL,
         program_arguments = program_arguments_xml,
+        environment_section = environment_section,
         stdout_log = xml_escape(&stdout_log.to_string_lossy()),
         stderr_log = xml_escape(&stderr_log.to_string_lossy()),
     )
+}
+
+fn launch_agent_environment_xml() -> String {
+    [
+        "ANDROID_HOME",
+        "ANDROID_SDK_ROOT",
+        "JAVA_HOME",
+        "DEVELOPER_DIR",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        let value = env::var(key).ok()?;
+        if value.trim().is_empty() {
+            return None;
+        }
+        Some(format!(
+            "    <key>{}</key>\n    <string>{}</string>",
+            xml_escape(key),
+            xml_escape(&value)
+        ))
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
 }
 
 fn xml_escape(value: &str) -> String {
