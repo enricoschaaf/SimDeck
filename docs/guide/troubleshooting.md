@@ -11,7 +11,7 @@ simdeck daemon status
 simdeck list
 ```
 
-If a background daemon may be stale:
+If the background service may be stale:
 
 ```sh
 simdeck daemon stop
@@ -23,22 +23,22 @@ simdeck
 ### Port is already in use
 
 ```text
-bind HTTP listener on 127.0.0.1:4311
+bind HTTP listener on 127.0.0.1:4310
 ```
 
 Use another port:
 
 ```sh
-simdeck ui --port 4320 --open
+simdeck -p 4320 --open
 ```
 
 Or find the listener:
 
 ```sh
-lsof -nP -iTCP:4311 -sTCP:LISTEN
+lsof -nP -iTCP:4310 -sTCP:LISTEN
 ```
 
-If it is an old project daemon:
+If it is an old service:
 
 ```sh
 simdeck daemon stop
@@ -186,7 +186,7 @@ Run a debug build with widget creation tracking. Flutter enables this by default
 Start SimDeck with a LAN bind and reachable advertised host:
 
 ```sh
-simdeck ui --bind 0.0.0.0 --advertise-host 192.168.1.50 --open
+simdeck --bind 0.0.0.0 --advertise-host 192.168.1.50 --open
 ```
 
 For native iOS pairing, prefer:
@@ -199,8 +199,8 @@ Then check:
 
 - The remote browser opens `http://192.168.1.50:4310`.
 - macOS Firewall allows the port.
-- The pairing code matches the current daemon or global service.
-- API scripts send the daemon or service token.
+- The pairing code matches the current service.
+- API scripts send the service token.
 
 See [LAN access](/guide/lan-access).
 
@@ -212,5 +212,5 @@ Include:
 - macOS version
 - Xcode version
 - The command you ran
-- Foreground daemon output, or `build/cli.log` when using `npm run dev`
+- Service output, or `build/cli.log` when using `npm run dev`
 - `simdeck daemon status` without sharing the token publicly

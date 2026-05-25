@@ -1,6 +1,6 @@
 # VS Code extension
 
-The VS Code extension opens the SimDeck browser UI in an editor panel and can start the project daemon for you.
+The VS Code extension opens the SimDeck browser UI in an editor panel and can start the service for you.
 
 ## Install
 
@@ -18,25 +18,25 @@ Run this command from the command palette:
 SimDeck: Open Simulator View
 ```
 
-The extension tries the configured server URL first. If it is not reachable and auto-start is enabled, it runs `simdeck ui` for the current workspace.
+The extension tries the configured server URL first. If it is not reachable and auto-start is enabled, it runs `simdeck` for the current workspace.
 
 ## Commands
 
 | Command                        | Purpose                   |
 | ------------------------------ | ------------------------- |
 | `SimDeck: Open Simulator View` | Open the webview panel    |
-| `SimDeck: Stop Project Daemon` | Run `simdeck daemon stop` |
+| `SimDeck: Stop Service`        | Run `simdeck daemon stop` |
 | `SimDeck: Show Output`         | Open extension logs       |
 
 ## Settings
 
-| Setting                   | Default                 | Purpose                               |
-| ------------------------- | ----------------------- | ------------------------------------- |
-| `simdeck.serverUrl`       | `http://127.0.0.1:4310` | Preferred daemon URL                  |
-| `simdeck.cliPath`         | empty                   | Explicit path to the CLI              |
-| `simdeck.port`            | `4311`                  | Port for auto-started project daemons |
-| `simdeck.bindAddress`     | `127.0.0.1`             | Bind address for auto-start           |
-| `simdeck.autoStartDaemon` | `true`                  | Start the daemon when needed          |
+| Setting                   | Default                 | Purpose                       |
+| ------------------------- | ----------------------- | ----------------------------- |
+| `simdeck.serverUrl`       | `http://127.0.0.1:4310` | Preferred service URL         |
+| `simdeck.cliPath`         | empty                   | Explicit path to the CLI      |
+| `simdeck.port`            | `4310`                  | Port for auto-started service |
+| `simdeck.bindAddress`     | `127.0.0.1`             | Bind address for auto-start   |
+| `simdeck.autoStartDaemon` | `true`                  | Start the service when needed |
 
 CLI resolution order:
 
@@ -59,8 +59,8 @@ Pair in the webview if the server asks for the LAN code.
 
 ## Troubleshooting
 
-| Symptom                  | Fix                                                                 |
-| ------------------------ | ------------------------------------------------------------------- |
-| Blank panel              | Open `SimDeck: Show Output` and check the daemon URL and CLI stderr |
-| Auto-start fails         | Set `simdeck.cliPath` to the real CLI path                          |
-| Old server keeps loading | Run `SimDeck: Stop Project Daemon`, then reopen                     |
+| Symptom                  | Fix                                                                  |
+| ------------------------ | -------------------------------------------------------------------- |
+| Blank panel              | Open `SimDeck: Show Output` and check the service URL and CLI stderr |
+| Auto-start fails         | Set `simdeck.cliPath` to the real CLI path                           |
+| Old server keeps loading | Run `SimDeck: Stop Service`, then reopen                             |

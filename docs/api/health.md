@@ -1,6 +1,6 @@
 # Health and metrics
 
-Use these endpoints to check whether a daemon is reachable and to diagnose stream performance.
+Use these endpoints to check whether the service is reachable and to diagnose stream performance.
 
 ## Health
 
@@ -36,18 +36,18 @@ Example:
 
 Important fields:
 
-| Field           | Meaning                                                   |
-| --------------- | --------------------------------------------------------- |
-| `ok`            | Server is alive                                           |
-| `serverId`      | Stable identity for the current daemon token              |
-| `advertiseHost` | Host/IP the daemon advertises for non-local clients       |
-| `hostId`        | Stable hashed identity for the Mac hardware host          |
-| `hostName`      | Local host name for grouping LAN/Tailscale/Bonjour URLs   |
-| `httpPort`      | Port serving UI and API                                   |
-| `serverKind`    | `launchAgent`, `workspace`, `foreground`, or `standalone` |
-| `videoCodec`    | Requested codec mode: `auto`, `hardware`, or `software`   |
-| `streamQuality` | Active stream profile and limits                          |
-| `webRtc`        | ICE settings the browser should use                       |
+| Field           | Meaning                                                 |
+| --------------- | ------------------------------------------------------- |
+| `ok`            | Server is alive                                         |
+| `serverId`      | Stable identity for the current service token           |
+| `advertiseHost` | Host/IP the service advertises for non-local clients    |
+| `hostId`        | Stable hashed identity for the Mac hardware host        |
+| `hostName`      | Local host name for grouping LAN/Tailscale/Bonjour URLs |
+| `httpPort`      | Port serving UI and API                                 |
+| `serverKind`    | `launchAgent` or `standalone`                           |
+| `videoCodec`    | Requested codec mode: `auto`, `hardware`, or `software` |
+| `streamQuality` | Active stream profile and limits                        |
+| `webRtc`        | ICE settings the browser should use                     |
 
 When auth is required, the `401` JSON body still includes `serverId`, `advertiseHost`, `hostId`, `hostName`, `httpPort`, and `serverKind` so native clients can group endpoints before pairing.
 
@@ -64,6 +64,10 @@ Useful fields:
 | `latest_first_frame_ms`            | First-frame startup time                     |
 | `frames_dropped_server`            | Server dropping stale frames to stay current |
 | `keyframe_requests`                | Stream refresh or recovery activity          |
+| `stream_pipeline_resets`           | Encoder resets after all viewers disconnect  |
+| `latest_accessibility_snapshot_ms` | Most recent native accessibility duration    |
+| `max_accessibility_snapshot_ms`    | Slowest native accessibility duration        |
+| `accessibility_snapshot_timeouts`  | Native accessibility calls that timed out    |
 | `active_streams`                   | Open browser streams                         |
 | `encoders[].encoder.overloadState` | `nominal`, `strained`, or `overloaded`       |
 | `client_streams`                   | Recent browser decoder and render reports    |

@@ -25,7 +25,10 @@ try {
 }
 ```
 
-`connect()` starts the project daemon if needed, reuses a healthy daemon, and only stops daemons it started itself. Pass `udid` to `connect()` to make it the default for session methods; methods still accept an explicit UDID as their first argument. Use `sim.device("<other-udid>")` to create a session bound to another simulator.
+`connect()` starts the service if needed and reuses a healthy service. Pass
+`udid` to `connect()` to make it the default for session methods; methods still
+accept an explicit UDID as their first argument. Use `sim.device("<other-udid>")`
+to create a session bound to another simulator.
 State-query helpers default to `source: "native-ax"` so agent loops use the
 fast universal accessibility path. Pass `source: "auto"` when a test
 intentionally wants connected NativeScript, React Native, Flutter, SwiftUI, or
@@ -121,7 +124,7 @@ Setup/reset work is excluded from action timings.
 | `SIMDECK_INTEGRATION_BOOT_ANDROID=1`            | Let SimDeck boot the Android emulator                |
 | `SIMDECK_INTEGRATION_REQUIRE_RUNNING_ANDROID=1` | Fail instead of skipping when Android is unavailable |
 
-## Stress test a running daemon
+## Stress test a running service
 
 ```sh
 npm run test:stress -- --server-url http://127.0.0.1:4310 --iterations 1000 --concurrency 12
@@ -133,14 +136,14 @@ Include simulator refresh traffic:
 npm run test:stress -- --udid <udid> --iterations 2000 --concurrency 16
 ```
 
-## Stress test daemon cleanup
+## Stress test service cleanup
 
 ```sh
 npm run build:cli
 npm run test:stress:daemon -- --iterations 30 --concurrency 3
 ```
 
-This starts isolated temporary project daemons, hits health and metrics, stops
-them through the CLI, and verifies the process group, listener port, and daemon
+This starts isolated temporary services, hits health and metrics, stops
+them through the CLI, and verifies the process group, listener port, and service
 status are cleaned up. Use `--binary /path/to/simdeck` to test an installed or
 packaged binary.

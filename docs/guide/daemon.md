@@ -1,84 +1,66 @@
-# Daemon
+# Service
 
-SimDeck runs a local server for the current project. The server owns the browser UI, REST API, live stream, inspector connections, and warm device sessions.
+SimDeck runs one local service. The service owns the browser UI, REST API, live
+stream, inspector connections, and warm device sessions.
 
-Most commands start or reuse the project daemon automatically. Manage it directly only when you need a specific lifecycle.
+Most commands start or reuse the service automatically. Use the lifecycle
+commands only when you need to inspect, stop, or restart it explicitly.
 
-## Foreground
+## Start
 
 ```sh
 simdeck
+simdeck --open
+simdeck -p 4311
 ```
 
-Use this for normal interactive work. It prints browser URLs and stops when you press `q` or Ctrl-C.
+`simdeck` starts or reuses the background service and prints the browser URLs.
+`--open` opens the local browser URL. `-p` or `--port` selects a non-default
+port; the default is `4310`.
 
-## Detached
+## Autostart
 
 ```sh
-simdeck -d
-simdeck daemon start
+simdeck -a
+simdeck --autostart
+simdeck pair
 ```
 
-Both start or reuse a background daemon for the current project. Detached mode is useful for tests, editor integrations, and scripts.
+Without `-a`, SimDeck starts an ordinary background service for the current user
+session. `-a`, `--autostart`, and `simdeck pair` install or refresh the macOS
+LaunchAgent so SimDeck starts again after login.
+
+`simdeck pair` also detects LAN and Tailscale addresses, prints the pairing
+code, and renders the QR/deep link for the native iOS app.
+
+## Manage
 
 ```sh
 simdeck daemon status
 simdeck daemon stop
 simdeck daemon restart
-simdeck daemon killall
-```
-
-`daemon killall` stops SimDeck project daemons from every workspace.
-
-## Open the browser UI
-
-```sh
-simdeck ui --open
-```
-
-This starts or reuses the daemon, then opens the authenticated local URL.
-
-## Common server options
-
-`simdeck ui`, `daemon start`, `daemon restart`, and `service restart` use the same core options:
-
-| Flag                         | Default                                | Use it when                                |
-| ---------------------------- | -------------------------------------- | ------------------------------------------ |
-| `--port <port>`              | `4311` for daemons, `4310` for service | The default port is busy                   |
-| `--bind <ip>`                | `127.0.0.1`                            | You need LAN access with `0.0.0.0` or `::` |
-| `--advertise-host <host>`    | detected                               | Remote browsers need a specific host or IP |
-| `--video-codec <mode>`       | `auto`                                 | You need to force encoder behavior         |
-| `--stream-quality <profile>` | `full`                                 | You want lower CPU or bandwidth use        |
-| `--local-stream-fps <fps>`   | `60`                                   | You want a different local stream target   |
-| `--client-root <path>`       | bundled client                         | You are serving a custom static client     |
-
-Example:
-
-```sh
-simdeck daemon start --port 4320 --video-codec software --stream-quality low
-```
-
-## Always-on service
-
-Use the macOS user service when SimDeck should be reachable after login without starting a project daemon first:
-
-```sh
-simdeck service on
-simdeck service restart --port 4310
 simdeck service reset
 simdeck service off
 ```
 
-The LaunchAgent service uses port 4310. Workspace daemons start at 4311 and
-probe upward when the requested daemon port is busy. When the service is active,
-`simdeck` and `simdeck ui` report the service endpoints instead of launching a
-project daemon.
+`daemon status`, `daemon stop`, and `daemon restart` manage the same singleton
+service that `simdeck` uses. `service reset` rotates the LaunchAgent token and
+pairing code. `service off` removes the LaunchAgent.
 
-`service on`, `service restart`, and `simdeck pair` preserve the installed
-service token and pairing code. Use `service reset` when you explicitly want to
-rotate those credentials and restart the LaunchAgent.
+## Options
 
-Prefer the project daemon for normal repository work. Use the service for long-lived agent or editor setups.
+These options are accepted by `simdeck`, `daemon start`, `daemon restart`,
+`service on`, and `service restart`:
+
+| Flag                         | Default     | Use it when                                |
+| ---------------------------- | ----------- | ------------------------------------------ |
+| `--port <port>` / `-p`       | `4310`      | You want a specific service port           |
+| `--bind <ip>`                | `127.0.0.1` | You need LAN access with `0.0.0.0` or `::` |
+| `--advertise-host <host>`    | detected    | Remote browsers need a specific host or IP |
+| `--video-codec <mode>`       | `auto`      | You need to force encoder behavior         |
+| `--stream-quality <profile>` | `full`      | You want lower CPU or bandwidth use        |
+| `--local-stream-fps <fps>`   | `60`        | You want a different local stream target   |
+| `--client-root <path>`       | bundled UI  | You are serving a custom static client     |
 
 ## Restart CoreSimulator
 

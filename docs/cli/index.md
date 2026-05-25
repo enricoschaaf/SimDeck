@@ -1,23 +1,24 @@
 # CLI
 
-`simdeck` is the main entrypoint for opening the browser UI, managing the daemon, and scripting simulator actions.
+`simdeck` is the main entrypoint for opening the browser UI, managing the local service, and scripting simulator actions.
 
 ## Common use
 
 ```sh
 simdeck
 simdeck "iPhone 17 Pro Max"
-simdeck -d
-simdeck -k
-simdeck -r
+simdeck --open
+simdeck -p 4311
+simdeck -a
 ```
 
-With no subcommand, SimDeck starts a foreground server and prints browser URLs. A single simulator name or UDID selects that device in the UI. The shorthand flags start, stop, and restart the detached project daemon.
+With no subcommand, SimDeck starts or reuses the background service and prints browser URLs. A single simulator name or UDID selects that device in the UI.
 
 ## Command shape
 
 ```sh
 simdeck [SIMULATOR_NAME_OR_UDID]
+simdeck [-p <port>] [--open] [--autostart]
 simdeck [--server-url <url>] <command> [options]
 ```
 
@@ -26,7 +27,7 @@ default for later device commands. Most commands accept `[<udid>]`; `--device`,
 `SIMDECK_DEVICE`, and `SIMDECK_UDID` override the saved project default when a
 one-off target is needed.
 
-Use `--server-url` or `SIMDECK_SERVER_URL` when a script should target a specific daemon:
+Use `--server-url` or `SIMDECK_SERVER_URL` when a script should target a specific service:
 
 ```sh
 SIMDECK_SERVER_URL=http://127.0.0.1:4310 simdeck list
@@ -70,7 +71,7 @@ Most successful commands print JSON so they can be piped into tools such as `jq`
 ```sh
 simdeck --help
 simdeck tap --help
-simdeck daemon start --help
+simdeck daemon status
 ```
 
 ## Next

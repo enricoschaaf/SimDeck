@@ -23,10 +23,8 @@ Open the simulator UI:
 Open a specific simulator:
   simdeck "iPhone 17 Pro"
 
-Detached daemon shortcuts:
-  simdeck -d
-  simdeck -k
-  simdeck -r
+Use a different service port:
+  simdeck -p 4311
 
 Install the agent skill:
   npx skills add NativeScript/SimDeck --skill simdeck -g
@@ -35,8 +33,8 @@ Recommended VS Code extension:
   nativescript.simdeck-vscode
 
 Recommended for always-on agent/editor access:
-  simdeck service on
-  simdeck service off
+  simdeck -a
+  simdeck pair
 `;
 
 console.log(message.trimEnd());

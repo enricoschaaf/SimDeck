@@ -10,16 +10,16 @@ simdeck
 
 Then open the printed local URL.
 
-Detached flow:
+Open directly:
 
 ```sh
-simdeck ui --open
+simdeck --open
 ```
 
 LAN flow:
 
 ```sh
-simdeck ui --bind 0.0.0.0 --advertise-host 192.168.1.50 --open
+simdeck --bind 0.0.0.0 --advertise-host 192.168.1.50 --open
 ```
 
 ## What the UI shows
@@ -45,10 +45,10 @@ Use the default URL for normal operation.
 
 ## Serve a custom client
 
-Point the daemon at another static bundle:
+Point the service at another static bundle:
 
 ```sh
-simdeck ui --client-root /path/to/dist --open
+simdeck --client-root /path/to/dist --open
 ```
 
 Your client should use the [REST API](/api/rest), WebRTC offer endpoint, and control WebSocket documented in the API reference.

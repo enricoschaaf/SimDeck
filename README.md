@@ -66,7 +66,9 @@ To focus a specific simulator by name or UDID, pass it as the only argument:
 simdeck "iPhone 17 Pro Max"
 ```
 
-`simdeck -d` for detached start, `simdeck -k` to kill the background daemon, and `simdeck -r` to restart it.
+Use `simdeck --open` to open the browser automatically, `simdeck -p 4311` to
+use a non-default port, and `simdeck -a` to register the service for login
+autostart.
 
 The served loopback browser UI receives the generated API access token automatically.
 LAN clients should pair with the printed code before receiving the API cookie.
@@ -77,7 +79,7 @@ For pairing with SimDeck iOS app:
 simdeck pair
 ```
 
-This starts or refreshes the global LaunchAgent-backed SimDeck service, prints
+This starts or refreshes the LaunchAgent-backed SimDeck service, prints
 local, LAN, and Tailscale URLs when available, and shows a QR code with a
 `simdeck://pair` link. The QR contains the pairing code plus all detected
 non-loopback addresses, so pairing once can save both the LAN and Tailscale
@@ -85,12 +87,9 @@ routes with the same service token.
 Normal service restarts preserve that token so paired clients stay connected.
 Use `simdeck service reset` only when you want to rotate the service token and
 restart the LaunchAgent.
-The LaunchAgent service uses port 4310. Project daemons start at port 4311 and
-probe upward when that port is busy. When the service is active, `simdeck` and
-`simdeck ui` print the existing service endpoints instead of starting a project
-daemon; use the `daemon` subcommand when you explicitly want a workspace daemon.
+The service uses port 4310 unless you pass `-p` or `--port`.
 
-CLI commands automatically use the same warm daemon:
+CLI commands automatically use the same warm service:
 
 ```sh
 simdeck list
@@ -195,8 +194,8 @@ try {
 }
 ```
 
-`connect()` starts the project daemon when needed, reuses it when it is already
-healthy, and only stops daemons it started itself. Pass `udid` to `connect()`
+`connect()` starts the SimDeck service when needed and reuses it when it is
+already healthy. Pass `udid` to `connect()`
 to make it the default for session methods; each method still accepts an
 explicit UDID as the first argument when needed. Query helpers such as
 `tree()`, `query()`, `waitFor()`, `assert()`, and selector `tapElement()`
@@ -236,7 +235,7 @@ import "expo-router/entry";
 Import it before `expo-router/entry` or `AppRegistry.registerComponent(...)`
 so the package can capture React Fiber commits. The auto entrypoint no-ops
 outside development, reads `EXPO_PUBLIC_SIMDECK_PORT` when present, and
-otherwise scans common SimDeck daemon ports.
+otherwise scans common SimDeck service ports.
 
 ## Flutter Inspector
 

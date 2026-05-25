@@ -72,6 +72,7 @@ const ACCESSIBILITY_SOURCE_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(2
 const ACCESSIBILITY_TREE_CACHE_TTL: Duration = Duration::from_secs(5);
 const NATIVE_AX_SNAPSHOT_RETRY_ATTEMPTS: usize = 5;
 const NATIVE_AX_SNAPSHOT_RETRY_DELAY: Duration = Duration::from_millis(100);
+const NATIVE_AX_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(8);
 
 static FOREGROUND_APP_CACHE: OnceLock<StdMutex<HashMap<String, CachedForegroundApp>>> =
     OnceLock::new();
@@ -156,6 +157,9 @@ impl AccessibilitySnapshotCache {
         snapshot: &Value,
         generation: u64,
     ) {
+        if !cacheable_accessibility_snapshot(snapshot) {
+            return;
+        }
         let generations = self
             .generations
             .lock()
@@ -238,6 +242,10 @@ impl AccessibilitySnapshotCache {
             warming.remove(udid);
         }
     }
+}
+
+fn cacheable_accessibility_snapshot(snapshot: &Value) -> bool {
+    snapshot.get("fallbackReason").is_none()
 }
 
 fn cached_depth_covers(cached: Option<usize>, requested: Option<usize>) -> bool {
@@ -5835,10 +5843,29 @@ async fn accessibility_snapshot_with_options(
     max_depth: Option<usize>,
     interactive_only: bool,
 ) -> Result<Value, AppError> {
-    run_bridge_action(state, move |bridge| {
+    let bridge = state.registry.bridge().clone();
+    let metrics = state.metrics.clone();
+    let started = Instant::now();
+    let task = task::spawn_blocking(move || {
         bridge.accessibility_snapshot_with_options(&udid, point, max_depth, interactive_only)
-    })
-    .await
+    });
+    let result = match timeout(NATIVE_AX_SNAPSHOT_TIMEOUT, task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(AppError::internal(format!(
+            "Failed to join native accessibility snapshot task: {error}"
+        ))),
+        Err(_) => Err(AppError::native(format!(
+            "Native accessibility snapshot timed out after {}ms.",
+            NATIVE_AX_SNAPSHOT_TIMEOUT.as_millis()
+        ))),
+    };
+    let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    metrics.record_accessibility_snapshot(
+        duration_ms,
+        result.is_ok(),
+        duration_ms >= NATIVE_AX_SNAPSHOT_TIMEOUT.as_millis() as u64,
+    );
+    result
 }
 
 #[cfg(test)]
@@ -6081,6 +6108,34 @@ mod tests {
 
         assert_eq!(cache.latest_interactive("sim-1").unwrap()["name"], "latest");
         assert!(cache.latest_interactive("sim-2").is_none());
+    }
+
+    #[test]
+    fn accessibility_cache_skips_fallback_snapshots() {
+        let cache = AccessibilitySnapshotCache::default();
+        let key = AccessibilitySnapshotCacheKey {
+            udid: "sim-1".to_owned(),
+            source: "native-ax".to_owned(),
+            max_depth: Some(4),
+            include_hidden: false,
+            interactive_only: false,
+        };
+        cache.insert(
+            key.clone(),
+            &json!({
+                "source": SOURCE_NATIVE_AX,
+                "fallbackReason": "Native accessibility snapshot timed out."
+            }),
+        );
+        cache.insert(
+            key.clone(),
+            &json!({ "source": SOURCE_NATIVE_AX, "roots": [{ "name": "ready" }] }),
+        );
+
+        assert_eq!(
+            cache.get_compatible(&key).unwrap().1["roots"][0]["name"],
+            "ready"
+        );
     }
 
     #[test]

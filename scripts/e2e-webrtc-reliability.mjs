@@ -4,6 +4,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import net from "node:net";
 
 const serverUrl = new URL(
   process.env.SIMDECK_SERVER_URL ?? process.argv[2] ?? "http://127.0.0.1:4310",
@@ -18,6 +20,9 @@ const chromePath =
   process.env.CHROME_PATH ??
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const debugPort = Number(process.env.SIMDECK_E2E_CHROME_PORT ?? 9339);
+const chromeStartupTimeoutMs = Number(
+  process.env.SIMDECK_E2E_CHROME_STARTUP_MS ?? 60_000,
+);
 const maxFrameGapMs = Number(process.env.SIMDECK_E2E_MAX_FRAME_GAP_MS ?? 250);
 const maxInteractionLatencyMs = Number(
   process.env.SIMDECK_E2E_MAX_INTERACTION_LATENCY_MS ?? 750,
@@ -26,7 +31,16 @@ const interactionsEnabled = process.env.SIMDECK_E2E_INTERACTIONS !== "0";
 const maxPeerDisconnectedMs = Number(
   process.env.SIMDECK_E2E_MAX_PEER_DISCONNECTED_MS ?? 1000,
 );
+const streamReadyTimeoutMs = Number(
+  process.env.SIMDECK_E2E_STREAM_READY_MS ?? 90_000,
+);
+const warmupMs = Number(process.env.SIMDECK_E2E_WARMUP_MS ?? 0);
 const maxDecoderDrops = Number(process.env.SIMDECK_E2E_MAX_DECODER_DROPS ?? 0);
+const minVideoWidth = Number(process.env.SIMDECK_E2E_MIN_VIDEO_WIDTH ?? 0);
+const minVideoHeight = Number(process.env.SIMDECK_E2E_MIN_VIDEO_HEIGHT ?? 0);
+const minDecodedFps = Number(process.env.SIMDECK_E2E_MIN_DECODED_FPS ?? 0);
+const minPresentedFps = Number(process.env.SIMDECK_E2E_MIN_PRESENTED_FPS ?? 0);
+const minReceivedFps = Number(process.env.SIMDECK_E2E_MIN_RECEIVED_FPS ?? 0);
 const visualSampleIntervalMs = Number(
   process.env.SIMDECK_E2E_VISUAL_SAMPLE_INTERVAL_MS ?? 5000,
 );
@@ -101,21 +115,251 @@ async function fetchReferenceScreenshotDataUrl(udid) {
   return `data:${contentType};base64,${base64}`;
 }
 
-async function waitForDevTools() {
+async function waitForDevTools(chromeProcess, getChromeOutput, getSpawnError) {
   const versionUrl = `http://127.0.0.1:${debugPort}/json/version`;
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 10_000) {
+  while (Date.now() - startedAt < chromeStartupTimeoutMs) {
+    const spawnError = getSpawnError();
+    if (spawnError) {
+      throw new Error(
+        [`Chrome failed to start: ${spawnError.message}`, getChromeOutput()]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    }
+    if (chromeProcess.exitCode !== null || chromeProcess.signalCode !== null) {
+      throw new Error(
+        [
+          `Chrome exited before DevTools became available (exit=${chromeProcess.exitCode}, signal=${chromeProcess.signalCode}).`,
+          getChromeOutput(),
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    }
     try {
       return await fetchJson(versionUrl);
     } catch {
       await sleep(100);
     }
   }
-  throw new Error("Timed out waiting for Chrome DevTools endpoint.");
+  throw new Error(
+    [
+      `Timed out waiting ${chromeStartupTimeoutMs}ms for Chrome DevTools endpoint at ${versionUrl}.`,
+      getChromeOutput(),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+class NodeWebSocket {
+  constructor(url) {
+    this.url = new URL(url);
+    this.listeners = new Map();
+    this.buffer = Buffer.alloc(0);
+    this.handshakeComplete = false;
+    this.opened = this.connect();
+  }
+
+  addEventListener(type, listener, options = {}) {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push({ listener, once: Boolean(options.once) });
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type, listener) {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) ?? []).filter(
+        (entry) => entry.listener !== listener,
+      ),
+    );
+  }
+
+  emit(type, event = {}) {
+    const listeners = this.listeners.get(type) ?? [];
+    this.listeners.set(
+      type,
+      listeners.filter(({ listener, once }) => {
+        listener(event);
+        return !once;
+      }),
+    );
+  }
+
+  async connect() {
+    if (this.url.protocol !== "ws:") {
+      throw new Error(
+        `Unsupported CDP WebSocket protocol: ${this.url.protocol}`,
+      );
+    }
+    const port = Number(this.url.port || 80);
+    const key = randomBytes(16).toString("base64");
+    this.socket = net.createConnection({
+      host: this.url.hostname,
+      port,
+    });
+    this.socket.on("data", (chunk) => this.handleData(chunk));
+    this.socket.on("error", (error) => this.emit("error", error));
+    this.socket.on("close", () => this.emit("close", {}));
+    await new Promise((resolve, reject) => {
+      this.socket.once("connect", resolve);
+      this.socket.once("error", reject);
+    });
+    const path = `${this.url.pathname}${this.url.search}`;
+    this.socket.write(
+      [
+        `GET ${path} HTTP/1.1`,
+        `Host: ${this.url.host}`,
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        `Sec-WebSocket-Key: ${key}`,
+        "Sec-WebSocket-Version: 13",
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    await new Promise((resolve, reject) => {
+      const onOpen = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (error) => {
+        cleanup();
+        reject(error);
+      };
+      const cleanup = () => {
+        this.removeEventListener("open", onOpen);
+        this.removeEventListener("error", onError);
+      };
+      this.addEventListener("open", onOpen, { once: true });
+      this.addEventListener("error", onError, { once: true });
+    });
+  }
+
+  handleData(chunk) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    if (!this.handshakeComplete) {
+      const headerEnd = this.buffer.indexOf("\r\n\r\n");
+      if (headerEnd < 0) {
+        return;
+      }
+      const header = this.buffer.subarray(0, headerEnd).toString("utf8");
+      this.buffer = this.buffer.subarray(headerEnd + 4);
+      if (!header.startsWith("HTTP/1.1 101")) {
+        this.emit(
+          "error",
+          new Error(`CDP WebSocket upgrade failed: ${header}`),
+        );
+        return;
+      }
+      this.handshakeComplete = true;
+      this.emit("open", {});
+    }
+    this.readFrames();
+  }
+
+  readFrames() {
+    while (this.buffer.length >= 2) {
+      const first = this.buffer[0];
+      const second = this.buffer[1];
+      const opcode = first & 0x0f;
+      const masked = Boolean(second & 0x80);
+      let length = second & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (this.buffer.length < offset + 2) return;
+        length = this.buffer.readUInt16BE(offset);
+        offset += 2;
+      } else if (length === 127) {
+        if (this.buffer.length < offset + 8) return;
+        const high = this.buffer.readUInt32BE(offset);
+        const low = this.buffer.readUInt32BE(offset + 4);
+        length = high * 2 ** 32 + low;
+        offset += 8;
+      }
+      const maskLength = masked ? 4 : 0;
+      if (this.buffer.length < offset + maskLength + length) {
+        return;
+      }
+      let payload = this.buffer.subarray(
+        offset + maskLength,
+        offset + maskLength + length,
+      );
+      if (masked) {
+        const mask = this.buffer.subarray(offset, offset + maskLength);
+        const unmasked = Buffer.alloc(payload.length);
+        for (let index = 0; index < payload.length; index += 1) {
+          unmasked[index] = payload[index] ^ mask[index % 4];
+        }
+        payload = unmasked;
+      }
+      this.buffer = this.buffer.subarray(offset + maskLength + length);
+      if (opcode === 0x1) {
+        this.emit("message", { data: payload.toString("utf8") });
+      } else if (opcode === 0x8) {
+        this.close();
+        return;
+      } else if (opcode === 0x9) {
+        this.writeFrame(0x0a, payload);
+      }
+    }
+  }
+
+  send(data) {
+    this.writeFrame(0x1, Buffer.from(data));
+  }
+
+  writeFrame(opcode, payload) {
+    const mask = randomBytes(4);
+    let headerLength = 2;
+    if (payload.length >= 126 && payload.length <= 0xffff) {
+      headerLength += 2;
+    } else if (payload.length > 0xffff) {
+      headerLength += 8;
+    }
+    const frame = Buffer.alloc(headerLength + mask.length + payload.length);
+    frame[0] = 0x80 | opcode;
+    if (payload.length < 126) {
+      frame[1] = 0x80 | payload.length;
+    } else if (payload.length <= 0xffff) {
+      frame[1] = 0x80 | 126;
+      frame.writeUInt16BE(payload.length, 2);
+    } else {
+      frame[1] = 0x80 | 127;
+      frame.writeUInt32BE(Math.floor(payload.length / 2 ** 32), 2);
+      frame.writeUInt32BE(payload.length >>> 0, 6);
+    }
+    mask.copy(frame, headerLength);
+    for (let index = 0; index < payload.length; index += 1) {
+      frame[headerLength + mask.length + index] =
+        payload[index] ^ mask[index % 4];
+    }
+    this.socket.write(frame);
+  }
+
+  close() {
+    this.socket?.end();
+  }
+}
+
+async function createCdpSocket(url) {
+  if (typeof WebSocket === "function") {
+    const ws = new WebSocket(url);
+    await new Promise((resolve, reject) => {
+      ws.addEventListener("open", resolve, { once: true });
+      ws.addEventListener("error", reject, { once: true });
+    });
+    return ws;
+  }
+  const ws = new NodeWebSocket(url);
+  await ws.opened;
+  return ws;
 }
 
 class CdpClient {
@@ -156,11 +400,7 @@ class CdpClient {
 }
 
 async function connectCdp(webSocketDebuggerUrl) {
-  const ws = new WebSocket(webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
-  });
+  const ws = await createCdpSocket(webSocketDebuggerUrl);
   return new CdpClient(ws);
 }
 
@@ -223,6 +463,7 @@ function latestByKind(streams, kind) {
 const profileDir = await mkdtemp(join(tmpdir(), "simdeck-webrtc-e2e-"));
 const chromeArgs = [
   `--remote-debugging-port=${debugPort}`,
+  "--remote-debugging-address=127.0.0.1",
   `--user-data-dir=${profileDir}`,
   "--no-first-run",
   "--no-default-browser-check",
@@ -238,16 +479,27 @@ if (process.env.SIMDECK_E2E_HEADFUL !== "1") {
 }
 
 const chrome = spawn(chromePath, chromeArgs, {
-  stdio: ["ignore", "ignore", "pipe"],
+  stdio: ["ignore", "pipe", "pipe"],
 });
-let chromeStderr = "";
+let chromeOutput = "";
+let chromeSpawnError = null;
 let cdp;
+chrome.stdout.on("data", (chunk) => {
+  chromeOutput += chunk.toString();
+});
 chrome.stderr.on("data", (chunk) => {
-  chromeStderr += chunk.toString();
+  chromeOutput += chunk.toString();
+});
+chrome.on("error", (error) => {
+  chromeSpawnError = error;
 });
 
 try {
-  await waitForDevTools();
+  await waitForDevTools(
+    chrome,
+    () => chromeOutput.trim(),
+    () => chromeSpawnError,
+  );
   const target = await createPageTarget("about:blank");
   cdp = await connectCdp(target.webSocketDebuggerUrl);
   await cdp.send("Page.enable");
@@ -281,17 +533,32 @@ try {
     15_000,
   );
 
-  await waitForValue(
-    cdp,
-    `
+  try {
+    await waitForValue(
+      cdp,
+      `
     (() => {
       const videos = [...document.querySelectorAll("video.stream-video")];
       return videos.some((video) => video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0);
     })()
   `,
-    Boolean,
-    20_000,
-  );
+      Boolean,
+      streamReadyTimeoutMs,
+    );
+  } catch (error) {
+    const diagnostics = await collectReadinessDiagnostics(cdp, clientId).catch(
+      (diagnosticError) => ({
+        diagnosticError: String(diagnosticError?.message ?? diagnosticError),
+      }),
+    );
+    throw new Error(
+      `${error?.message ?? error}\nReadiness diagnostics: ${JSON.stringify(diagnostics, null, 2)}`,
+    );
+  }
+
+  if (warmupMs > 0) {
+    await sleep(warmupMs);
+  }
 
   const initialMetrics = await fetchJson(endpoint("/api/metrics"));
   const initialStreams = findClientStreams(initialMetrics, clientId);
@@ -406,6 +673,13 @@ try {
     directStatsEnd.packetsReceived - directStatsStart.packetsReceived;
   const directPresentedDelta =
     directStatsEnd.totalVideoFrames - directStatsStart.totalVideoFrames;
+  const observedDurationSeconds = Math.max(
+    0.001,
+    (directStatsEnd.timestampMs - directStatsStart.timestampMs) / 1000,
+  );
+  const decodedFps = directDecodedDelta / observedDurationSeconds;
+  const presentedFps = directPresentedDelta / observedDurationSeconds;
+  const receivedFps = directPacketsDelta / observedDurationSeconds;
 
   if (decodedDelta <= 0 || receivedDelta <= 0) {
     failures.push(
@@ -428,6 +702,41 @@ try {
   }
   if (reconnectDelta > 0) {
     failures.push(`peer reconnected ${reconnectDelta} times`);
+  }
+  const finalVideoWidth = Math.max(
+    numeric(finalPage.width),
+    numeric(finalWebRtc.width),
+    numeric(directStatsEnd.videoWidth),
+  );
+  const finalVideoHeight = Math.max(
+    numeric(finalPage.height),
+    numeric(finalWebRtc.height),
+    numeric(directStatsEnd.videoHeight),
+  );
+  if (minVideoWidth > 0 && finalVideoWidth < minVideoWidth) {
+    failures.push(
+      `video width ${finalVideoWidth} did not meet minimum ${minVideoWidth}`,
+    );
+  }
+  if (minVideoHeight > 0 && finalVideoHeight < minVideoHeight) {
+    failures.push(
+      `video height ${finalVideoHeight} did not meet minimum ${minVideoHeight}`,
+    );
+  }
+  if (minDecodedFps > 0 && decodedFps < minDecodedFps) {
+    failures.push(
+      `decoded fps ${decodedFps.toFixed(2)} did not meet minimum ${minDecodedFps}`,
+    );
+  }
+  if (minPresentedFps > 0 && presentedFps < minPresentedFps) {
+    failures.push(
+      `presented fps ${presentedFps.toFixed(2)} did not meet minimum ${minPresentedFps}`,
+    );
+  }
+  if (minReceivedFps > 0 && receivedFps < minReceivedFps) {
+    failures.push(
+      `received packet fps ${receivedFps.toFixed(2)} did not meet minimum ${minReceivedFps}`,
+    );
   }
   if (maxPeerDisconnectedObservedMs > maxPeerDisconnectedMs) {
     failures.push(
@@ -480,14 +789,21 @@ try {
     durationMs,
     finalPage,
     finalWebRtc,
+    finalVideoHeight,
+    finalVideoWidth,
     initialPage,
     initialWebRtc,
+    observedDurationSeconds,
+    decodedFps,
+    presentedFps,
+    receivedFps,
     maxObservedDecodeQueue,
     maxObservedFrameGapMs,
     maxPeerDisconnectedMs,
     maxPeerDisconnectedObservedMs,
     maxInteractionLatencyMs,
     maxDecoderDrops,
+    warmupMs,
     interactionsEnabled,
     visualSamplesEnabled,
     interactionLatencies,
@@ -577,8 +893,65 @@ async function waitForValue(cdp, expression, predicate, timeoutMs) {
     await sleep(250);
   }
   throw new Error(
-    `Timed out waiting for expression: ${expression}\n${chromeStderr}`,
+    `Timed out waiting for expression: ${expression}\n${chromeOutput}`,
   );
+}
+
+async function collectReadinessDiagnostics(cdp, clientId) {
+  const page = await evaluate(
+    cdp,
+    `
+    (() => {
+      const videos = [...document.querySelectorAll("video.stream-video")].map((video) => ({
+        height: video.videoHeight || 0,
+        networkState: video.networkState,
+        paused: video.paused,
+        readyState: video.readyState,
+        width: video.videoWidth || 0,
+      }));
+      const peerConnections = (window.__simdeckPeerConnections || []).map((pc) => ({
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+        iceGatheringState: pc.iceGatheringState,
+        signalingState: pc.signalingState,
+      }));
+      return {
+        bodyText: (document.body?.innerText || "").slice(0, 1000),
+        canvases: document.querySelectorAll("canvas.stream-canvas").length,
+        location: window.location.href,
+        peerConnections,
+        sessionClientId: window.sessionStorage.getItem("simdeck.streamClientId") || "",
+        statusText: document.querySelector("[data-testid='stream-status']")?.textContent || "",
+        title: document.title,
+        videos,
+      };
+    })()
+  `,
+  );
+  const metrics = await fetchJson(endpoint("/api/metrics")).catch((error) => ({
+    error: String(error?.message ?? error),
+  }));
+  return {
+    clientId,
+    page,
+    streams: Array.isArray(metrics?.client_streams)
+      ? findClientStreams(metrics, clientId).map((stream) => ({
+          codec: stream.codec,
+          decodedFrames: stream.decodedFrames,
+          detail: stream.detail,
+          droppedFrames: stream.droppedFrames,
+          height: stream.height,
+          kind: stream.kind,
+          latestFrameGapMs: stream.latestFrameGapMs,
+          receivedPackets: stream.receivedPackets,
+          reconnects: stream.reconnects,
+          renderedFrames: stream.renderedFrames,
+          status: stream.status,
+          udid: stream.udid,
+          width: stream.width,
+        }))
+      : metrics,
+  };
 }
 
 async function createPageTarget(url) {
@@ -601,12 +974,15 @@ async function collectDirectWebRtcStats(cdp) {
     (async () => {
       const totals = {
         framesDecoded: 0,
-        framesDropped: 0,
-        jitter: 0,
-        packetsLost: 0,
-        packetsReceived: 0,
-        totalVideoFrames: 0,
-      };
+      framesDropped: 0,
+      jitter: 0,
+      packetsLost: 0,
+      packetsReceived: 0,
+      timestampMs: Date.now(),
+      totalVideoFrames: 0,
+      videoHeight: 0,
+      videoWidth: 0,
+    };
       for (const pc of window.__simdeckPeerConnections || []) {
         const reports = await pc.getStats();
         for (const report of reports.values()) {
@@ -622,6 +998,8 @@ async function collectDirectWebRtcStats(cdp) {
       for (const video of document.querySelectorAll("video.stream-video")) {
         const quality = video.getVideoPlaybackQuality?.();
         totals.totalVideoFrames += quality?.totalVideoFrames || 0;
+        totals.videoWidth = Math.max(totals.videoWidth, video.videoWidth || 0);
+        totals.videoHeight = Math.max(totals.videoHeight, video.videoHeight || 0);
       }
       return totals;
     })()
