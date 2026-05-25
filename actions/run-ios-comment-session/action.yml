@@ -82,6 +82,18 @@ inputs:
     description: Verify the public Cloudflare Tunnel health endpoint before continuing.
     required: false
     default: "false"
+  ci_proxy_url:
+    description: Optional SimDeck CI proxy Worker URL, such as https://ci.simdeck.sh.
+    required: false
+    default: https://simdeck-ci-proxy.djdeveloperr.workers.dev
+  proxy_links:
+    description: Post SimDeck CI proxy links instead of raw Cloudflare Tunnel links.
+    required: false
+    default: "true"
+  session_password:
+    description: Optional password required by the SimDeck CI proxy before it opens the tunnel.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -106,6 +118,9 @@ runs:
         INPUT_DEVICE_STRATEGY_VALUE: ${{ inputs.device_strategy }}
         INPUT_SIMULATOR_CACHE_VALUE: ${{ inputs.simulator_cache }}
         INPUT_PUBLIC_HEALTH_CHECK_VALUE: ${{ inputs.public_health_check }}
+        INPUT_CI_PROXY_URL_VALUE: ${{ inputs.ci_proxy_url }}
+        INPUT_PROXY_LINKS_VALUE: ${{ inputs.proxy_links }}
+        INPUT_SESSION_PASSWORD_VALUE: ${{ inputs.session_password }}
         KEEPALIVE_SECONDS_VALUE: ${{ inputs.keepalive_seconds }}
         BUILD_WORKFLOW_VALUE: ${{ inputs.build_workflow }}
         ARTIFACT_PREFIX_VALUE: ${{ inputs.artifact_prefix }}
@@ -138,6 +153,12 @@ runs:
         write_env "SIMDECK_VERSION" "${SIMDECK_VERSION_VALUE}"
         write_env "INPUT_STREAM_PROFILE" "${INPUT_STREAM_PROFILE_VALUE}"
         write_env "INPUT_SIMULATOR_NAME" "${INPUT_SIMULATOR_NAME_VALUE}"
+        write_env "SIMDECK_CI_PROXY_URL" "${INPUT_CI_PROXY_URL_VALUE}"
+        write_env "SIMDECK_PROXY_LINKS" "${INPUT_PROXY_LINKS_VALUE}"
+        write_env "SIMDECK_SESSION_PASSWORD" "${INPUT_SESSION_PASSWORD_VALUE}"
+        if [[ -n "${INPUT_SESSION_PASSWORD_VALUE}" ]]; then
+          echo "::add-mask::${INPUT_SESSION_PASSWORD_VALUE}"
+        fi
         write_env "INPUT_DEVICE_STRATEGY" "${INPUT_DEVICE_STRATEGY_VALUE}"
         write_env "INPUT_SIMULATOR_CACHE" "${INPUT_SIMULATOR_CACHE_VALUE}"
         write_env "INPUT_PUBLIC_HEALTH_CHECK" "${INPUT_PUBLIC_HEALTH_CHECK_VALUE}"
@@ -198,6 +219,12 @@ runs:
         echo "SIMDECK_DEVICE_STRATEGY=${device_strategy}" >> "${GITHUB_ENV}"
         echo "SIMDECK_STREAM_PROFILE=${stream_profile}" >> "${GITHUB_ENV}"
         echo "SIMDECK_PUBLIC_HEALTH_CHECK=${public_health_check}" >> "${GITHUB_ENV}"
+        if [[ -n "${SIMDECK_SESSION_PASSWORD:-}" ]]; then
+          if [[ "${SIMDECK_PROXY_LINKS}" != "true" || -z "${SIMDECK_CI_PROXY_URL:-}" ]]; then
+            echo "session_password requires proxy_links: true and a non-empty ci_proxy_url." >&2
+            exit 1
+          fi
+        fi
         echo "Simulator cache: ${simulator_cache}"
         echo "Preferred simulator: ${simulator_name:-<none>}"
         echo "Device strategy: ${device_strategy}"
@@ -354,6 +381,72 @@ runs:
 
         echo "url=${tunnel_url}" >> "${GITHUB_OUTPUT}"
         echo "access_token=${access_token}" >> "${GITHUB_OUTPUT}"
+        public_url="${tunnel_url}?simdeckToken=${access_token}"
+        ci_proxy_url="${SIMDECK_CI_PROXY_URL%/}"
+        if [[ "${SIMDECK_PROXY_LINKS}" == "true" && -n "${ci_proxy_url}" ]]; then
+          encoded_redirect="$(SIMDECK_TUNNEL_URL="${tunnel_url}" \
+            SIMDECK_ACCESS_TOKEN="${access_token}" \
+            SIMDECK_SESSION_PASSWORD="${SIMDECK_SESSION_PASSWORD:-}" \
+            SIMDECK_PLATFORM="ios" \
+            SIMDECK_REPO="${REPO}" \
+            SIMDECK_PR_NUMBER="${PR_NUMBER}" \
+            SIMDECK_RUN_ID="${GITHUB_RUN_ID}" \
+            SIMDECK_KEEPALIVE_SECONDS="${KEEPALIVE_SECONDS}" \
+            node --input-type=module <<'NODE'
+        import { webcrypto } from "node:crypto";
+
+        const env = process.env;
+        const encoder = new TextEncoder();
+        const base64url = (bytes) =>
+          Buffer.from(bytes).toString("base64url");
+        const keepalive = Number(env.SIMDECK_KEEPALIVE_SECONDS || "1800");
+        const payload = {
+          v: 1,
+          upstream: env.SIMDECK_TUNNEL_URL,
+          platform: env.SIMDECK_PLATFORM,
+          repo: env.SIMDECK_REPO,
+          pr: env.SIMDECK_PR_NUMBER,
+          runId: env.SIMDECK_RUN_ID,
+          expiresAt: new Date(Date.now() + (keepalive + 600) * 1000).toISOString(),
+        };
+
+        const password = env.SIMDECK_SESSION_PASSWORD || "";
+        const token = env.SIMDECK_ACCESS_TOKEN || "";
+        if (password) {
+          const salt = webcrypto.getRandomValues(new Uint8Array(16));
+          const iv = webcrypto.getRandomValues(new Uint8Array(12));
+          const passwordBytes = encoder.encode(password);
+          const material = new Uint8Array(passwordBytes.length + salt.length + 1);
+          material.set(passwordBytes);
+          material[passwordBytes.length] = 0;
+          material.set(salt, passwordBytes.length + 1);
+          const digest = await webcrypto.subtle.digest("SHA-256", material);
+          const key = await webcrypto.subtle.importKey(
+            "raw",
+            digest,
+            { name: "AES-GCM", length: 256 },
+            false,
+            ["encrypt"],
+          );
+          const ciphertext = new Uint8Array(
+            await webcrypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoder.encode(token)),
+          );
+          payload.tokenCipher = {
+            algorithm: "SHA256-SALTED+A256GCM",
+            ciphertext: base64url(ciphertext),
+            iv: base64url(iv),
+            salt: base64url(salt),
+          };
+        } else {
+          payload.token = token;
+        }
+
+        process.stdout.write(base64url(Buffer.from(JSON.stringify(payload))));
+        NODE
+          )"
+          public_url="${ci_proxy_url}?redirect=${encoded_redirect}"
+        fi
+        echo "public_url=${public_url}" >> "${GITHUB_OUTPUT}"
 
         public_health_url="${tunnel_url}/api/health?simdeckToken=${access_token}"
         tunnel_host="${tunnel_url#https://}"
@@ -676,7 +769,7 @@ runs:
         fi
 
         cat > comment.md <<'EOF'
-        __MENTION__SimDeck iOS session is ready: [Open SimDeck](${{ steps.stream.outputs.url }}?simdeckToken=${{ steps.stream.outputs.access_token }}&device=${{ env.SIMULATOR_UDID }})
+        __MENTION__SimDeck iOS session is ready: [Open SimDeck](${{ steps.stream.outputs.public_url }}&device=${{ env.SIMULATOR_UDID }})
 
         The selected simulator is booted and the PR app will launch here once its build artifact is installed.
 
@@ -837,7 +930,7 @@ runs:
       shell: bash
       run: |
         cat > comment.md <<'EOF'
-        SimDeck iOS session is ready: [Open SimDeck](${{ steps.stream.outputs.url }}?simdeckToken=${{ steps.stream.outputs.access_token }}&device=${{ steps.simulator.outputs.udid }})
+        SimDeck iOS session is ready: [Open SimDeck](${{ steps.stream.outputs.public_url }}&device=${{ steps.simulator.outputs.udid }})
 
         App: `${{ steps.simulator.outputs.bundle_id }}`
         Commit: `${{ steps.pr.outputs.sha }}`
