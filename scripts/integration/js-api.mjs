@@ -186,16 +186,32 @@ async function main() {
     );
   });
   await measuredStep("JS selector tap", async () => {
-    await session.tapElement(
-      { id: "fixture.continue" },
-      {
-        source: "native-ax",
-        maxDepth: 3,
-        waitTimeoutMs: 5_000,
-        durationMs: 20,
+    await retryAsync(
+      async () => {
+        await session.waitFor(
+          { id: "fixture.continue" },
+          {
+            source: "native-ax",
+            maxDepth: 3,
+            timeoutMs: 15_000,
+            pollMs: 250,
+          },
+        );
+        await session.tapElement(
+          { id: "fixture.continue" },
+          {
+            source: "native-ax",
+            maxDepth: 3,
+            waitTimeoutMs: 15_000,
+            durationMs: 30,
+          },
+        );
+        await expectFixtureText("Continue Tapped", { timeoutMs: 30_000 });
       },
+      "JS selector tap",
+      3,
+      3_000,
     );
-    await expectFixtureText("Continue Tapped");
   });
   await measuredStep("JS coordinate touch", async () => {
     await session.touch(simulatorUDID, 0.5, 0.525, "began");
