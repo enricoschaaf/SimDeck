@@ -52,7 +52,7 @@ if (!existsSync(binary)) {
   process.exit(1);
 }
 
-const clientRoot = join(root, "client", "dist");
+const clientRoot = join(root, "packages", "client", "dist");
 const useClientRoot = existsSync(clientRoot);
 const failures = [];
 const results = [];

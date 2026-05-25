@@ -36,19 +36,19 @@ Granular targets:
 
 ```sh
 npm run build:cli                    # Rust server -> build/simdeck-bin
-npm run build:client                 # browser bundle -> client/dist
+npm run build:client                 # browser bundle -> packages/client/dist
 npm run build:inspectors             # nativescript + react-native inspectors
 npm run build:simdeck-test           # simdeck/test subpath export
 npm run build:vscode-extension       # alias for package:vscode-extension
 ```
 
-`scripts/build-cli.sh` builds the Rust server in `server/` and copies the
+`scripts/build-cli.sh` builds the Rust server in `packages/server/` and copies the
 resulting binary to `build/simdeck-bin`. The default is a host-arch build for
 fast iteration. Set `SIMDECK_BUILD_TARGET=<rust-target-triple>` to pin the
 output to an explicit Rust target — the release workflow uses
 `SIMDECK_BUILD_TARGET=aarch64-apple-darwin` for deterministic arm64 builds.
 
-SimDeck is **arm64-only** by design: `cli/*.m` contains AArch64 inline asm
+SimDeck is **arm64-only** by design: `packages/server/native/*.m` contains AArch64 inline asm
 that does not compile on x86_64, and the npm package is gated by
 `"cpu": ["arm64"]` so installs on Intel Macs fail fast.
 
@@ -133,7 +133,7 @@ npm run docs:preview
 Install the agent skill from a source checkout with [skills.sh](https://skills.sh/):
 
 ```sh
-npx skills add NativeScript/SimDeck --skill simdeck -a codex -g
+npx skills add NativeScript/SimDeck --skill simdeck -g
 ```
 
 The npm postinstall message also prints this command after a global install.
@@ -148,8 +148,8 @@ SimDeck. The setup script runs:
 npm run codex:setup
 ```
 
-That hydrates the root `node_modules`, `client/node_modules`, and
-`server/target` from `~/.cache/simdeck/codex-worktree-cache` or a matching
+That hydrates the root `node_modules`, `packages/client/node_modules`, and
+`packages/server/target` from `~/.cache/simdeck/codex-worktree-cache` or a matching
 existing SimDeck checkout. If either `node_modules` directory is still missing,
 it falls back to `npm ci` for that package so lockfiles stay unchanged. On
 macOS it also ensures the Homebrew `pkgconf` and `x264` packages are available

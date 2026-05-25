@@ -4,8 +4,8 @@ This repository is a local-first simulator control plane. The product goal is a 
 
 ## Product Shape
 
-- `cli/` is the native boundary.
-- `client/` is the browser UI.
+- `packages/server/native/` is the native boundary.
+- `packages/client/` is the browser UI.
 - `skills/simdeck/SKILL.md` is the operator guide for using the tool from Codex.
 - `scripts/` holds repeatable build entrypoints.
 - `docs/` is the public VitePress documentation site (deployed to GitHub Pages by `.github/workflows/docs.yml`).
@@ -14,34 +14,34 @@ The native side should own anything that depends on macOS frameworks, `xcrun sim
 
 ## Current Architecture
 
-- `server/src/main.rs`
+- `packages/server/src/main.rs`
   Owns the CLI entrypoint, Rust subcommands, HTTP server, and static asset serving.
-- `server/src/api/routes.rs`
+- `packages/server/src/api/routes.rs`
   Defines REST routes for simulator control, health, metrics, and chrome assets.
-- `server/src/transport/webrtc.rs`
+- `packages/server/src/transport/webrtc.rs`
   Exposes the H.264 WebRTC offer/answer endpoint for browser live video.
-- `server/src/webkit.rs`
+- `packages/server/src/webkit.rs`
   Discovers simulator WebKit Remote Inspector targets and bridges WebInspectorUI
   WebSocket traffic to the simulator `webinspectord` binary-plist socket.
-- `server/src/simulators/registry.rs`
+- `packages/server/src/simulators/registry.rs`
   Tracks Rust-side simulator session state and lazy native attachment by UDID.
-- `cli/XCWSimctl.*`
+- `packages/server/native/XCWSimctl.*`
   Wraps `xcrun simctl` for discovery, lifecycle management, app launching, URL opening, appearance toggles, and simulator log capture.
-- `cli/DFPrivateSimulatorDisplayBridge.*`
+- `packages/server/native/DFPrivateSimulatorDisplayBridge.*`
   Owns headless private display frames plus HID-based touch and keyboard injection.
-- `cli/XCWAccessibilityBridge.*`
+- `packages/server/native/XCWAccessibilityBridge.*`
   Owns private CoreSimulator accessibility snapshots through `AccessibilityPlatformTranslation`.
-- `cli/XCWPrivateSimulatorSession.*`
+- `packages/server/native/XCWPrivateSimulatorSession.*`
   Owns one private display bridge per booted simulator plus selectable hardware/software H.264 encode.
-- `cli/native/XCWNativeBridge.*`
+- `packages/server/native/bridge/XCWNativeBridge.*`
   Narrow C ABI for simulator control, chrome rendering, and native frame callbacks into Rust.
-- `cli/native/XCWNativeSession.*`
+- `packages/server/native/bridge/XCWNativeSession.*`
   Wraps one Objective-C private simulator session handle for the Rust registry.
-- `cli/XCWPrivateSimulatorBooter.*`
+- `packages/server/native/XCWPrivateSimulatorBooter.*`
   Uses private `CoreSimulator` APIs for direct simulator boot without launching Simulator.app.
-- `cli/XCWChromeRenderer.*`
+- `packages/server/native/XCWChromeRenderer.*`
   Renders Apple’s CoreSimulator device-type PDF chrome assets into PNGs for the browser.
-- `client/src/app/App.tsx`
+- `packages/client/src/app/App.tsx`
   Browser entrypoint for the React control surface.
 - `packages/nativescript-inspector/src/index.ts`
   NativeScript in-app inspector runtime that connects to the Rust server over
@@ -58,9 +58,9 @@ The native side should own anything that depends on macOS frameworks, `xcrun sim
 
 ## Working Rules
 
-- Keep simulator-native logic in Objective-C under `cli/`.
-- Keep Rust server logic under `server/`.
-- Keep browser-only presentation logic in `client/`.
+- Keep simulator-native logic in Objective-C under `packages/server/native/`.
+- Keep Rust server logic under `packages/server/`.
+- Keep browser-only presentation logic in `packages/client/`.
 - Keep NativeScript app runtime inspection logic in `packages/nativescript-inspector/`.
 - Keep React Native app runtime inspection logic in `packages/react-native-inspector/`.
 - Keep Flutter app runtime inspection logic in `packages/flutter-inspector/`.
@@ -73,11 +73,11 @@ The native side should own anything that depends on macOS frameworks, `xcrun sim
 
 Private simulator behavior is implemented locally in:
 
-- Boot path: `cli/XCWPrivateSimulatorBooter.*`
-- Full live display bridge: `cli/DFPrivateSimulatorDisplayBridge.*`
-- Accessibility bridge: `cli/XCWAccessibilityBridge.*`
+- Boot path: `packages/server/native/XCWPrivateSimulatorBooter.*`
+- Full live display bridge: `packages/server/native/DFPrivateSimulatorDisplayBridge.*`
+- Accessibility bridge: `packages/server/native/XCWAccessibilityBridge.*`
 
-The current repo uses the private boot path, private display bridge, and private accessibility translation bridge directly. The browser streams frames from that bridge, injects touch and keyboard events through the same native session layer, inspects accessibility through `AccessibilityPlatformTranslation`, and renders device chrome from `cli/XCWChromeRenderer.*`.
+The current repo uses the private boot path, private display bridge, and private accessibility translation bridge directly. The browser streams frames from that bridge, injects touch and keyboard events through the same native session layer, inspects accessibility through `AccessibilityPlatformTranslation`, and renders device chrome from `packages/server/native/XCWChromeRenderer.*`.
 CoreSimulator service contexts resolve the active developer directory from `DEVELOPER_DIR`, then `xcode-select -p`, then `/Applications/Xcode.app/Contents/Developer`. The display bridge prefers direct CoreSimulator screen IOSurface callbacks and activates the SimulatorKit offscreen renderable view only if direct callbacks are unavailable.
 Accessibility recovery may use simulator launchctl UIKit application state plus hit-tested translations to recover candidate foreground pids; the returned tree must still be rooted at tokenized `AXPTranslator` application objects, because `translationApplicationObjectForPid:` can omit the bridge delegate token after private display lifecycle changes. Full-tree snapshots merge those recovered roots with the private frontmost application translation. Shallow snapshots with `maxDepth <= 2` use the tokenized frontmost application translation directly when it is available, and only run the expensive recovery sweep if frontmost lookup fails, so agent-oriented describe loops avoid launchctl and hit-test recovery overhead. Interactive-only snapshots also prune non-actionable native AX leaves during Objective-C serialization before the Rust-side compacting pass; keep this native pruning conservative so selector taps still retain actionable rows plus their ancestors. When multiple candidate application roots are discovered, serialize all of them in preferred order: non-extension app roots first, then largest translated roots, with `.appex`/PlugIns processes de-prioritized so SpringBoard and Safari app roots stay primary while widgets and WebContent roots remain debuggable. Widget renderer extension roots may report local frames; normalize those roots and children against matching SpringBoard widget placeholder frames before returning the snapshot.
 Physical chrome button support uses DeviceKit `chrome.json` input geometry for browser hit targets. Volume, action, mute, Apple Watch digital crown, Watch side button, and Watch left-side button dispatch through `IndigoHIDMessageForHIDArbitrary` with consumer/telephony/vendor HID usage pairs from the device chrome metadata; home, lock, and app-switcher remain on the existing SimulatorKit button paths. Apple Watch Digital Crown rotation dispatches through `IndigoHIDMessageForDigitalCrownEvent` when SimulatorKit exposes it, with `IndigoHIDMessageForScrollEvent(..., target=0x34)` as the fallback. tvOS simulators do not support direct screen touch; browser/API tap maps to Enter, swipe maps to arrow keys, and the native bridge rejects tvOS touch packets before they reach guest `SimulatorHID`. watchOS/tvOS skip dynamic pointer/mouse service warm-up because those guest runtimes abort on unsupported virtual services. Apple TV and Apple Watch simulators are fixed-orientation devices, so client and server rotation paths must not expose or dispatch device rotation for those families.
@@ -101,16 +101,17 @@ npm run build:all
 npm run package:vscode
 ```
 
-This now builds the Rust server in `server/` and copies the resulting binary to `build/simdeck`.
+This now builds the Rust server in `packages/server/` and copies the resulting binary to `build/simdeck`.
 
 Codex worktrees can use the checked-in local environment config at
 `.codex/local-environment.toml`. Its setup runs `npm run codex:setup`, which
-hydrates root/client `node_modules` and `server/target` from the shared cache
-under `~/.cache/simdeck/codex-worktree-cache` or from another SimDeck checkout
-before falling back to `npm ci` for missing package installs and ensuring
-Homebrew `pkgconf`/`x264` are available for native builds. Its Run action
-executes `npm run codex:run`, which builds the CLI and client, saves fresh
-caches, and restarts the workspace-local daemon.
+hydrates root and `packages/client` `node_modules` plus
+`packages/server/target` from the shared cache under
+`~/.cache/simdeck/codex-worktree-cache` or from another SimDeck checkout before
+falling back to `npm ci` for missing package installs and ensuring Homebrew
+`pkgconf`/`x264` are available for native builds. Its Run action executes
+`npm run codex:run`, which builds the CLI and client, saves fresh caches, and
+restarts the workspace-local daemon.
 
 Run the local daemon:
 
@@ -182,9 +183,3 @@ only booted simulator, in that order. For agent navigation, prefer
 - If you expand the private framework bridge, document the Xcode/runtime assumptions here.
 - If a feature depends on a booted simulator, fail with a clear JSON error instead of silently returning an empty asset.
 - Do not reintroduce legacy `/stream.h264` handling. The supported live path is the Rust-managed WebRTC H.264 offer endpoint.
-
-## Near-Term Roadmap
-
-- Compose the private frame stream and CoreSimulator chrome into a single server-side render path.
-- Keep private Indigo multi-touch packet assumptions documented when Xcode runtimes change.
-- Add simulator creation and log streaming commands.

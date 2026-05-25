@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLIENT_DIR="$ROOT_DIR/client"
+CLIENT_DIR="$ROOT_DIR/packages/client"
 
 if [[ ! -d "$CLIENT_DIR/node_modules" ]]; then
   npm install --prefix "$CLIENT_DIR"

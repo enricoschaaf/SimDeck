@@ -161,7 +161,7 @@ mod tests {
     fn config(bind_ip: IpAddr, advertise_host: Option<String>) -> Config {
         Config::new(
             4310,
-            PathBuf::from("client/dist"),
+            PathBuf::from("packages/client/dist"),
             bind_ip,
             advertise_host,
             ServerKind::Standalone,

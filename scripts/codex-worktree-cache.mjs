@@ -100,8 +100,11 @@ function printStatus(entries) {
 
 function buildEntries() {
   const rootLockHash = hashFiles(["package-lock.json"]);
-  const clientLockHash = hashFiles(["client/package-lock.json"]);
-  const cargoHash = hashFiles(["server/Cargo.toml", "server/Cargo.lock"]);
+  const clientLockHash = hashFiles(["packages/client/package-lock.json"]);
+  const cargoHash = hashFiles([
+    "packages/server/Cargo.toml",
+    "packages/server/Cargo.lock",
+  ]);
   const rustHost = rustHostTriple();
 
   return [
@@ -113,7 +116,7 @@ function buildEntries() {
     },
     {
       label: "client node_modules",
-      destination: "client/node_modules",
+      destination: "packages/client/node_modules",
       cachePath: join(
         CACHE_ROOT,
         "node",
@@ -121,13 +124,16 @@ function buildEntries() {
         clientLockHash,
         "node_modules",
       ),
-      sourceLockFiles: ["client/package-lock.json"],
+      sourceLockFiles: ["packages/client/package-lock.json"],
     },
     {
       label: "Rust target",
-      destination: "server/target",
+      destination: "packages/server/target",
       cachePath: join(CACHE_ROOT, "rust", rustHost, cargoHash, "target"),
-      sourceLockFiles: ["server/Cargo.toml", "server/Cargo.lock"],
+      sourceLockFiles: [
+        "packages/server/Cargo.toml",
+        "packages/server/Cargo.lock",
+      ],
     },
   ];
 }

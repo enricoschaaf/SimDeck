@@ -725,7 +725,7 @@ function startServer() {
       "--port",
       String(serverPort),
       "--client-root",
-      path.join(root, "client", "dist"),
+      path.join(root, "packages", "client", "dist"),
       "--access-token",
       "integration",
       "--video-codec",

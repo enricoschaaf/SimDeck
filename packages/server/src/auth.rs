@@ -285,7 +285,7 @@ mod tests {
     fn config() -> Config {
         Config::new(
             4310,
-            PathBuf::from("client/dist"),
+            PathBuf::from("packages/client/dist"),
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             None,
             ServerKind::Standalone,
@@ -354,7 +354,7 @@ mod tests {
     fn accepts_lan_cookie_for_browser_ui() {
         let config = Config::new(
             4310,
-            PathBuf::from("client/dist"),
+            PathBuf::from("packages/client/dist"),
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             Some("10.0.0.245".to_owned()),
             ServerKind::Standalone,
@@ -386,7 +386,7 @@ mod tests {
     fn accepts_cookie_for_same_origin_tailscale_host() {
         let config = Config::new(
             4310,
-            PathBuf::from("client/dist"),
+            PathBuf::from("packages/client/dist"),
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             Some("192.168.1.50".to_owned()),
             ServerKind::Standalone,

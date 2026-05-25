@@ -263,8 +263,12 @@ runs:
           version="$(SIMDECK_METADATA="${metadata}" python3 -c 'import json, os; print(json.loads(os.environ["SIMDECK_METADATA"])["version"])')"
           rm -rf "${simdeck_dir:?}/"*
           curl -fsSL "${tarball}" | tar -xz -C "${simdeck_dir}" --strip-components=1
-          chmod +x "${simdeck_dir}/bin/simdeck.mjs" "${simdeck_dir}/build/simdeck-bin"
-          ln -sf "${simdeck_dir}/bin/simdeck.mjs" "${bin_dir}/simdeck"
+          simdeck_launcher="${simdeck_dir}/packages/cli/bin/simdeck.mjs"
+          if [[ ! -f "${simdeck_launcher}" ]]; then
+            simdeck_launcher="${simdeck_dir}/bin/simdeck.mjs"
+          fi
+          chmod +x "${simdeck_launcher}" "${simdeck_dir}/build/simdeck-bin"
+          ln -sf "${simdeck_launcher}" "${bin_dir}/simdeck"
           echo "Installed ${SIMDECK_PACKAGE} ${version}"
         ) &
         simdeck_install_pid="$!"

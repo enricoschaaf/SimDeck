@@ -17,7 +17,7 @@ ensureNativeBuildDependencies();
 
 if (!skipNpm) {
   ensureNodeModules(".", "root");
-  ensureNodeModules("client", "client");
+  ensureNodeModules("packages/client", "client");
 }
 
 function ensureNativeBuildDependencies() {

@@ -5,8 +5,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/build"
 OUTPUT="$BUILD_DIR/simdeck"
 OUTPUT_BIN="$BUILD_DIR/simdeck-bin"
-MANIFEST_PATH="$ROOT_DIR/server/Cargo.toml"
-SERVER_TARGET_DIR="$ROOT_DIR/server/target"
+MANIFEST_PATH="$ROOT_DIR/packages/server/Cargo.toml"
+SERVER_TARGET_DIR="$ROOT_DIR/packages/server/target"
 
 # SimDeck's full iOS bridge is macOS-only. Non-macOS builds compile a native
 # stub so Android-only integration tests can run on Linux CI.

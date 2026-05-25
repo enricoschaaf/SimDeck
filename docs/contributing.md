@@ -35,20 +35,20 @@ The server log is written to `build/cli.log`.
 
 ## Repository map
 
-| Folder      | Purpose                                                |
-| ----------- | ------------------------------------------------------ |
-| `server/`   | CLI entrypoint, daemon, API, stream transport, metrics |
-| `cli/`      | macOS simulator bridge                                 |
-| `client/`   | Browser UI                                             |
-| `packages/` | Inspectors, VS Code extension, and `simdeck/test`      |
-| `scripts/`  | Build, package, and test helpers                       |
-| `docs/`     | VitePress documentation                                |
+| Folder                    | Purpose                                                |
+| ------------------------- | ------------------------------------------------------ |
+| `packages/server/`        | CLI entrypoint, daemon, API, stream transport, metrics |
+| `packages/server/native/` | macOS simulator bridge                                 |
+| `packages/client/`        | Browser UI                                             |
+| `packages/`               | Inspectors, VS Code extension, and `simdeck/test`      |
+| `scripts/`                | Build, package, and test helpers                       |
+| `docs/`                   | VitePress documentation                                |
 
 ## Working rules
 
-- Keep simulator-native logic in `cli/`.
-- Keep server behavior in `server/`.
-- Keep browser presentation in `client/`.
+- Keep simulator-native logic in `packages/server/native/`.
+- Keep server behavior in `packages/server/`.
+- Keep browser presentation in `packages/client/`.
 - Keep runtime inspector logic in the matching `packages/*-inspector` package.
 - Prefer a stable CLI command or API route over hidden environment behavior.
 - Update docs when changing CLI flags, API routes, stream behavior, or inspector methods.

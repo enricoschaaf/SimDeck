@@ -25,7 +25,7 @@ const FOOTER_BORDER = "#e2e8f0";
 
 const SITE_HOSTNAME = "simdeck.sh";
 const SIMDECK_ICON_URL = new URL(
-  "../../client/public/simdeck.png",
+  "../../packages/client/public/simdeck.png",
   import.meta.url,
 );
 

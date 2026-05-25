@@ -8,18 +8,18 @@
     "url": "https://github.com/NativeScript/SimDeck"
   },
   "bin": {
-    "simdeck": "bin/simdeck.mjs"
+    "simdeck": "packages/cli/bin/simdeck.mjs"
   },
   "files": [
     "LICENSE",
     "README.md",
-    "bin/",
+    "packages/cli/bin/",
     "scripts/experimental/",
     "scripts/studio-host-provider.mjs",
     "scripts/studio-provider-bridge.mjs",
     "scripts/postinstall.mjs",
     "build/simdeck-bin",
-    "client/dist/",
+    "packages/client/dist/",
     "packages/simdeck-test/dist/"
   ],
   "exports": {
@@ -61,10 +61,10 @@
     "package:all": "npm run build:all && npm run package:vscode-extension && npm run package:npm",
     "install:vscode-extension": "node scripts/install-vscode-extension.mjs",
     "install:vscode": "npm run install:vscode-extension",
-    "format": "prettier --write . && cargo fmt --manifest-path server/Cargo.toml",
-    "format:check": "prettier --check . && cargo fmt --manifest-path server/Cargo.toml --check",
-    "lint": "npm run format:check && cargo clippy --manifest-path server/Cargo.toml --all-targets -- -D warnings && npm run --prefix client typecheck",
-    "test": "cargo test --manifest-path server/Cargo.toml && npm run --prefix client test && npm run test:github-actions && npm run test:integration-harness",
+    "format": "prettier --write . && cargo fmt --manifest-path packages/server/Cargo.toml",
+    "format:check": "prettier --check . && cargo fmt --manifest-path packages/server/Cargo.toml --check",
+    "lint": "npm run format:check && cargo clippy --manifest-path packages/server/Cargo.toml --all-targets -- -D warnings && npm run --prefix packages/client typecheck",
+    "test": "cargo test --manifest-path packages/server/Cargo.toml && npm run --prefix packages/client test && npm run test:github-actions && npm run test:integration-harness",
     "test:integration:cli": "node scripts/integration/cli.mjs",
     "test:integration:cli:verbose": "SIMDECK_INTEGRATION_VERBOSE=1 SIMDECK_INTEGRATION_SHOW_SIMULATOR=1 node scripts/integration/cli.mjs",
     "test:integration:fixture": "node scripts/integration/prebuild-fixture.mjs",

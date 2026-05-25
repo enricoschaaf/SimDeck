@@ -28,11 +28,11 @@ Detached daemon shortcuts:
   simdeck -k
   simdeck -r
 
-Install the Codex skill:
-  npx skills add NativeScript/SimDeck --skill simdeck -a codex -g
+Install the agent skill:
+  npx skills add NativeScript/SimDeck --skill simdeck -g
 
 Recommended VS Code extension:
-  nativescript.simdeck
+  nativescript.simdeck-vscode
 
 Recommended for always-on agent/editor access:
   simdeck service on

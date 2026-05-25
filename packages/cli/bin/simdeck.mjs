@@ -7,10 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const RECOVERABLE_RESTART_EXIT_CODE = 75;
 
-const packageRoot = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-);
+const launcherDir = path.dirname(fileURLToPath(import.meta.url));
+const packageRoot = findPackageRoot(launcherDir);
 const binaryPath = path.join(packageRoot, "build", "simdeck-bin");
 const childArgs = process.argv.slice(2);
 const isDaemonRun = childArgs[0] === "daemon" && childArgs[1] === "run";
@@ -25,6 +23,20 @@ if (!existsSync(binaryPath)) {
     "simdeck native binary is missing. Reinstall the npm package or run `npm run build:cli` from a source checkout.",
   );
   process.exit(1);
+}
+
+function findPackageRoot(startDir) {
+  let current = path.resolve(startDir);
+  while (true) {
+    if (existsSync(path.join(current, "build", "simdeck-bin"))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return path.resolve(startDir, "../../..");
+    }
+    current = parent;
+  }
 }
 
 let child;

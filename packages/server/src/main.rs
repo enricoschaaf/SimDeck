@@ -5519,13 +5519,16 @@ fn default_client_root() -> anyhow::Result<PathBuf> {
     let current_exe = std::env::current_exe().context("resolve current executable path")?;
 
     if let Some(package_root) = current_exe.parent().and_then(|parent| parent.parent()) {
-        let packaged_client = package_root.join("client").join("dist");
+        let packaged_client = package_root.join("packages").join("client").join("dist");
         if packaged_client.is_dir() {
             return Ok(packaged_client);
         }
     }
 
-    Ok(std::env::current_dir()?.join("client").join("dist"))
+    Ok(std::env::current_dir()?
+        .join("packages")
+        .join("client")
+        .join("dist"))
 }
 
 #[cfg(test)]

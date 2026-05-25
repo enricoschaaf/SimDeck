@@ -220,7 +220,10 @@ darwinTest(
       const logPath = join(root, "native.log");
       const countPath = join(root, "count");
 
-      copyFileSync(new URL("../bin/simdeck.mjs", import.meta.url), wrapperPath);
+      copyFileSync(
+        new URL("../packages/cli/bin/simdeck.mjs", import.meta.url),
+        wrapperPath,
+      );
       chmodSync(wrapperPath, 0o755);
       writeFileSync(
         nativePath,
@@ -276,7 +279,10 @@ darwinTest(
       const nativePath = join(root, "build", "simdeck-bin");
       const logPath = join(root, "native.log");
 
-      copyFileSync(new URL("../bin/simdeck.mjs", import.meta.url), wrapperPath);
+      copyFileSync(
+        new URL("../packages/cli/bin/simdeck.mjs", import.meta.url),
+        wrapperPath,
+      );
       chmodSync(wrapperPath, 0o755);
       writeFileSync(
         nativePath,

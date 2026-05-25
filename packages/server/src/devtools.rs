@@ -144,7 +144,7 @@ fn devtools_frontend_candidates_from(start: &Path) -> Vec<PathBuf> {
                     "node_modules/@react-native/debugger-frontend/dist/third-party/front_end",
                 ),
                 ancestor.join("chrome-devtools-ui"),
-                ancestor.join("client/dist/chrome-devtools-ui"),
+                ancestor.join("packages/client/dist/chrome-devtools-ui"),
             ]
         })
         .collect()

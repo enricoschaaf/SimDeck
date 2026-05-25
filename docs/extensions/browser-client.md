@@ -62,6 +62,6 @@ npm run dev
 This starts the local SimDeck server and the Vite dev server. Client checks:
 
 ```sh
-npm run --prefix client typecheck
-npm run --prefix client test
+npm run --prefix packages/client typecheck
+npm run --prefix packages/client test
 ```

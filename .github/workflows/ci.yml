@@ -36,19 +36,19 @@ jobs:
           path: |
             ~/.cargo/git
             ~/.cargo/registry
-            server/target
-          key: rust-${{ runner.os }}-${{ hashFiles('server/Cargo.lock', 'server/Cargo.toml', 'server/build.rs', 'server/src/**/*.rs', 'cli/**/*.m') }}
+            packages/server/target
+          key: rust-${{ runner.os }}-${{ hashFiles('packages/server/Cargo.lock', 'packages/server/Cargo.toml', 'packages/server/build.rs', 'packages/server/src/**/*.rs', 'packages/server/native/**/*.m') }}
           restore-keys: |
             rust-${{ runner.os }}-
 
       - name: Check Rust formatting
-        run: cargo fmt --manifest-path server/Cargo.toml --check
+        run: cargo fmt --manifest-path packages/server/Cargo.toml --check
 
       - name: Clippy
-        run: cargo clippy --manifest-path server/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path packages/server/Cargo.toml --all-targets -- -D warnings
 
       - name: Rust unit tests
-        run: cargo test --manifest-path server/Cargo.toml
+        run: cargo test --manifest-path packages/server/Cargo.toml
 
   client:
     name: Client lint, build, and tests
@@ -63,13 +63,13 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
-            client/package-lock.json
+            packages/client/package-lock.json
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts --force
 
       - name: Install client dependencies
-        run: npm ci --prefix client
+        run: npm ci --prefix packages/client
 
       - name: Check Prettier formatting
         run: npx prettier --check .
@@ -81,13 +81,13 @@ jobs:
         run: npm run test:integration-harness
 
       - name: Typecheck client
-        run: npm run --prefix client typecheck
+        run: npm run --prefix packages/client typecheck
 
       - name: Test client
-        run: npm run --prefix client test
+        run: npm run --prefix packages/client test
 
       - name: Build client
-        run: npm run --prefix client build
+        run: npm run --prefix packages/client build
 
   packages:
     name: Packages and VS Code extension
@@ -135,7 +135,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
-            client/package-lock.json
+            packages/client/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -148,9 +148,9 @@ jobs:
           path: |
             ~/.cargo/git
             ~/.cargo/registry
-            server/target
+            packages/server/target
             .cache/simdeck/fixture
-          key: rust-${{ runner.os }}-${{ hashFiles('server/Cargo.lock', 'server/Cargo.toml', 'server/build.rs', 'server/src/**/*.rs', 'cli/**/*.m', 'scripts/integration/fixture.mjs') }}
+          key: rust-${{ runner.os }}-${{ hashFiles('packages/server/Cargo.lock', 'packages/server/Cargo.toml', 'packages/server/build.rs', 'packages/server/src/**/*.rs', 'packages/server/native/**/*.m', 'scripts/integration/fixture.mjs') }}
           restore-keys: |
             rust-${{ runner.os }}-
 
@@ -158,7 +158,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Install client dependencies
-        run: npm ci --prefix client
+        run: npm ci --prefix packages/client
 
       - name: Build CLI, client, and JS test API
         run: |
@@ -176,7 +176,7 @@ jobs:
           path: |
             build/simdeck
             build/simdeck-bin
-            client/dist
+            packages/client/dist
             packages/simdeck-test/dist
             .cache/simdeck/fixture
 

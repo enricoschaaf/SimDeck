@@ -2,13 +2,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
-        .parent()
-        .unwrap()
-        .to_path_buf();
+    let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "macos" {
-        let stub = root.join("server/native_stubs.c");
+        let stub = root.join("native_stubs.c");
         println!("cargo:rerun-if-changed={}", stub.display());
         cc::Build::new()
             .file(&stub)
@@ -18,8 +15,8 @@ fn main() {
         return;
     }
 
-    let cli = root.join("cli");
-    let native = cli.join("native");
+    let cli = root.join("native");
+    let native = cli.join("bridge");
 
     let files = [
         cli.join("DFPrivateSimulatorDisplayBridge.m"),

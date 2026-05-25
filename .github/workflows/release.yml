@@ -101,7 +101,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
-            client/package-lock.json
+            packages/client/package-lock.json
             packages/react-native-inspector/package-lock.json
             packages/nativescript-inspector/package-lock.json
 
@@ -162,7 +162,7 @@ jobs:
 
       - name: Install client dependencies (root simdeck only)
         if: ${{ steps.meta.outputs.kind == 'npm-cli' }}
-        run: npm ci --prefix client
+        run: npm ci --prefix packages/client
 
       - name: Install package dependencies
         if: ${{ steps.meta.outputs.kind == 'npm' }}

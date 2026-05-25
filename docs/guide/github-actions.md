@@ -35,12 +35,10 @@ jobs:
         run: npm run build:ios:simulator
 
       - name: Upload simulator app for SimDeck
-        uses: NativeScript/SimDeck/actions/upload-ios-simulator-app@main
+        uses: NativeScript/SimDeck/actions/upload-ios-simulator-app@v0.1
         with:
           app-glob: platforms/ios/build/**/*-iphonesimulator/*.app
 ```
-
-Pin the action to a release tag when you want a stable integration point.
 
 ## Android build workflow
 
@@ -66,7 +64,7 @@ jobs:
         run: ./gradlew assembleDebug
 
       - name: Upload APK for SimDeck
-        uses: NativeScript/SimDeck/actions/upload-android-apk@main
+        uses: NativeScript/SimDeck/actions/upload-android-apk@v0.1
         with:
           apk-glob: app/build/outputs/apk/debug/*.apk
 ```
@@ -98,7 +96,7 @@ jobs:
 
     steps:
       - name: Run PR app in SimDeck
-        uses: NativeScript/SimDeck/actions/run-ios-comment-session@main
+        uses: NativeScript/SimDeck/actions/run-ios-comment-session@v0.1
         with:
           pr_number: ${{ github.event.issue.number }}
           command: ${{ github.event.comment.body }}
@@ -135,7 +133,7 @@ jobs:
 
     steps:
       - name: Run PR Android app in SimDeck
-        uses: NativeScript/SimDeck/actions/run-android-comment-session@main
+        uses: NativeScript/SimDeck/actions/run-android-comment-session@v0.1
         with:
           pr_number: ${{ github.event.issue.number }}
           command: ${{ github.event.comment.body }}
@@ -144,6 +142,21 @@ jobs:
           build_workflow: build-android-apk.yml
           package_name: com.example.app
 ```
+
+## Version pins
+
+Use a SimDeck release tag instead of `@main` in project workflows. The examples
+above pin to `@v0.1`, which follows the latest compatible `0.1.x` release.
+
+Use a tighter pin when reproducibility matters more than automatic patch
+updates:
+
+```yaml
+uses: NativeScript/SimDeck/actions/run-ios-comment-session@v0.1.22
+```
+
+For the strongest supply-chain pin, use a full commit SHA. Avoid `@main` outside
+of local experiments because it can change without a release.
 
 ## Pull request commands
 

@@ -96,7 +96,7 @@ cli.stderr.pipe(logStream);
 
 const vite = spawn("npx", ["vite", "--host", "127.0.0.1"], {
   stdio: "inherit",
-  cwd: resolve(ROOT, "client"),
+  cwd: resolve(ROOT, "packages/client"),
 });
 
 function cleanup() {

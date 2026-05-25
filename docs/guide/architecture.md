@@ -46,15 +46,15 @@ The response tells you which source was used and why a requested source fell bac
 
 ## Repository layout
 
-| Folder      | Purpose                                           |
-| ----------- | ------------------------------------------------- |
-| `server/`   | CLI entrypoint, daemon, API, streaming, metrics   |
-| `cli/`      | macOS simulator bridge                            |
-| `client/`   | Browser UI                                        |
-| `packages/` | Inspectors, VS Code extension, and `simdeck/test` |
-| `scripts/`  | Build, packaging, and integration helpers         |
-| `docs/`     | Documentation site                                |
+| Folder                    | Purpose                                           |
+| ------------------------- | ------------------------------------------------- |
+| `packages/server/`        | CLI entrypoint, daemon, API, streaming, metrics   |
+| `packages/server/native/` | macOS simulator bridge                            |
+| `packages/client/`        | Browser UI                                        |
+| `packages/`               | Inspectors, VS Code extension, and `simdeck/test` |
+| `scripts/`                | Build, packaging, and integration helpers         |
+| `docs/`                   | Documentation site                                |
 
 ## Contributor boundary
 
-Keep platform-specific simulator work in the native layer, server behavior in `server/`, and browser presentation in `client/`. Add API support before adding UI assumptions that cannot be scripted.
+Keep platform-specific simulator work in the native layer, server behavior in `packages/server/`, and browser presentation in `packages/client/`. Add API support before adding UI assumptions that cannot be scripted.

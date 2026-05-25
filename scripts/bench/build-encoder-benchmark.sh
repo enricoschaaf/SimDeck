@@ -13,7 +13,7 @@ clang \
   -I"$ROOT_DIR/cli" \
   $X264_CFLAGS \
   "$ROOT_DIR/scripts/bench/encoder-benchmark.m" \
-  "$ROOT_DIR/cli/XCWH264Encoder.m" \
+  "$ROOT_DIR/packages/server/native/XCWH264Encoder.m" \
   -framework Foundation \
   -framework CoreVideo \
   -framework CoreMedia \

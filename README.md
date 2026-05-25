@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="180" src="./client/public/simdeck.png">
+  <img width="180" src="./packages/client/public/simdeck.png">
 
   <h1 align="center">SimDeck</h1>
 

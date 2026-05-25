@@ -4,8 +4,8 @@
 dist/
 build/
 target/
-server/target/
-client/dist/
+packages/server/target/
+packages/client/dist/
 packages/inspector-agent/.build/
 packages/inspector-agent/.swiftpm/
 packages/nativescript-inspector/build/
@@ -28,7 +28,7 @@ simdeck-snapshot.md
 
 # Package manager installs and caches
 node_modules/
-client/node_modules/
+packages/client/node_modules/
 packages/nativescript-inspector/node_modules/
 packages/react-native-inspector/node_modules/
 
