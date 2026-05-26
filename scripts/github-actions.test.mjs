@@ -220,6 +220,11 @@ for (const [platform, action, startStep, waitStep] of [
     );
     assert.match(
       action,
+      /default: https:\/\/ci\.simdeck\.sh/,
+      "CI proxy links should default to the production SimDeck domain",
+    );
+    assert.match(
+      action,
       /proxy_links:/,
       "action should expose a proxy_links input",
     );

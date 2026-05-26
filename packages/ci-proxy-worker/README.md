@@ -6,7 +6,7 @@ links.
 CI posts a stable Worker URL with an encoded payload:
 
 ```text
-https://simdeck-ci-proxy.djdeveloperr.workers.dev/?redirect=<base64url-payload>
+https://ci.simdeck.sh/?redirect=<base64url-payload>
 ```
 
 The payload points at the temporary Cloudflare Tunnel. When a session password
@@ -28,5 +28,3 @@ cd packages/ci-proxy-worker
 npm ci
 npm run deploy
 ```
-
-Later, attach `ci.simdeck.sh` to this Worker in Cloudflare.

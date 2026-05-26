@@ -201,7 +201,7 @@ Supported quality values include `tiny`, `low`, `economy`, `fast`, `smooth`, `ba
 | `keepalive_seconds` | `1800`                              | Session lifetime after launch               |
 | `simulator_cache`   | `true`                              | Restore and save simulator cache            |
 | `proxy_links`       | `true`                              | Post SimDeck CI proxy links                 |
-| `ci_proxy_url`      | SimDeck Worker URL                  | Optional SimDeck CI proxy Worker URL        |
+| `ci_proxy_url`      | `https://ci.simdeck.sh`             | Optional SimDeck CI proxy URL               |
 | `session_password`  | empty                               | Optional password for proxy-gated sessions  |
 
 ## Password-protected links

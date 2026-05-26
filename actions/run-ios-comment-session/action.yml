@@ -83,9 +83,9 @@ inputs:
     required: false
     default: "false"
   ci_proxy_url:
-    description: Optional SimDeck CI proxy Worker URL, such as https://ci.simdeck.sh.
+    description: Optional SimDeck CI proxy URL, such as https://ci.simdeck.sh.
     required: false
-    default: https://simdeck-ci-proxy.djdeveloperr.workers.dev
+    default: https://ci.simdeck.sh
   proxy_links:
     description: Post SimDeck CI proxy links instead of raw Cloudflare Tunnel links.
     required: false
