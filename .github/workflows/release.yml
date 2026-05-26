@@ -205,6 +205,16 @@ jobs:
             echo "Bumped to ${version} (tag ${tag})"
           fi
 
+      - name: Sync Rust CLI version
+        if: ${{ steps.meta.outputs.kind == 'npm-cli' && inputs.bump != 'current' }}
+        shell: bash
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          perl -0pi -e 's/(\[package\]\s+name = "simdeck-server"\s+version = ")[^"]+(")/$1$ENV{NEW_VERSION}$2/s' packages/server/Cargo.toml
+          cargo update --manifest-path packages/server/Cargo.toml -p simdeck-server --precise "$NEW_VERSION"
+
       - name: Resolve dist-tag
         id: tag
         shell: bash
@@ -243,6 +253,9 @@ jobs:
           git add "${PKG_DIR}/package.json"
           if [[ -f "${PKG_DIR}/package-lock.json" ]]; then
             git add "${PKG_DIR}/package-lock.json"
+          fi
+          if [[ "${INPUT_PACKAGE}" == "simdeck" ]]; then
+            git add packages/server/Cargo.toml packages/server/Cargo.lock
           fi
           git commit -m "chore(release): ${INPUT_PACKAGE}@${NEW_VERSION}"
           git tag "${TAG}"

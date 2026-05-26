@@ -14,11 +14,18 @@ is configured, the SimDeck daemon token is encrypted with that password before
 it is placed in the payload, so decoding the URL is not enough to bypass the
 prompt.
 
-Deploy:
+Deploy from the Cloudflare dashboard with:
+
+- Root directory: `packages/ci-proxy-worker`
+- Install command: `npm ci`
+- Build command: `npm run check`
+- Deploy command: `npm run deploy`
+
+Or deploy locally:
 
 ```sh
 cd packages/ci-proxy-worker
-npm install
+npm ci
 npm run deploy
 ```
 

@@ -1,6 +1,6 @@
 [package]
 name = "simdeck-server"
-version = "0.1.5"
+version = "0.1.24"
 edition = "2021"
 build = "build.rs"
 
