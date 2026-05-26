@@ -1,3 +1,8 @@
+## 0.1.1
+
+- Expand pubspec description for pub.dev.
+- Add dartdoc comments to public API (`startSimDeckFlutterInspector`, `stopSimDeckFlutterInspector`, `SimDeckFlutterInspector`, `SimDeckFlutterInspectorOptions`, `SimDeckFlutterInspectorFailure`).
+
 ## 0.1.0
 
 - Initial release of `simdeck_flutter_inspector`.

@@ -1,3 +1,14 @@
+/// Debug-only Flutter runtime inspector for SimDeck.
+///
+/// Connects to the SimDeck server over WebSocket and publishes the live
+/// Flutter widget hierarchy along with render bounds, diagnostics properties,
+/// semantics metadata, and source locations when widget creation tracking is
+/// enabled.
+///
+/// Call [startSimDeckFlutterInspector] during app startup in debug builds to
+/// begin publishing; call [stopSimDeckFlutterInspector] to tear it down.
+library;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
@@ -16,6 +27,19 @@ const int _maxHierarchyDepth = 64;
 
 SimDeckFlutterInspector? _sharedInspector;
 
+/// Starts the shared [SimDeckFlutterInspector] and connects to the SimDeck
+/// server.
+///
+/// Safe to call once at app startup in debug builds. Subsequent calls return
+/// the existing inspector instance without reconnecting.
+///
+/// - [host] / [port] / [path] / [secure] configure the SimDeck WebSocket
+///   endpoint. Defaults target `ws://127.0.0.1:4310/api/inspector/connect`.
+/// - [reconnect] keeps trying to reconnect when the SimDeck server is not yet
+///   available or drops the connection.
+/// - [sourceRoot] is the absolute path to the Flutter app's source directory.
+///   When Flutter reports relative source locations, the inspector resolves
+///   them against this root so consumers see absolute file paths.
 SimDeckFlutterInspector startSimDeckFlutterInspector({
   String host = '127.0.0.1',
   String path = '/api/inspector/connect',
@@ -42,13 +66,17 @@ SimDeckFlutterInspector startSimDeckFlutterInspector({
   return inspector;
 }
 
+/// Stops the shared inspector started by [startSimDeckFlutterInspector] and
+/// releases its WebSocket and semantics resources.
 void stopSimDeckFlutterInspector() {
   _sharedInspector?.stop();
   _sharedInspector = null;
 }
 
+/// Configuration for a [SimDeckFlutterInspector] connection.
 @immutable
 class SimDeckFlutterInspectorOptions {
+  /// Creates options for connecting the inspector to the SimDeck server.
   const SimDeckFlutterInspectorOptions({
     this.host = '127.0.0.1',
     this.path = '/api/inspector/connect',
@@ -58,18 +86,41 @@ class SimDeckFlutterInspectorOptions {
     this.sourceRoot = '',
   });
 
+  /// Host of the SimDeck server. Defaults to the loopback address.
   final String host;
+
+  /// WebSocket path the inspector connects to on the SimDeck server.
   final String path;
+
+  /// Port of the SimDeck server.
   final int port;
+
+  /// Whether the inspector should keep retrying the WebSocket connection
+  /// after a failure or drop.
   final bool reconnect;
+
+  /// Whether to use a TLS WebSocket (`wss`) and HTTPS for polling.
   final bool secure;
+
+  /// Absolute path to the Flutter app's source root.
+  ///
+  /// Used to turn relative source locations reported by Flutter's widget
+  /// creation tracking into absolute paths.
   final String sourceRoot;
 }
 
+/// Runtime inspector that publishes the live Flutter widget hierarchy to
+/// SimDeck over WebSocket and responds to inspector commands.
+///
+/// Most apps should use [startSimDeckFlutterInspector] / [stopSimDeckFlutterInspector]
+/// to manage a single shared instance rather than constructing this directly.
 class SimDeckFlutterInspector {
+  /// Creates an inspector with the given [options]. Use [start] to begin
+  /// publishing.
   SimDeckFlutterInspector([SimDeckFlutterInspectorOptions? options])
     : options = options ?? const SimDeckFlutterInspectorOptions();
 
+  /// Connection options the inspector was created with.
   final SimDeckFlutterInspectorOptions options;
   final Expando<String> _ids = Expando<String>('simdeckFlutterInspectorId');
   final Expando<Object> _sourceLocations = Expando<Object>(
@@ -86,6 +137,11 @@ class SimDeckFlutterInspector {
   Map<String, Object?>? _metadata;
   SemanticsHandle? _semanticsHandle;
 
+  /// Starts publishing to SimDeck.
+  ///
+  /// Opens the WebSocket connection, begins polling for inspector commands,
+  /// and ensures Flutter semantics are enabled while the inspector is active.
+  /// Calling [start] on an already-running inspector restarts it.
   void start() {
     stop();
     _started = true;
@@ -94,6 +150,8 @@ class SimDeckFlutterInspector {
     _startPolling();
   }
 
+  /// Stops publishing and releases the WebSocket, polling timer, and
+  /// semantics handle. Safe to call when the inspector is not running.
   void stop() {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
@@ -1078,10 +1136,20 @@ class SimDeckFlutterInspector {
   }
 }
 
+/// JSON-RPC style error raised when an inspector request cannot be served.
+///
+/// The [code] follows the inspector protocol's negative numeric error space
+/// (e.g. `-32601` unknown method, `-32004` unknown view id). The [message] is
+/// suitable for surfacing to inspector clients.
 class SimDeckFlutterInspectorFailure implements Exception {
+  /// Creates a failure with the given protocol [code] and human-readable
+  /// [message].
   const SimDeckFlutterInspectorFailure(this.code, this.message);
 
+  /// Inspector protocol error code.
   final int code;
+
+  /// Human-readable error message returned to the inspector client.
   final String message;
 
   @override
