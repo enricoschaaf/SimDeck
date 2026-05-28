@@ -157,7 +157,6 @@ fn install(mut options: ServiceOptions) -> anyhow::Result<ServiceInstallResult> 
     fs::write(&plist_path, plist).with_context(|| format!("write {}", plist_path.display()))?;
 
     run_launchctl(["bootstrap", &domain, plist_path.to_string_lossy().as_ref()])?;
-    run_launchctl(["kickstart", "-k", &format!("{domain}/{SERVICE_LABEL}")])?;
 
     let advertise_host = options.advertise_host.clone();
     let access_token = options.access_token.clone();
