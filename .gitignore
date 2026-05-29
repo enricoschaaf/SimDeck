@@ -19,7 +19,6 @@ packages/flutter-inspector/pubspec.lock
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 ios/*
-!ios/PRIVACY.md
 ios/DerivedData/
 cloud/
 .cache/

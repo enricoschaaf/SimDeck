@@ -1,14 +1,16 @@
 # SimDeck Privacy Policy
 
-Last updated: May 20, 2026
+Last updated: May 28, 2026
 
-SimDeck is built to connect your iPhone or iPad to a SimDeck server that you choose. We do not collect, sell, rent, share, track, or monetize any personal data.
+SimDeck is built to connect your iPhone or iPad to a SimDeck server that you choose. We do not sell, rent, share, or monetize personal data.
 
 ## Data We Collect
 
-We do not collect any personal data through the SimDeck iOS app.
+SimDeck may collect first-party pseudonymous product telemetry to understand whether core workflows are reliable. Examples include app launched, server paired, server connected, simulator boot requested, simulator booted, stream connected, feature toggled, and coarse error or latency diagnostics.
 
-SimDeck does not include analytics, advertising SDKs, tracking SDKs, third-party crash reporting, or behavioral profiling.
+Telemetry does not include server addresses, pairing tokens, simulator identifiers, simulator names, device names, IP-derived location, Tailscale node names, Apple IDs, email addresses, LAN hostnames, source code, project names, file paths, payloads, or user-entered text.
+
+Telemetry uses a random app-generated identifier. SimDeck does not use the device advertising identifier, does not use analytics profiles, and does not use analytics for ads, marketing attribution, data broker sharing, cross-app tracking, or session replay. You can disable telemetry in the app's Settings screen.
 
 ## Local Data
 
@@ -30,7 +32,7 @@ If microphone access is requested for WebRTC functionality, audio is used only f
 
 ## Third Parties
 
-We do not share personal data with third parties because we do not collect personal data.
+SimDeck uses Mixpanel to receive product telemetry described above. We do not send Mixpanel server addresses, pairing credentials, simulator identifiers, simulator names, user-entered text, project data, or source code.
 
 ## Children's Privacy
 
@@ -42,4 +44,4 @@ If SimDeck's privacy practices change, we will update this policy and revise the
 
 ## Contact
 
-If you have questions about this privacy policy, contact us at support@nativescript.org.
+If you have questions about this privacy policy, contact us at support@nstudio.io.
