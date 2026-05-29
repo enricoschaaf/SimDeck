@@ -1,5 +1,5 @@
 use crate::config::Config;
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -10,6 +10,8 @@ use std::io::Read;
 pub const ACCESS_TOKEN_HEADER: &str = "x-simdeck-token";
 pub const ACCESS_TOKEN_COOKIE: &str = "simdeck_token";
 pub const ACCESS_TOKEN_QUERY: &str = "simdeckToken";
+
+const LAUNCHPAD_ORIGINS: &[&str] = &["https://app.simdeck.sh"];
 
 pub fn generate_access_token() -> String {
     let mut bytes = [0u8; 32];
@@ -151,6 +153,21 @@ pub fn append_cors_headers(
         HeaderValue::from_static("true"),
     );
     response_headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+
+    // Chrome's Private Network Access (CORS-RFC1918): a public-internet origin
+    // (e.g. https://app.simdeck.sh) calling a loopback/private target must see
+    // this header on the preflight when the request advertises support.
+    if request_headers
+        .get("access-control-request-private-network")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        response_headers.insert(
+            HeaderName::from_static("access-control-allow-private-network"),
+            HeaderValue::from_static("true"),
+        );
+    }
 }
 
 pub fn append_access_cookie(response_headers: &mut HeaderMap, token: &str) {
@@ -219,6 +236,7 @@ fn origin_is_allowed(config: &Config, origin: &str) -> bool {
         format!("http://[::1]:{}", config.http_port),
     ];
     allowed.iter().any(|value| value == origin)
+        || LAUNCHPAD_ORIGINS.iter().any(|value| *value == origin)
         || extra_allowed_origins().any(|value| value == "*" || value == origin)
 }
 
@@ -276,7 +294,9 @@ fn chrono_free_now_nanos() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{api_request_authorized, ACCESS_TOKEN_HEADER};
+    use super::{
+        api_request_authorized, append_cors_headers, preflight_response, ACCESS_TOKEN_HEADER,
+    };
     use crate::config::{Config, ServerKind};
     use axum::http::{header, HeaderMap, HeaderValue, Method};
     use std::net::{IpAddr, Ipv4Addr};
@@ -509,6 +529,75 @@ mod tests {
             true,
             None
         ));
+    }
+
+    #[test]
+    fn accepts_launchpad_origin_for_loopback_browser() {
+        let config = config();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://app.simdeck.sh"),
+        );
+
+        assert!(api_request_authorized(
+            &config,
+            &Method::POST,
+            &headers,
+            true,
+            None
+        ));
+    }
+
+    #[test]
+    fn cors_preflight_echoes_launchpad_origin_with_private_network() {
+        let config = config();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://app.simdeck.sh"),
+        );
+        headers.insert(
+            axum::http::HeaderName::from_static("access-control-request-private-network"),
+            HeaderValue::from_static("true"),
+        );
+
+        let response = preflight_response(&config, &headers);
+        let response_headers = response.headers();
+        assert_eq!(
+            response_headers
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("https://app.simdeck.sh")
+        );
+        assert_eq!(
+            response_headers
+                .get("access-control-allow-private-network")
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn cors_headers_skip_private_network_when_not_requested() {
+        let config = config();
+        let mut request_headers = HeaderMap::new();
+        request_headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://app.simdeck.sh"),
+        );
+        let mut response_headers = HeaderMap::new();
+        append_cors_headers(&config, &request_headers, &mut response_headers);
+
+        assert!(response_headers
+            .get("access-control-allow-private-network")
+            .is_none());
+        assert_eq!(
+            response_headers
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("https://app.simdeck.sh")
+        );
     }
 
     #[test]

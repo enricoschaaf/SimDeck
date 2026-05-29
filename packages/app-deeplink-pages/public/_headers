@@ -1,0 +1,15 @@
+# Cloudflare Pages: per-path response headers.
+# https://developers.cloudflare.com/pages/configuration/headers/
+
+/.well-known/apple-app-site-association
+  Content-Type: application/json
+  Cache-Control: public, max-age=300
+
+/apple-app-site-association
+  Content-Type: application/json
+  Cache-Control: public, max-age=300
+
+/*
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Content-Type-Options: nosniff

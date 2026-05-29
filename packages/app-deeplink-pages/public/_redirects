@@ -1,0 +1,4 @@
+# Cloudflare Pages redirects.
+# Mirror the well-known AASA path to the legacy /apple-app-site-association path
+# so older iOS clients can still discover the universal-link config.
+/apple-app-site-association /.well-known/apple-app-site-association 200

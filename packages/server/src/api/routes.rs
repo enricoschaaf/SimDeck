@@ -886,14 +886,14 @@ async fn require_api_auth(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    if request.method() == Method::OPTIONS {
+        return auth::preflight_response(&state.config, request.headers());
+    }
+
     if is_inspector_agent_transport_path(request.uri().path())
         || request.uri().path() == "/api/pair"
     {
         return next.run(request).await;
-    }
-
-    if request.method() == Method::OPTIONS {
-        return auth::preflight_response(&state.config, request.headers());
     }
 
     let peer_is_loopback = request

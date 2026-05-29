@@ -1,0 +1,16 @@
+{
+  "name": "@simdeck/app-deeplink-pages",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Static launchpad served at https://app.simdeck.sh. Builds SimDeck deeplinks against a local or remote SimDeck server.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "npx --yes serve@14 public -l 4311 --cors",
+    "format": "prettier --write public",
+    "deploy": "wrangler pages deploy public --project-name simdeck-app",
+    "preview": "wrangler pages dev public --port 4311"
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  }
+}

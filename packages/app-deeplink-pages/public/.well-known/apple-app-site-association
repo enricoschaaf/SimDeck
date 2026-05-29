@@ -1,0 +1,23 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "CS838V553Y.org.nativescript.simdeck",
+        "paths": [
+          "/open",
+          "/open/*",
+          "/connect",
+          "/connect/*",
+          "/pair",
+          "/pair/*"
+        ],
+        "components": [
+          { "/": "/open*" },
+          { "/": "/connect*" },
+          { "/": "/pair*" }
+        ]
+      }
+    ]
+  }
+}
