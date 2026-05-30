@@ -777,6 +777,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/inspector/response", post(inspector_response))
         .route("/chrome-devtools-ui", get(chrome_devtools_ui_redirect))
         .route("/chrome-devtools-ui/{*path}", get(chrome_devtools_ui_file))
+        .route(
+            "/api/metro-frontend/{port}/{*path}",
+            get(metro_frontend_asset),
+        )
         .route("/webkit-inspector-ui", get(webkit_inspector_ui_redirect))
         .route(
             "/webkit-inspector-ui/{*path}",
@@ -1214,6 +1218,28 @@ async fn chrome_devtools_ui_file(method: Method, uri: Uri) -> Response {
 
 async fn webkit_inspector_ui_redirect() -> Redirect {
     Redirect::temporary("/webkit-inspector-ui/Main.html")
+}
+
+async fn metro_frontend_asset(Path((port, path)): Path<(u16, String)>, uri: Uri) -> Response {
+    let asset_path = format!("/{path}");
+    match devtools::fetch_metro_frontend_asset(port, &asset_path, uri.query()).await {
+        Ok(asset) => {
+            let status = StatusCode::from_u16(asset.status).unwrap_or(StatusCode::BAD_GATEWAY);
+            let mut builder = Response::builder()
+                .status(status)
+                .header(header::CACHE_CONTROL, "no-store");
+            if let Some(content_type) = asset.content_type {
+                builder = builder.header(header::CONTENT_TYPE, content_type);
+            }
+            builder
+                .body(Body::from(asset.body))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        Err(error) => {
+            tracing::debug!("Metro frontend asset proxy failed for {port}{asset_path}: {error}");
+            AppError::not_found("Metro DevTools frontend asset is not available.").into_response()
+        }
+    }
 }
 
 async fn webkit_inspector_ui_file(method: Method, uri: Uri) -> Response {

@@ -12,6 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::process::Command;
 use tokio::time::timeout;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::{header, HeaderValue};
 use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 use tracing::debug;
 
@@ -106,6 +108,9 @@ const DEVTOOLS_DISCOVERY_HOSTS: &[&str] = &["127.0.0.1", "[::1]"];
 const DEVTOOLS_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(300);
 const DEVTOOLS_LISTENERS_TIMEOUT: Duration = Duration::from_millis(500);
 const DEVTOOLS_MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const METRO_ASSET_TIMEOUT: Duration = Duration::from_secs(5);
+const METRO_ASSET_MAX_BYTES: usize = 32 * 1024 * 1024;
+const DEFAULT_METRO_FRONTEND_PATH: &str = "/debugger-frontend/rn_fusebox.html";
 const COMMON_METRO_PORTS: &[u16] = &[8081, 8082, 8083, 19000, 19001, 19002];
 const COMMON_CHROME_INSPECTOR_PORTS: &[u16] =
     &[9222, 9223, 9224, 9225, 9226, 9227, 9228, 9229, 9230];
@@ -340,7 +345,19 @@ pub async fn proxy_websocket(socket: WebSocket, upstream_url: String) {
 }
 
 async fn proxy_websocket_inner(socket: WebSocket, upstream_url: String) -> Result<(), String> {
-    let (upstream, _) = tokio_tungstenite::connect_async(&upstream_url)
+    let mut request = upstream_url
+        .as_str()
+        .into_client_request()
+        .map_err(|error| format!("Invalid DevTools upstream URL: {error}"))?;
+    // Metro's React Native dev-middleware rejects inspector WebSocket upgrades
+    // whose Origin does not match the dev server itself (HTTP 401). Present the
+    // upstream's own origin so the proxied connection is accepted.
+    if let Some(origin) = upstream_websocket_origin(&upstream_url) {
+        if let Ok(value) = HeaderValue::from_str(&origin) {
+            request.headers_mut().insert(header::ORIGIN, value);
+        }
+    }
+    let (upstream, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|error| format!("Unable to connect to DevTools socket: {error}"))?;
     let (mut downstream_writer, mut downstream_reader) = socket.split();
@@ -378,6 +395,15 @@ async fn proxy_websocket_inner(socket: WebSocket, upstream_url: String) -> Resul
     }
 
     Ok(())
+}
+
+fn upstream_websocket_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url
+        .strip_prefix("ws://")
+        .map(|rest| ("http", rest))
+        .or_else(|| url.strip_prefix("wss://").map(|rest| ("https", rest)))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    (!authority.is_empty()).then(|| format!("{scheme}://{authority}"))
 }
 
 fn to_upstream_message(message: Message) -> Option<UpstreamMessage> {
@@ -721,64 +747,48 @@ fn proxied_target_port(target_id: &str) -> Result<u16, String> {
 }
 
 fn metro_devtools_frontend_url(port: u16, entry: &Value, web_socket_debugger_url: &str) -> String {
-    let Some(frontend) = string_value(entry, "devtoolsFrontendUrl") else {
-        return local_metro_fusebox_frontend_url(None, web_socket_debugger_url);
-    };
-    let path = frontend_path_for_match(&frontend);
-    if is_metro_hosted_react_native_frontend_path(path) {
-        return metro_served_frontend_url(port, entry, &frontend, web_socket_debugger_url);
-    }
-    let (_, query) = split_path_query(&frontend);
-    if path.ends_with("/rn_fusebox.html") {
-        return local_metro_fusebox_frontend_url(query, web_socket_debugger_url);
-    }
-    if frontend.starts_with("http://") || frontend.starts_with("https://") {
-        return frontend;
-    }
-    let host = string_value(entry, "webSocketDebuggerUrl")
-        .and_then(|url| websocket_authority(&url))
-        .unwrap_or_else(|| format!("{DEVTOOLS_HOST}:{port}"));
-    format!("http://{host}{frontend}")
+    let frontend = string_value(entry, "devtoolsFrontendUrl");
+    let asset_path = metro_frontend_asset_path(frontend.as_deref());
+    let query = frontend.as_deref().and_then(|value| split_path_query(value).1);
+    // Reverse-proxy Metro's own (version-matched) Fusebox frontend through the
+    // SimDeck origin so the LAN client and Studio app can reach it, with the
+    // socket rewritten to the proxied inspector path.
+    format!(
+        "{}?{}",
+        metro_frontend_proxy_base(port, &asset_path),
+        metro_frontend_query_with_socket(query, web_socket_debugger_url)
+    )
 }
 
-fn frontend_path_for_match(frontend: &str) -> &str {
+fn metro_frontend_proxy_base(port: u16, asset_path: &str) -> String {
+    format!("/api/metro-frontend/{port}{asset_path}")
+}
+
+fn metro_frontend_asset_path(frontend: Option<&str>) -> String {
+    let Some(frontend) = frontend else {
+        return DEFAULT_METRO_FRONTEND_PATH.to_owned();
+    };
     let (path, _) = split_path_query(frontend);
-    if let Some(rest) = path
-        .strip_prefix("http://")
-        .or_else(|| path.strip_prefix("https://"))
-    {
-        return rest
-            .find('/')
-            .and_then(|index| rest.get(index..))
-            .unwrap_or("/");
-    }
-    path
-}
-
-fn is_metro_hosted_react_native_frontend_path(path: &str) -> bool {
-    path == "/rozenite"
-        || path.starts_with("/rozenite/")
-        || path == "/debugger-frontend"
-        || path.starts_with("/debugger-frontend/")
-}
-
-fn metro_served_frontend_url(
-    port: u16,
-    entry: &Value,
-    frontend: &str,
-    web_socket_debugger_url: &str,
-) -> String {
-    let (base, query) = split_path_query(frontend);
-    let base = if base.starts_with("http://") || base.starts_with("https://") {
-        base.to_owned()
+    let path = url_path_component(path);
+    if is_metro_frontend_path(path) {
+        path.to_owned()
     } else {
-        let host = string_value(entry, "webSocketDebuggerUrl")
-            .and_then(|url| websocket_authority(&url))
-            .unwrap_or_else(|| format!("{DEVTOOLS_HOST}:{port}"));
-        format!("http://{host}{base}")
-    };
-    let query = metro_frontend_query_with_socket(query, web_socket_debugger_url);
-    format!("{base}?{query}")
+        DEFAULT_METRO_FRONTEND_PATH.to_owned()
+    }
+}
+
+fn url_path_component(value: &str) -> &str {
+    let rest = value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"));
+    match rest {
+        Some(rest) => rest.find('/').map(|index| &rest[index..]).unwrap_or("/"),
+        None => value,
+    }
+}
+
+pub fn is_metro_frontend_path(path: &str) -> bool {
+    path.starts_with("/debugger-frontend/") || path.starts_with("/rozenite/")
 }
 
 fn metro_frontend_query_with_socket(query: Option<&str>, web_socket_debugger_url: &str) -> String {
@@ -802,15 +812,6 @@ fn metro_frontend_query_with_socket(query: Option<&str>, web_socket_debugger_url
     params.join("&")
 }
 
-fn websocket_authority(value: &str) -> Option<String> {
-    value
-        .strip_prefix("ws://")
-        .or_else(|| value.strip_prefix("wss://"))
-        .and_then(|rest| rest.split('/').next())
-        .filter(|authority| !authority.is_empty())
-        .map(ToOwned::to_owned)
-}
-
 fn websocket_path_with_access_token(path: String, access_token: Option<&str>) -> String {
     let Some(access_token) = access_token
         .map(str::trim)
@@ -825,11 +826,85 @@ fn websocket_path_with_access_token(path: String, access_token: Option<&str>) ->
     )
 }
 
-fn local_metro_fusebox_frontend_url(query: Option<&str>, web_socket_debugger_url: &str) -> String {
-    format!(
-        "/chrome-devtools-ui/rn_fusebox.html?{}",
-        metro_frontend_query_with_socket(query, web_socket_debugger_url)
-    )
+/// Reverse-proxies a single Metro DevTools frontend asset (`/debugger-frontend/*`
+/// or `/rozenite/*`) over the SimDeck origin. The upstream request omits the
+/// browser `Origin` so Metro's dev-middleware does not reject it.
+pub async fn fetch_metro_frontend_asset(
+    port: u16,
+    path: &str,
+    query: Option<&str>,
+) -> Result<ProxiedAsset, String> {
+    if !is_metro_frontend_path(path) {
+        return Err("Not a Metro DevTools frontend asset path.".to_owned());
+    }
+    let address = format!("{DEVTOOLS_HOST}:{port}");
+    let target = match query {
+        Some(query) => format!("{path}?{query}"),
+        None => path.to_owned(),
+    };
+    let mut stream = timeout(METRO_ASSET_TIMEOUT, TcpStream::connect(&address))
+        .await
+        .map_err(|_| format!("Timed out connecting to Metro at {address}."))?
+        .map_err(|error| format!("Unable to connect to Metro at {address}: {error}"))?;
+    let request =
+        format!("GET {target} HTTP/1.1\r\nHost: {address}\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+    timeout(METRO_ASSET_TIMEOUT, stream.write_all(request.as_bytes()))
+        .await
+        .map_err(|_| "Timed out requesting Metro asset.".to_owned())?
+        .map_err(|error| format!("Unable to request Metro asset: {error}"))?;
+
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 16384];
+    loop {
+        let count = timeout(METRO_ASSET_TIMEOUT, stream.read(&mut chunk))
+            .await
+            .map_err(|_| "Timed out reading Metro asset.".to_owned())?
+            .map_err(|error| format!("Unable to read Metro asset: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        response.extend_from_slice(&chunk[..count]);
+        if response.len() > METRO_ASSET_MAX_BYTES {
+            return Err("Metro asset exceeded the size limit.".to_owned());
+        }
+        if response_has_complete_body(&response) {
+            break;
+        }
+    }
+
+    let (headers, body) = split_http_response(&response)
+        .ok_or_else(|| "Metro returned a malformed HTTP response.".to_owned())?;
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|status| status.parse::<u16>().ok())
+        .unwrap_or(0);
+    let content_type = header_value(&headers, "content-type");
+    let body = content_length(&headers)
+        .and_then(|length| body.get(..length))
+        .unwrap_or(body)
+        .to_vec();
+    Ok(ProxiedAsset {
+        status,
+        content_type,
+        body,
+    })
+}
+
+pub struct ProxiedAsset {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
+}
+
+fn header_value(headers: &str, name: &str) -> Option<String> {
+    headers.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_owned())
+    })
 }
 
 fn split_path_query(value: &str) -> (&str, Option<&str>) {
@@ -1696,7 +1771,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metro_devtools_frontend_url_keeps_rozenite_frontend_on_metro() {
+    fn upstream_websocket_origin_matches_metro_dev_server() {
+        assert_eq!(
+            upstream_websocket_origin(
+                "ws://127.0.0.1:8082/inspector/debug?device=abc&page=1"
+            ),
+            Some("http://127.0.0.1:8082".to_owned())
+        );
+        assert_eq!(
+            upstream_websocket_origin("wss://localhost:8081/inspector/debug"),
+            Some("https://localhost:8081".to_owned())
+        );
+        assert_eq!(upstream_websocket_origin("http://127.0.0.1:8082"), None);
+    }
+
+    #[test]
+    fn metro_devtools_frontend_url_proxies_rozenite_frontend() {
         let entry = json!({
             "devtoolsFrontendUrl": "/rozenite/rn_fusebox.html?ws=127.0.0.1:8081/inspector/debug&device=ios",
             "webSocketDebuggerUrl": "ws://127.0.0.1:8081/inspector/debug"
@@ -1710,12 +1800,12 @@ mod tests {
 
         assert_eq!(
             url,
-            "http://127.0.0.1:8081/rozenite/rn_fusebox.html?ws=127.0.0.1%3A4310%2Fapi%2Fsimulators%2FABC%2Fdevtools%2Ftargets%2Fmetro-8081-target%2Fsocket&device=ios"
+            "/api/metro-frontend/8081/rozenite/rn_fusebox.html?ws=127.0.0.1%3A4310%2Fapi%2Fsimulators%2FABC%2Fdevtools%2Ftargets%2Fmetro-8081-target%2Fsocket&device=ios"
         );
     }
 
     #[test]
-    fn metro_devtools_frontend_url_preserves_absolute_rozenite_origin() {
+    fn metro_devtools_frontend_url_proxies_absolute_rozenite_origin() {
         let entry = json!({
             "devtoolsFrontendUrl": "http://localhost:8081/rozenite/rn_fusebox.html?panel=redux&ws=localhost:8081/inspector/debug",
             "webSocketDebuggerUrl": "ws://127.0.0.1:8081/inspector/debug"
@@ -1729,12 +1819,12 @@ mod tests {
 
         assert_eq!(
             url,
-            "http://localhost:8081/rozenite/rn_fusebox.html?ws=simdeck.local%3A4310%2Fapi%2Fsimulators%2FABC%2Fdevtools%2Ftargets%2Fmetro-8081-target%2Fsocket&panel=redux"
+            "/api/metro-frontend/8081/rozenite/rn_fusebox.html?ws=simdeck.local%3A4310%2Fapi%2Fsimulators%2FABC%2Fdevtools%2Ftargets%2Fmetro-8081-target%2Fsocket&panel=redux"
         );
     }
 
     #[test]
-    fn metro_devtools_frontend_url_keeps_explicit_fusebox_frontend_on_metro() {
+    fn metro_devtools_frontend_url_proxies_debugger_frontend() {
         let entry = json!({
             "devtoolsFrontendUrl": "/debugger-frontend/rn_fusebox.html?ws=127.0.0.1:8081/inspector/debug&device=ios",
             "webSocketDebuggerUrl": "ws://127.0.0.1:8081/inspector/debug"
@@ -1748,12 +1838,12 @@ mod tests {
 
         assert_eq!(
             url,
-            "http://127.0.0.1:8081/debugger-frontend/rn_fusebox.html?ws=127.0.0.1%3A4310%2Fapi%2Fsimulators%2FABC%2Fdevtools%2Ftargets%2Fmetro-8081-target%2Fsocket&device=ios"
+            "/api/metro-frontend/8081/debugger-frontend/rn_fusebox.html?ws=127.0.0.1%3A4310%2Fapi%2Fsimulators%2FABC%2Fdevtools%2Ftargets%2Fmetro-8081-target%2Fsocket&device=ios"
         );
     }
 
     #[test]
-    fn metro_devtools_frontend_url_uses_embedded_frontend_when_metro_omits_frontend() {
+    fn metro_devtools_frontend_url_defaults_to_debugger_frontend_when_metro_omits_it() {
         let entry = json!({
             "webSocketDebuggerUrl": "ws://127.0.0.1:8081/inspector/debug"
         });
@@ -1766,8 +1856,24 @@ mod tests {
 
         assert_eq!(
             url,
-            "/chrome-devtools-ui/rn_fusebox.html?ws=127.0.0.1%3A4310%2Fapi%2Fsimulators%2FABC%2Fdevtools%2Ftargets%2Fmetro-8081-target%2Fsocket"
+            "/api/metro-frontend/8081/debugger-frontend/rn_fusebox.html?ws=127.0.0.1%3A4310%2Fapi%2Fsimulators%2FABC%2Fdevtools%2Ftargets%2Fmetro-8081-target%2Fsocket"
         );
+    }
+
+    #[test]
+    fn metro_frontend_asset_path_rejects_unexpected_paths() {
+        assert_eq!(
+            metro_frontend_asset_path(Some("/inspector/debug?device=x")),
+            "/debugger-frontend/rn_fusebox.html"
+        );
+        assert_eq!(
+            metro_frontend_asset_path(Some(
+                "http://localhost:8081/debugger-frontend/rn_fusebox.html?ws=x"
+            )),
+            "/debugger-frontend/rn_fusebox.html"
+        );
+        assert!(is_metro_frontend_path("/rozenite/panel.js"));
+        assert!(!is_metro_frontend_path("/json/list"));
     }
 
     #[test]
@@ -1789,6 +1895,9 @@ mod tests {
         assert!(target.web_socket_debugger_url.ends_with(
             "/api/simulators/ABC/devtools/targets/metro-8081-target-1/socket?simdeckToken=secret%20token"
         ));
+        assert!(target
+            .devtools_frontend_url
+            .starts_with("/api/metro-frontend/8081/debugger-frontend/rn_fusebox.html?"));
         assert!(target.devtools_frontend_url.contains(
             "ws=127.0.0.1%3A4310%2Fapi%2Fsimulators%2FABC%2Fdevtools%2Ftargets%2Fmetro-8081-target-1%2Fsocket%3FsimdeckToken%3Dsecret%2520token"
         ));
