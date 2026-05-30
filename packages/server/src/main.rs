@@ -502,6 +502,15 @@ enum Command {
     ChromeProfile {
         udid: Option<String>,
     },
+    /// Print a universal link that opens this simulator in SimDeck Studio (iOS) or the launchpad.
+    Link {
+        #[arg(value_name = "UDID_OR_NAME")]
+        simulator: Option<String>,
+        #[arg(long, default_value = "https://app.simdeck.sh")]
+        base: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1986,6 +1995,36 @@ fn simdeck_pair_url(
         url.push_str(&percent_encode(&pairing_address_value(&address.url)));
     }
     url
+}
+
+fn simdeck_open_link(
+    base: &str,
+    udid: &str,
+    addresses: &[PairingAddress],
+) -> anyhow::Result<String> {
+    let trimmed = base.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        anyhow::bail!("link base URL must not be empty");
+    }
+    let primary = addresses
+        .iter()
+        .find(|address| address.kind != "local")
+        .or_else(|| addresses.first())
+        .map(|address| address.url.as_str())
+        .context("No SimDeck server address is available")?;
+    let mut url = format!(
+        "{trimmed}/open?u={}&udid={}",
+        percent_encode(&pairing_address_value(primary)),
+        percent_encode(udid)
+    );
+    for address in addresses
+        .iter()
+        .filter(|address| address.url != primary && address.kind != "local")
+    {
+        url.push_str("&a=");
+        url.push_str(&percent_encode(&pairing_address_value(&address.url)));
+    }
+    Ok(url)
 }
 
 fn pairing_address_value(url: &str) -> String {
@@ -4723,6 +4762,52 @@ fn main() -> anyhow::Result<()> {
             println_json(&profile)?;
             Ok(())
         }
+        Command::Link {
+            simulator,
+            base,
+            json,
+        } => {
+            let selector = simulator
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let udid = resolve_device_udid(selector)?;
+            let metadata = read_service_metadata()?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "SimDeck service is not running. Start it with `simdeck` or `simdeck service start`."
+                )
+            })?;
+            let server_url = metadata.http_url.clone();
+            let simulator_info =
+                select_studio_simulator(&server_url, &udid)?.or_else(|| match selector {
+                    Some(value) if !value.eq_ignore_ascii_case(&udid) => {
+                        select_studio_simulator(&server_url, value).ok().flatten()
+                    }
+                    _ => None,
+                });
+            let resolved_udid = simulator_info
+                .as_ref()
+                .map(|simulator| simulator.udid.clone())
+                .unwrap_or(udid);
+            let addresses = service_addresses(&metadata, None);
+            let link = simdeck_open_link(&base, &resolved_udid, &addresses)?;
+
+            if json {
+                println_json(&serde_json::json!({
+                    "ok": true,
+                    "url": link,
+                    "udid": resolved_udid,
+                    "name": simulator_info.as_ref().map(|simulator| &simulator.name),
+                    "runtimeName": simulator_info
+                        .as_ref()
+                        .and_then(|simulator| simulator.runtime_name.as_ref()),
+                    "addresses": addresses,
+                }))?;
+            } else {
+                println!("{link}");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -5821,11 +5906,11 @@ mod tests {
         parse_workspace_service_process_line, removed_service_process_name,
         render_agent_accessibility_tree, render_qr_code, run_maestro_command,
         server_health_watchdog_should_restart, service_addresses, service_matches_launch_options,
-        service_post_error_is_retryable, simdeck_pair_url, studio_service_restart_args,
-        workspace_service_process_is_current, Cli, Command, ElementSelector, NoCommandAction,
-        PairingAddress, ServiceCommand, ServiceLaunchOptions, ServiceMetadata,
-        StreamQualityProfileArg, StudioExposeOptions, TapCommandTarget, VideoCodecMode,
-        WorkspaceServiceProcess, YamlValue, DEFAULT_LOCAL_STREAM_QUALITY_PROFILE,
+        service_post_error_is_retryable, simdeck_open_link, simdeck_pair_url,
+        studio_service_restart_args, workspace_service_process_is_current, Cli, Command,
+        ElementSelector, NoCommandAction, PairingAddress, ServiceCommand, ServiceLaunchOptions,
+        ServiceMetadata, StreamQualityProfileArg, StudioExposeOptions, TapCommandTarget,
+        VideoCodecMode, WorkspaceServiceProcess, YamlValue, DEFAULT_LOCAL_STREAM_QUALITY_PROFILE,
         SERVER_HEALTH_WATCHDOG_FAILURE_THRESHOLD, SERVER_HEALTH_WATCHDOG_HTTP_FAILURE_THRESHOLD,
     };
     use clap::Parser;
@@ -6169,6 +6254,73 @@ mod tests {
         assert!(url.starts_with("simdeck://pair?u=10.0.0.55%3A4310&c=123456&s=server-1"));
         assert!(url.contains("a=100.112.42.69%3A4310"));
         assert!(!url.contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn simdeck_open_link_encodes_primary_alternates_and_udid() {
+        let addresses = vec![
+            PairingAddress {
+                kind: "local",
+                url: "http://127.0.0.1:4310".to_owned(),
+            },
+            PairingAddress {
+                kind: "lan",
+                url: "http://10.0.0.55:4310".to_owned(),
+            },
+            PairingAddress {
+                kind: "tailscale",
+                url: "http://100.112.42.69:4310".to_owned(),
+            },
+        ];
+
+        let link = simdeck_open_link("https://app.simdeck.sh", "ABCD-1234-EFGH", &addresses)
+            .expect("build link");
+
+        assert!(
+            link.starts_with("https://app.simdeck.sh/open?u=10.0.0.55%3A4310&udid=ABCD-1234-EFGH")
+        );
+        assert!(link.contains("&a=100.112.42.69%3A4310"));
+        assert!(!link.contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn simdeck_open_link_trims_trailing_slash_from_base() {
+        let addresses = vec![PairingAddress {
+            kind: "lan",
+            url: "http://10.0.0.55:4310".to_owned(),
+        }];
+
+        let link =
+            simdeck_open_link("https://app.simdeck.sh/", "udid", &addresses).expect("build link");
+
+        assert!(link.starts_with("https://app.simdeck.sh/open?"));
+    }
+
+    #[test]
+    fn link_command_accepts_optional_simulator() {
+        let parsed = Cli::try_parse_from(["simdeck", "link"]).expect("parse link");
+        let Command::Link {
+            simulator,
+            base,
+            json,
+        } = parsed.command
+        else {
+            panic!("expected Link command");
+        };
+        assert!(simulator.is_none());
+        assert_eq!(base, "https://app.simdeck.sh");
+        assert!(!json);
+
+        let parsed = Cli::try_parse_from(["simdeck", "link", "iPhone 17", "--json"])
+            .expect("parse link with sim");
+        let Command::Link {
+            simulator, json, ..
+        } = parsed.command
+        else {
+            panic!("expected Link command");
+        };
+        assert_eq!(simulator.as_deref(), Some("iPhone 17"));
+        assert!(json);
     }
 
     #[test]

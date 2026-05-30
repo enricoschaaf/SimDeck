@@ -168,6 +168,14 @@ async function copyCommand() {
               Studio on iOS. Pair once, then drive the simulator from wherever
               the work is happening.
             </p>
+            <p class="sd-moment-link">
+              <a
+                href="https://apps.apple.com/ca/app/simdeck-studio/id6770182703"
+                target="_blank"
+                rel="noopener"
+                >Get SimDeck Studio on the App Store →</a
+              >
+            </p>
           </div>
           <figure class="sd-shot sd-shot-remote-card">
             <img

@@ -12,6 +12,7 @@ Replace `simdeck` with `./build/simdeck` when running from a source checkout.
 | `simdeck -p 4311`              | Use a non-default service port              |
 | `simdeck -a`                   | Register the service for login autostart    |
 | `simdeck pair`                 | Show native iOS pairing code and QR         |
+| `simdeck link [sim]`           | Print `https://app.simdeck.sh/open` link    |
 | `simdeck service status`       | Show service URL, PID, token, and log path  |
 | `simdeck service stop`         | Stop the current background service         |
 | `simdeck service kill`         | Stop every SimDeck service process          |
@@ -41,6 +42,12 @@ when present, detects LAN and Tailscale IPv4 addresses, and prints a
 `simdeck service restart` also preserves the installed service token so native
 clients remain paired across service restarts. Use `simdeck service reset` to
 rotate the token and pairing code, then restart the LaunchAgent.
+
+`simdeck link` emits a universal link that opens SimDeck Studio on iOS (or the
+launchpad in browsers) pre-targeted at the resolved simulator. The simulator can
+be a UDID, a name, or omitted to use the workspace selection from `simdeck use`.
+Pass `--json` to also get the resolved name and the alternate addresses embedded
+in the link.
 
 ## Device lifecycle
 
