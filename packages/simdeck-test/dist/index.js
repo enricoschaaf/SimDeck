@@ -366,7 +366,7 @@ export async function connect(options = {}) {
                 if (result.child) {
                     result.child.kill();
                     if (result.isolatedRoot) {
-                        fs.rmSync(result.isolatedRoot, { recursive: true, force: true });
+                        removeIsolatedRoot(result.isolatedRoot);
                     }
                     return;
                 }
@@ -411,7 +411,7 @@ async function startIsolatedService(cliPath, options) {
     }
     catch (error) {
         child.kill();
-        fs.rmSync(projectRoot, { recursive: true, force: true });
+        removeIsolatedRoot(projectRoot);
         throw error;
     }
     return {
@@ -423,6 +423,30 @@ async function startIsolatedService(cliPath, options) {
         child,
         isolatedRoot: projectRoot,
     };
+}
+function removeIsolatedRoot(projectRoot) {
+    try {
+        fs.rmSync(projectRoot, {
+            recursive: true,
+            force: true,
+            maxRetries: process.platform === "win32" ? 20 : 3,
+            retryDelay: 100,
+        });
+    }
+    catch (error) {
+        if (process.platform === "win32" && isWindowsTransientRemoveError(error)) {
+            console.warn(`Unable to remove isolated SimDeck test project ${projectRoot}: ${error instanceof Error ? error.message : String(error)}`);
+            return;
+        }
+        throw error;
+    }
+}
+function isWindowsTransientRemoveError(error) {
+    if (!error || typeof error !== "object") {
+        return false;
+    }
+    const code = error.code;
+    return code === "EBUSY" || code === "ENOTEMPTY" || code === "EPERM";
 }
 async function waitForHealth(endpoint, child, output) {
     const deadline = Date.now() + 60_000;

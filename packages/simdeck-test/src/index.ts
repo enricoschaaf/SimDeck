@@ -699,7 +699,7 @@ export async function connect(
         if (result.child) {
           result.child.kill();
           if (result.isolatedRoot) {
-            fs.rmSync(result.isolatedRoot, { recursive: true, force: true });
+            removeIsolatedRoot(result.isolatedRoot);
           }
           return;
         }
@@ -756,7 +756,7 @@ async function startIsolatedService(
     await waitForHealth(url, child, output);
   } catch (error) {
     child.kill();
-    fs.rmSync(projectRoot, { recursive: true, force: true });
+    removeIsolatedRoot(projectRoot);
     throw error;
   }
   return {
@@ -768,6 +768,35 @@ async function startIsolatedService(
     child,
     isolatedRoot: projectRoot,
   };
+}
+
+function removeIsolatedRoot(projectRoot: string): void {
+  try {
+    fs.rmSync(projectRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: process.platform === "win32" ? 20 : 3,
+      retryDelay: 100,
+    });
+  } catch (error) {
+    if (process.platform === "win32" && isWindowsTransientRemoveError(error)) {
+      console.warn(
+        `Unable to remove isolated SimDeck test project ${projectRoot}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+    throw error;
+  }
+}
+
+function isWindowsTransientRemoveError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EBUSY" || code === "ENOTEMPTY" || code === "EPERM";
 }
 
 async function waitForHealth(

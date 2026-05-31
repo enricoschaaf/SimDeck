@@ -319,17 +319,27 @@ impl AndroidBridge {
             return Ok(false);
         }
         let grpc_port = self.grpc_port_for_avd(&avd_name)?;
+        let grpc_port = grpc_port.to_string();
+        let is_windows = cfg!(target_os = "windows");
+        let window_mode = if is_windows {
+            "-qt-hide-window"
+        } else {
+            "-no-window"
+        };
+        let mut args = vec![
+            "-avd",
+            &avd_name,
+            window_mode,
+            "-no-audio",
+            "-gpu",
+            "swiftshader_indirect",
+        ];
+        if is_windows {
+            args.extend(["-feature", "-Vulkan"]);
+        }
+        args.extend(["-grpc", &grpc_port]);
         Command::new(self.emulator_path())
-            .args([
-                "-avd",
-                &avd_name,
-                "-no-window",
-                "-no-audio",
-                "-gpu",
-                "swiftshader_indirect",
-                "-grpc",
-                &grpc_port.to_string(),
-            ])
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -437,6 +447,10 @@ impl AndroidBridge {
 
     pub fn launch_package(&self, id: &str, package: &str) -> Result<(), AppError> {
         let serial = self.serial_for_id(id)?;
+        if is_android_component_name(package) {
+            self.run_adb(["-s", &serial, "shell", "am", "start", "-n", package])?;
+            return Ok(());
+        }
         self.run_adb([
             "-s",
             &serial,
@@ -774,6 +788,7 @@ impl AndroidBridge {
     ) -> Result<AndroidGrpcFrameStream, AppError> {
         let avd_name = avd_from_id(id)?;
         let port = self.grpc_port_for_avd(&avd_name)?;
+        let serial = self.resolve_serial(&avd_name)?;
         let mut format = grpc::ImageFormat {
             format: grpc::image_format::ImgFormat::Rgba8888 as i32,
             width: 0,
@@ -782,9 +797,8 @@ impl AndroidBridge {
             transport: None,
         };
         let target = self
-            .resolve_serial(&avd_name)
+            .display_metrics_for_serial(&serial)
             .ok()
-            .and_then(|serial| self.display_metrics_for_serial(&serial).ok())
             .map(|metrics| AndroidFrameTarget {
                 width: metrics.width.round().max(1.0) as u32,
                 height: metrics.height.round().max(1.0) as u32,
@@ -820,7 +834,7 @@ impl AndroidBridge {
             "/android.emulation.control.EmulatorController/streamScreenshot",
         );
         let mut request = tonic::Request::new(format);
-        if let Some(token) = emulator_grpc_token(port) {
+        if let Some(token) = self.emulator_grpc_token(&serial, port) {
             let value = MetadataValue::try_from(format!("Bearer {token}")).map_err(|error| {
                 AppError::native(format!("Invalid Android emulator gRPC token: {error}"))
             })?;
@@ -955,9 +969,16 @@ impl AndroidBridge {
     }
 
     fn resolve_serial(&self, avd_name: &str) -> Result<String, AppError> {
-        self.running_emulators()?.remove(avd_name).ok_or_else(|| {
-            AppError::native(format!("Android emulator `{avd_name}` is not running."))
-        })
+        if let Some(serial) = self.running_emulators()?.remove(avd_name) {
+            return Ok(serial);
+        }
+        let serials = self.online_emulator_serials()?;
+        if serials.len() == 1 && self.known_avd(avd_name)? {
+            return Ok(serials[0].clone());
+        }
+        Err(AppError::native(format!(
+            "Android emulator `{avd_name}` is not running."
+        )))
     }
 
     fn running_emulators(&self) -> Result<HashMap<String, String>, AppError> {
@@ -971,21 +992,26 @@ impl AndroidBridge {
         if !self.adb_path().exists() {
             return Ok(HashMap::new());
         }
-        let output = self.run_adb(["devices"])?;
         let mut result = HashMap::new();
-        for line in output.lines().skip(1) {
-            let mut parts = line.split_whitespace();
-            let Some(serial) = parts.next() else { continue };
-            let Some(state) = parts.next() else { continue };
-            if state != "device" || !serial.starts_with("emulator-") {
-                continue;
-            }
-            if let Some(name) = self.avd_name_for_serial(serial) {
-                result.insert(name, serial.to_owned());
+        for serial in self.online_emulator_serials()? {
+            if let Some(name) = self.avd_name_for_serial(&serial) {
+                result.insert(name, serial);
             }
         }
         *cache.lock().unwrap() = Some((Instant::now(), result.clone()));
         Ok(result)
+    }
+
+    fn online_emulator_serials(&self) -> Result<Vec<String>, AppError> {
+        Ok(parse_online_emulator_serials(&self.run_adb(["devices"])?))
+    }
+
+    fn known_avd(&self, avd_name: &str) -> Result<bool, AppError> {
+        Ok(self
+            .run_emulator(["-list-avds"])?
+            .lines()
+            .map(str::trim)
+            .any(|name| name == avd_name))
     }
 
     fn avd_name_for_serial(&self, serial: &str) -> Option<String> {
@@ -1124,11 +1150,11 @@ impl AndroidBridge {
     }
 
     fn adb_path(&self) -> PathBuf {
-        sdk_root().join("platform-tools/adb")
+        android_sdk_tool_path("platform-tools/adb")
     }
 
     fn emulator_path(&self) -> PathBuf {
-        sdk_root().join("emulator/emulator")
+        android_sdk_tool_path("emulator/emulator")
     }
 
     fn avdmanager_path(&self) -> PathBuf {
@@ -1141,6 +1167,29 @@ impl AndroidBridge {
 
     fn avd_dir(&self, avd_name: &str) -> PathBuf {
         home_dir().join(format!(".android/avd/{avd_name}.avd"))
+    }
+
+    fn emulator_grpc_token(&self, serial: &str, port: u16) -> Option<String> {
+        self.discovery_path_grpc_token(serial, port)
+            .or_else(|| per_instance_grpc_token(port))
+            .or_else(global_grpc_token)
+    }
+
+    fn discovery_path_grpc_token(&self, serial: &str, port: u16) -> Option<String> {
+        let output = self
+            .run_adb(["-s", serial, "emu", "avd", "discoverypath"])
+            .ok()?;
+        let path = output
+            .lines()
+            .map(str::trim)
+            .find(|line| {
+                !line.is_empty()
+                    && *line != "OK"
+                    && (line.ends_with(".ini") || line.contains("avd"))
+            })
+            .map(PathBuf::from)?;
+        let contents = std::fs::read_to_string(path).ok()?;
+        grpc_token_from_discovery_ini(&contents, port)
     }
 }
 
@@ -1355,11 +1404,16 @@ fn run_command_with_stdin<const N: usize>(
             program.display()
         )));
     }
-    let mut child = Command::new(&program)
+    let sdk_root = sdk_root();
+    let mut command = Command::new(&program);
+    command
         .args(args)
-        .env("ANDROID_HOME", sdk_root())
-        .env("ANDROID_SDK_ROOT", sdk_root())
-        .env("JAVA_HOME", java_home())
+        .env("ANDROID_HOME", &sdk_root)
+        .env("ANDROID_SDK_ROOT", &sdk_root);
+    if let Some(java_home) = java_home() {
+        command.env("JAVA_HOME", java_home);
+    }
+    let mut child = command
         .stdin(if stdin_input.is_some() {
             Stdio::piped()
         } else {
@@ -1617,12 +1671,61 @@ fn sdk_root() -> PathBuf {
         .or_else(|| env::var_os("ANDROID_SDK_ROOT"))
         .map(PathBuf::from)
         .filter(|path| path.exists())
-        .unwrap_or_else(|| home_dir().join("Library/Android/sdk"))
+        .unwrap_or_else(default_sdk_root)
+}
+
+fn default_sdk_root() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return home_dir().join("Library/Android/sdk");
+    }
+    if cfg!(target_os = "windows") {
+        if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(local_app_data).join("Android/Sdk");
+        }
+        return home_dir().join("AppData/Local/Android/Sdk");
+    }
+    home_dir().join("Android/Sdk")
+}
+
+fn android_sdk_tool_path(relative_path: &str) -> PathBuf {
+    android_sdk_tool_path_for_os(sdk_root().as_path(), relative_path, std::env::consts::OS)
+}
+
+fn android_sdk_tool_path_for_os(root: &Path, relative_path: &str, os: &str) -> PathBuf {
+    let mut path = root.join(relative_path);
+    if os == "windows" && path.extension().is_none() {
+        path.set_extension("exe");
+    }
+    path
+}
+
+fn parse_online_emulator_serials(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let serial = parts.next()?;
+            let state = parts.next()?;
+            (state == "device" && serial.starts_with("emulator-")).then(|| serial.to_owned())
+        })
+        .collect()
+}
+
+fn is_android_component_name(value: &str) -> bool {
+    value
+        .split_once('/')
+        .map(|(package, activity)| !package.is_empty() && !activity.is_empty())
+        .unwrap_or(false)
 }
 
 fn android_cmdline_tool_path(name: &str) -> PathBuf {
     let root = sdk_root();
-    let latest = root.join("cmdline-tools/latest/bin").join(name);
+    let latest = android_sdk_tool_path_for_os(
+        &root,
+        &format!("cmdline-tools/latest/bin/{name}"),
+        std::env::consts::OS,
+    );
     if latest.exists() {
         return latest;
     }
@@ -1630,7 +1733,13 @@ fn android_cmdline_tool_path(name: &str) -> PathBuf {
     if let Ok(entries) = std::fs::read_dir(&cmdline_tools) {
         let mut candidates = entries
             .filter_map(Result::ok)
-            .map(|entry| entry.path().join("bin").join(name))
+            .map(|entry| {
+                android_sdk_tool_path_for_os(
+                    entry.path().join("bin").as_path(),
+                    name,
+                    std::env::consts::OS,
+                )
+            })
             .filter(|path| path.exists())
             .collect::<Vec<_>>();
         candidates.sort();
@@ -1638,45 +1747,83 @@ fn android_cmdline_tool_path(name: &str) -> PathBuf {
             return path;
         }
     }
-    let tools_bin = root.join("tools/bin").join(name);
+    let tools_bin =
+        android_sdk_tool_path_for_os(&root, &format!("tools/bin/{name}"), std::env::consts::OS);
     if tools_bin.exists() {
         return tools_bin;
     }
     latest
 }
 
-fn java_home() -> OsString {
-    env::var_os("JAVA_HOME").unwrap_or_else(|| OsString::from("/opt/homebrew/opt/openjdk"))
+fn java_home() -> Option<OsString> {
+    env::var_os("JAVA_HOME")
+        .or_else(|| cfg!(target_os = "macos").then(|| OsString::from("/opt/homebrew/opt/openjdk")))
 }
 
 fn home_dir() -> PathBuf {
     env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .or_else(
+            || match (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
+                (Some(drive), Some(path)) => {
+                    let mut combined = PathBuf::from(drive);
+                    combined.push(path);
+                    Some(combined.into_os_string())
+                }
+                _ => None,
+            },
+        )
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new("/").to_path_buf())
 }
 
-fn emulator_grpc_token(port: u16) -> Option<String> {
-    per_instance_grpc_token(port).or_else(global_grpc_token)
-}
-
 fn per_instance_grpc_token(port: u16) -> Option<String> {
-    let running_dir = home_dir().join("Library/Caches/TemporaryItems/avd/running");
-    let entries = std::fs::read_dir(running_dir).ok()?;
-    let port_value = port.to_string();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("ini") {
-            continue;
-        }
-        let contents = std::fs::read_to_string(path).ok()?;
-        let fields = parse_ini(&contents);
-        if fields.get("grpc.port") == Some(&port_value) {
-            if let Some(token) = fields.get("grpc.token").filter(|token| !token.is_empty()) {
-                return Some(token.to_owned());
+    for running_dir in emulator_discovery_dirs() {
+        let entries = match std::fs::read_dir(running_dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        let port_value = port.to_string();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("ini") {
+                continue;
+            }
+            let contents = std::fs::read_to_string(path).ok()?;
+            let fields = parse_ini(&contents);
+            if fields.get("grpc.port") == Some(&port_value) {
+                if let Some(token) = fields.get("grpc.token").filter(|token| !token.is_empty()) {
+                    return Some(token.to_owned());
+                }
             }
         }
     }
     None
+}
+
+fn emulator_discovery_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    dirs.push(home_dir().join("Library/Caches/TemporaryItems/avd/running"));
+    dirs.push(std::env::temp_dir().join("avd/running"));
+    if cfg!(target_os = "linux") {
+        if let Some(user) = env::var_os("USER") {
+            dirs.push(
+                Path::new("/tmp").join(format!("android-{}/avd/running", user.to_string_lossy())),
+            );
+        }
+        dirs.push(Path::new("/tmp").join("avd/running"));
+    }
+    dirs
+}
+
+fn grpc_token_from_discovery_ini(contents: &str, port: u16) -> Option<String> {
+    let port_value = port.to_string();
+    let fields = parse_ini(contents);
+    (fields.get("grpc.port") == Some(&port_value))
+        .then(|| fields.get("grpc.token"))
+        .flatten()
+        .filter(|token| !token.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn global_grpc_token() -> Option<String> {
@@ -2455,6 +2602,59 @@ DisplayDeviceInfo{"Built-in Screen", 1080 x 2400, roundedCorners RoundedCorners{
                 6, 0, 0, 255, 4, 0, 0, 255, 2, 0, 0, 255,
             ]
         );
+    }
+
+    #[test]
+    fn grpc_token_from_discovery_ini_matches_requested_port() {
+        let contents = r#"
+avd.name=Pixel_8
+grpc.port=8554
+grpc.token=secret-token
+port.serial=5554
+"#;
+
+        assert_eq!(
+            grpc_token_from_discovery_ini(contents, 8554).as_deref(),
+            Some("secret-token")
+        );
+        assert_eq!(grpc_token_from_discovery_ini(contents, 8555), None);
+    }
+
+    #[test]
+    fn android_tool_path_adds_windows_exe_suffix() {
+        let root = Path::new(r"C:\Android\Sdk");
+
+        assert_eq!(
+            android_sdk_tool_path_for_os(root, "platform-tools/adb", "windows"),
+            root.join("platform-tools").join("adb.exe")
+        );
+        assert_eq!(
+            android_sdk_tool_path_for_os(root, "platform-tools/adb", "linux"),
+            root.join("platform-tools").join("adb")
+        );
+    }
+
+    #[test]
+    fn parse_online_emulator_serials_ignores_offline_devices() {
+        let output = "\
+List of devices attached
+emulator-5554\tdevice
+emulator-5556\toffline
+abcd1234\tdevice
+";
+
+        assert_eq!(parse_online_emulator_serials(output), vec!["emulator-5554"]);
+    }
+
+    #[test]
+    fn android_component_names_require_package_and_activity() {
+        assert!(is_android_component_name("com.android.settings/.Settings"));
+        assert!(is_android_component_name(
+            "com.example/com.example.MainActivity"
+        ));
+        assert!(!is_android_component_name("com.example"));
+        assert!(!is_android_component_name("com.example/"));
+        assert!(!is_android_component_name("/.MainActivity"));
     }
 }
 

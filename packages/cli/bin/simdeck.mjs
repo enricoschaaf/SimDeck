@@ -9,12 +9,14 @@ const RECOVERABLE_RESTART_EXIT_CODE = 75;
 
 const launcherDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = findPackageRoot(launcherDir);
-const binaryPath = path.join(packageRoot, "build", "simdeck-bin");
+const binaryPath = resolveBinaryPath(packageRoot);
 const childArgs = process.argv.slice(2);
 const isServiceRun = childArgs[0] === "service" && childArgs[1] === "run";
 
-if (process.platform !== "darwin") {
-  console.error("simdeck only supports macOS.");
+if (!binaryPath) {
+  console.error(
+    "simdeck only supports macOS, Linux, and Windows on arm64/x64.",
+  );
   process.exit(1);
 }
 
@@ -37,6 +39,36 @@ function findPackageRoot(startDir) {
     }
     current = parent;
   }
+}
+
+function resolveBinaryPath(rootDir) {
+  const platform = process.platform;
+  const arch = process.arch;
+  const binaryByHost = {
+    "darwin-arm64": "simdeck-bin-darwin-arm64",
+    "darwin-x64": "simdeck-bin-darwin-x64",
+    "linux-arm64": "simdeck-bin-linux-arm64",
+    "linux-x64": "simdeck-bin-linux-x64",
+    "win32-x64": "simdeck-bin-win32-x64.exe",
+  };
+
+  const binary = binaryByHost[`${platform}-${arch}`];
+  if (!binary) {
+    return null;
+  }
+
+  const platformBinaryPath = path.join(rootDir, "build", binary);
+  if (existsSync(platformBinaryPath)) {
+    return platformBinaryPath;
+  }
+
+  for (const fallback of ["simdeck-bin.exe", "simdeck-bin"]) {
+    const fallbackBinaryPath = path.join(rootDir, "build", fallback);
+    if (existsSync(fallbackBinaryPath)) {
+      return fallbackBinaryPath;
+    }
+  }
+  return platformBinaryPath;
 }
 
 let child;

@@ -20,6 +20,11 @@
     "scripts/postinstall.mjs",
     "build/simdeck-bin",
     "build/camera/",
+    "build/simdeck-bin-darwin-arm64",
+    "build/simdeck-bin-darwin-x64",
+    "build/simdeck-bin-linux-arm64",
+    "build/simdeck-bin-linux-x64",
+    "build/simdeck-bin-win32-x64.exe",
     "packages/client/dist/",
     "packages/simdeck-test/dist/"
   ],
@@ -34,16 +39,19 @@
     "node": ">=18"
   },
   "os": [
-    "darwin"
+    "darwin",
+    "linux",
+    "win32"
   ],
   "cpu": [
-    "arm64"
+    "arm64",
+    "x64"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build:cli": "scripts/build-cli.sh",
+    "build:cli": "node scripts/build-cli.mjs",
     "build:client": "scripts/build-client.sh",
     "build:app": "npm run build:cli && npm run build:client",
     "build:inspectors": "npm run build:nativescript-inspector && npm run build:react-native-inspector",
