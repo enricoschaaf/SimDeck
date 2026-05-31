@@ -86,19 +86,24 @@ pub fn start_camera(options: CameraStartOptions) -> Result<Value, AppError> {
     validate_udid(&options.udid)?;
     let source = normalize_source(options.source)?;
     let mirror = normalize_mirror(options.mirror.as_deref())?;
+    let bundle_id = options
+        .bundle_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(bundle_id) = bundle_id {
+        validate_bundle_id(bundle_id)?;
+    }
     fs::create_dir_all(camera_state_dir()).map_err(app_internal)?;
 
     let shm_name = shm_name_for_udid(&options.udid);
     native_start_camera(&options.udid, &shm_name, &source, &mirror)?;
 
-    if let Some(bundle_id) = options
-        .bundle_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        validate_bundle_id(bundle_id)?;
-        launch_with_injector(&options.udid, bundle_id, &shm_name, &mirror)?;
+    if let Some(bundle_id) = bundle_id {
+        if let Err(error) = launch_with_injector(&options.udid, bundle_id, &shm_name, &mirror) {
+            let _ = native_stop_camera(&options.udid);
+            return Err(error);
+        }
         record_injected_bundle(&options.udid, bundle_id)?;
     }
 

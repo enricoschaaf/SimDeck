@@ -77,7 +77,7 @@ export function CameraSimulationModal({
   const activeBundleText = useMemo(() => {
     const bundleIds = status?.bundleIds ?? [];
     if (bundleIds.length === 0) {
-      return status?.alive ? "helper running" : "not running";
+      return status?.alive ? "daemon running" : "not running";
     }
     return bundleIds.join(", ");
   }, [status]);
@@ -95,7 +95,11 @@ export function CameraSimulationModal({
     try {
       const nextStatus = await fetchCameraStatus(udid);
       setStatus(nextStatus);
-      if (nextStatus.mirror === "on" || nextStatus.mirror === "off") {
+      if (
+        nextStatus.mirror === "auto" ||
+        nextStatus.mirror === "on" ||
+        nextStatus.mirror === "off"
+      ) {
         setMirror(nextStatus.mirror);
       }
       if (

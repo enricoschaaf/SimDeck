@@ -323,6 +323,15 @@ static BOOL PublishImageAtPath(NSString *path, NSString **error) {
     return YES;
 }
 
+static BOOL CanDecodeImageAtPath(NSString *path, NSString **error) {
+    NSImage *image = [[NSImage alloc] initWithContentsOfFile:path];
+    if ([image CGImageForProposedRect:NULL context:nil hints:nil]) {
+        return YES;
+    }
+    if (error) *error = [NSString stringWithFormat:@"Unable to decode image at %@", path];
+    return NO;
+}
+
 @interface SimDeckCameraWebcamWriter : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 @property (nonatomic, copy) NSString *label;
 @end
@@ -404,6 +413,9 @@ static BOOL StartPlaceholder(NSString **error) {
 }
 
 static BOOL StartImage(NSString *path, NSString **error) {
+    if (!CanDecodeImageAtPath(path, error)) {
+        return NO;
+    }
     StopCurrentSource();
     if (!PublishImageAtPath(path, error)) {
         return NO;
@@ -475,7 +487,6 @@ static BOOL StartVideo(NSString *path, NSString **error) {
 }
 
 static BOOL StartWebcam(NSString *requestedDevice, NSString **error) {
-    StopCurrentSource();
     if (!EnsureCameraAccess(error)) {
         return NO;
     }
@@ -510,6 +521,7 @@ static BOOL StartWebcam(NSString *requestedDevice, NSString **error) {
         return NO;
     }
     [session addOutput:output];
+    StopCurrentSource();
     gWebcamSession = session;
     gWebcamDelegate = writer;
     [session startRunning];
@@ -766,10 +778,15 @@ char *simdeck_camera_switch(const char *udid,
                     nativeError = @"Camera simulation is not running for this simulator.";
                     return;
                 }
+                BOOL hasMirrorUpdate = mirror && mirror[0] && gHeader;
+                uint32_t previousMirrorMode = hasMirrorUpdate ? gHeader->mirrorMode : SIMDECK_CAMERA_MIRROR_AUTO;
                 if (mirror && mirror[0] && gHeader) {
                     gHeader->mirrorMode = MirrorModeForName(StringFromCString(mirror));
                 }
                 if (source && source[0] && !SwitchSource(StringFromCString(source), StringFromCString(sourceArgument), &nativeError)) {
+                    if (hasMirrorUpdate && gHeader) {
+                        gHeader->mirrorMode = previousMirrorMode;
+                    }
                     return;
                 }
                 result = JSONCString(StatusPayload(YES, nil));
