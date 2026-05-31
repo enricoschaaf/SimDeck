@@ -97,9 +97,15 @@ async function main() {
   simdeckJson(["launch", simulatorUDID, fixtureBundleId], {
     timeoutMs: 180_000,
   });
-  simdeckJson(["open-url", simulatorUDID, fixtureAnimateUrl], {
-    timeoutMs: 30_000,
-  });
+  await retrySimdeckJson(
+    ["open-url", simulatorUDID, fixtureAnimateUrl],
+    "WebRTC start fixture animation",
+    {
+      attempts: 3,
+      delayMs: 5_000,
+      timeoutMs: 180_000,
+    },
+  );
 
   const screenshotPath = path.join(tempRoot, "reference.png");
   simdeckJson(["screenshot", simulatorUDID, "--output", screenshotPath], {
