@@ -6,7 +6,7 @@ import {
   LayersIcon as HierarchyIcon,
   Link2Icon as OpenUrlIcon,
   PlayIcon,
-  ReloadIcon as RotateRightIcon,
+  RotateCounterClockwiseIcon as RotateLeftIcon,
   StopIcon,
 } from "@radix-ui/react-icons";
 import { useEffect, useState, type RefObject } from "react";
@@ -43,6 +43,7 @@ interface ToolbarProps {
   onOpenBundlePrompt: () => void;
   onOpenNewSimulator: () => void;
   onOpenUrlPrompt: () => void;
+  onRotateLeft: () => void;
   onRotateRight: () => void;
   onShutdown: () => void;
   onStreamEncoderChange: (encoder: StreamEncoder) => void;
@@ -104,6 +105,7 @@ export function Toolbar({
   onOpenBundlePrompt,
   onOpenNewSimulator,
   onOpenUrlPrompt,
+  onRotateLeft,
   onRotateRight,
   onShutdown,
   onStreamEncoderChange,
@@ -279,14 +281,24 @@ export function Toolbar({
               <AppearanceIcon />
             </button>
             {canRotateSelectedSimulator ? (
-              <button
-                aria-label="Rotate Right"
-                className="tbtn icon-btn toolbar-mobile-hidden"
-                onClick={onRotateRight}
-                title="Rotate Right"
-              >
-                <RotateRightIcon />
-              </button>
+              <>
+                <button
+                  aria-label="Rotate Left"
+                  className="tbtn icon-btn toolbar-mobile-hidden toolbar-wide-hidden"
+                  onClick={onRotateLeft}
+                  title="Rotate Left"
+                >
+                  <RotateLeftIcon />
+                </button>
+                <button
+                  aria-label="Rotate Right"
+                  className="tbtn icon-btn toolbar-mobile-hidden"
+                  onClick={onRotateRight}
+                  title="Rotate Right"
+                >
+                  <RotateLeftIcon className="rotate-right-icon" />
+                </button>
+              </>
             ) : null}
           </div>
         ) : null}

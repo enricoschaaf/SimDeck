@@ -2761,6 +2761,33 @@ export function AppShell({
     }, 1800);
   }
 
+  function rotateSelectedSimulator(direction: "left" | "right") {
+    if (!selectedSimulator) {
+      return;
+    }
+    if (selectedHasFixedOrientation) {
+      return;
+    }
+    const androidViewport = isAndroidSimulator(selectedSimulator);
+    const controlType = direction === "left" ? "rotateLeft" : "rotateRight";
+    const rotationDelta = direction === "left" ? -1 : 1;
+    beginZoomAnimation();
+    if (sendControl(selectedSimulator.udid, { type: controlType })) {
+      if (androidViewport) {
+        setRotationQuarterTurns(0);
+        window.setTimeout(() => {
+          void refresh();
+        }, 250);
+      } else {
+        setRotationQuarterTurns((current) =>
+          normalizeQuarterTurns(current + rotationDelta),
+        );
+      }
+      return;
+    }
+    setLocalError("Simulator control stream disconnected.");
+  }
+
   async function submitPairing(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const code = pairingCode.trim();
@@ -2889,28 +2916,8 @@ export function AppShell({
           setNewSimulatorOpen(true);
         }}
         onOpenUrlPrompt={promptForURL}
-        onRotateRight={() => {
-          if (!selectedSimulator) {
-            return;
-          }
-          if (selectedHasFixedOrientation) {
-            return;
-          }
-          const androidViewport = isAndroidSimulator(selectedSimulator);
-          beginZoomAnimation();
-          if (sendControl(selectedSimulator.udid, { type: "rotateRight" })) {
-            if (androidViewport) {
-              setRotationQuarterTurns(0);
-              window.setTimeout(() => {
-                void refresh();
-              }, 250);
-            } else {
-              setRotationQuarterTurns((current) => (current + 1) % 4);
-            }
-            return;
-          }
-          setLocalError("Simulator control stream disconnected.");
-        }}
+        onRotateLeft={() => rotateSelectedSimulator("left")}
+        onRotateRight={() => rotateSelectedSimulator("right")}
         onToggleRecording={() => {
           void toggleSimulatorRecording();
         }}

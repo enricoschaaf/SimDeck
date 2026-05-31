@@ -128,6 +128,12 @@
   min-width: 0;
 }
 
+@media (max-width: 960px) {
+  .toolbar .toolbar-wide-hidden {
+    display: none;
+  }
+}
+
 .main {
   position: relative;
   display: flex;
