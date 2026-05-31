@@ -117,6 +117,10 @@
   height: 16px;
 }
 
+.toolbar-right .icon-btn .rotate-right-icon {
+  transform: scaleX(-1);
+}
+
 .state-dot {
   width: 6px;
   height: 6px;
