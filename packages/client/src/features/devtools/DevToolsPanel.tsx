@@ -853,8 +853,7 @@ export function DevToolsPanel({
     (isLoading || isWebKitLoading || isHoldingEmptyDiscovery);
   const effectivelyDisconnected =
     disconnected || error === NOT_CONNECTED_MESSAGE;
-  const chromeDevToolsBlocked =
-    shouldBlockDevToolsHostBrowser(selectedTarget);
+  const chromeDevToolsBlocked = shouldBlockDevToolsHostBrowser(selectedTarget);
   const safariAutoWaiting = Boolean(
     selectedTarget &&
     isSafariAutoTarget(selectedTarget) &&
@@ -1548,9 +1547,9 @@ export function shouldBlockDevToolsHostBrowser(
 ): boolean {
   return Boolean(
     target &&
-      safariHostBrowser &&
-      isChromeTarget(target) &&
-      !isMetroDevToolsTarget(target),
+    safariHostBrowser &&
+    isChromeTarget(target) &&
+    !isMetroDevToolsTarget(target),
   );
 }
 
