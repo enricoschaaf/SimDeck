@@ -21,6 +21,21 @@ const androidAction = readFileSync(
   new URL("../actions/run-android-comment-session/action.yml", import.meta.url),
   "utf8",
 );
+const ciWorkflow = readFileSync(
+  new URL("../.github/workflows/ci.yml", import.meta.url),
+  "utf8",
+);
+const packageJson = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+);
+const cliWrapper = readFileSync(
+  new URL("../packages/cli/bin/simdeck.mjs", import.meta.url),
+  "utf8",
+);
+const androidIntegration = readFileSync(
+  new URL("../scripts/integration/android.mjs", import.meta.url),
+  "utf8",
+);
 
 function indexOfStep(action, name) {
   const index = action.indexOf(`- name: ${name}`);
@@ -37,6 +52,76 @@ function stepSlice(action, name, nextName) {
 }
 
 const darwinTest = process.platform === "darwin" ? test : test.skip;
+
+test("npm package declares Windows Android host support", () => {
+  assert.ok(packageJson.os.includes("darwin"));
+  assert.ok(packageJson.os.includes("linux"));
+  assert.ok(packageJson.os.includes("win32"));
+  assert.ok(packageJson.files.includes("build/simdeck-bin-win32-x64.exe"));
+});
+
+test("npm CLI wrapper resolves Windows x64 native binary", () => {
+  assert.match(cliWrapper, /win32-x64/);
+  assert.match(cliWrapper, /simdeck-bin-win32-x64\.exe/);
+});
+
+test("CI runs Android emulator integration on Linux and Windows", () => {
+  assert.match(ciWorkflow, /integration-android:/);
+  assert.match(ciWorkflow, /os:\s*\[\s*ubuntu-latest,\s*windows-latest\s*\]/);
+  assert.match(ciWorkflow, /matrix\.os/);
+  assert.match(ciWorkflow, /SimDeck_Pixel_CI/);
+  assert.match(ciWorkflow, /test:integration:android/);
+});
+
+test("Windows Android CI boot path is bounded and diagnostic", () => {
+  const windowsBootStep = stepSlice(
+    ciWorkflow,
+    "Create, boot, and test Android emulator (Windows)",
+    "Stop Android emulator (Windows)",
+  );
+
+  assert.match(windowsBootStep, /\$accelSupported = \$LASTEXITCODE -eq 0/);
+  assert.match(windowsBootStep, /google_atd/);
+  assert.match(windowsBootStep, /"-qt-hide-window"/);
+  assert.match(windowsBootStep, /"-feature", "-Vulkan"/);
+  assert.match(windowsBootStep, /"-accel", "on"/);
+  assert.match(windowsBootStep, /"-accel", "off"/);
+  assert.match(windowsBootStep, /\$serial = "emulator-5554"/);
+  assert.match(windowsBootStep, /\$devices -match "\$serial\\s\+device"/);
+  assert.doesNotMatch(windowsBootStep, /device\|offline/);
+  assert.match(windowsBootStep, /-RedirectStandardOutput \$stdout/);
+  assert.match(windowsBootStep, /Write-EmulatorDiagnostics/);
+  assert.match(
+    windowsBootStep,
+    /deviceDeadline = \(Get-Date\)\.AddMinutes\(10\)/,
+  );
+  assert.match(
+    windowsBootStep,
+    /\$env:SIMDECK_INTEGRATION_REQUIRE_RUNNING_ANDROID = "1"/,
+  );
+  assert.match(windowsBootStep, /npm run test:integration:android/);
+  assert.doesNotMatch(windowsBootStep, /wait-for-device/);
+});
+
+test("Android integration runner resolves Windows executables", () => {
+  assert.match(androidIntegration, /fileURLToPath/);
+  assert.doesNotMatch(
+    androidIntegration,
+    /new URL\("\.\.\/\.\.", import\.meta\.url\)\.pathname/,
+  );
+  assert.match(androidIntegration, /runningAndroidAvds\(avdName\)/);
+  assert.match(
+    androidIntegration,
+    /fallbackAvdName && avds\.size === 0 && devices\.length === 1/,
+  );
+  assert.match(androidIntegration, /resolveAndroidLaunchTarget/);
+  assert.match(androidIntegration, /query-activities/);
+  assert.match(androidIntegration, /isAndroidIntentUnavailable/);
+  assert.match(androidIntegration, /simdeck-bin\.exe/);
+  assert.match(androidIntegration, /simdeck-bin-win32-x64\.exe/);
+  assert.match(androidIntegration, /AppData", "Local", "Android", "Sdk/);
+  assert.match(androidIntegration, /\.exe/);
+});
 
 test("iOS PR comment waits for public simulator list access", () => {
   const prebootIndex = iosAction.indexOf(

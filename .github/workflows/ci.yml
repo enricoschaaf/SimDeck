@@ -80,6 +80,9 @@ jobs:
       - name: Test integration harness helpers
         run: npm run test:integration-harness
 
+      - name: Test workflow and CLI packaging guards
+        run: npm run test:github-actions
+
       - name: Typecheck client
         run: npm run --prefix packages/client typecheck
 
@@ -289,12 +292,16 @@ jobs:
           SIMDECK_INTEGRATION_DEVICE_TYPE: iPhone SE (3rd generation)
 
   integration-android:
-    name: Android emulator integration
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
+    name: Android emulator integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 65
     needs:
       - client
       - packages
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -308,6 +315,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Enable KVM access
+        if: runner.os == 'Linux'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
@@ -316,12 +324,13 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts --force
 
-      - name: Build Linux Android integration artifacts
+      - name: Build Android integration artifacts
         run: |
           npm run build:cli
           npm run build:simdeck-test
 
-      - name: Android emulator integration tests
+      - name: Android emulator integration tests (Linux)
+        if: runner.os == 'Linux'
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -330,8 +339,182 @@ jobs:
           profile: pixel_6
           avd-name: SimDeck_Pixel_CI
           disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -grpc 8554
           script: npm run test:integration:android
         env:
           SIMDECK_INTEGRATION_ANDROID_AVD: SimDeck_Pixel_CI
           SIMDECK_INTEGRATION_REQUIRE_RUNNING_ANDROID: "1"
           SIMDECK_INTEGRATION_VERBOSE: "1"
+
+      - name: Create, boot, and test Android emulator (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 45
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sdk = $env:ANDROID_HOME
+          if (-not $sdk) {
+            $sdk = $env:ANDROID_SDK_ROOT
+          }
+          if (-not $sdk) {
+            $sdk = Join-Path $env:LOCALAPPDATA "Android\Sdk"
+          }
+          $env:ANDROID_HOME = $sdk
+          $env:ANDROID_SDK_ROOT = $sdk
+          $cmdlineTools = Get-ChildItem -Path (Join-Path $sdk "cmdline-tools") -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          $toolsBin = if (Test-Path (Join-Path $sdk "cmdline-tools\latest\bin")) {
+            Join-Path $sdk "cmdline-tools\latest\bin"
+          } elseif ($cmdlineTools) {
+            Join-Path $cmdlineTools.FullName "bin"
+          } else {
+            Join-Path $sdk "tools\bin"
+          }
+          $sdkmanager = Join-Path $toolsBin "sdkmanager.bat"
+          $avdmanager = Join-Path $toolsBin "avdmanager.bat"
+          $adb = Join-Path $sdk "platform-tools\adb.exe"
+          $emulator = Join-Path $sdk "emulator\emulator.exe"
+          $windowsApi = "35"
+          $windowsPlatform = "platforms;android-$windowsApi"
+          $windowsSystemImage = "system-images;android-$windowsApi;google_atd;x86_64"
+
+          $yesFile = Join-Path $env:RUNNER_TEMP "android-sdk-yes.txt"
+          1..200 | ForEach-Object { "y" } | Set-Content -Path $yesFile -Encoding ascii
+          $noFile = Join-Path $env:RUNNER_TEMP "android-avd-no.txt"
+          "no" | Set-Content -Path $noFile -Encoding ascii
+
+          function Invoke-AndroidToolWithInput($tool, $arguments, $inputFile) {
+            $line = "`"$tool`" $arguments < `"$inputFile`""
+            Write-Host "cmd /c $line"
+            cmd /c $line
+            if ($LASTEXITCODE -ne 0) {
+              throw "$tool $arguments failed with exit code $LASTEXITCODE."
+            }
+          }
+
+          Write-Host "Accepting Android SDK licenses"
+          Invoke-AndroidToolWithInput $sdkmanager "--licenses" $yesFile
+          Write-Host "Installing Android SDK emulator packages"
+          Invoke-AndroidToolWithInput $sdkmanager "--install `"platform-tools`" `"emulator`" `"$windowsPlatform`" `"$windowsSystemImage`"" $yesFile
+          Write-Host "Checking Android emulator acceleration"
+          & $emulator -accel-check
+          $accelSupported = $LASTEXITCODE -eq 0
+          if (-not $accelSupported) {
+            Write-Host "Hosted Windows runner did not report VM acceleration; forcing software acceleration for the CI smoke emulator."
+          }
+          Write-Host "Creating Android AVD"
+          Invoke-AndroidToolWithInput $avdmanager "create avd --force --name SimDeck_Pixel_CI --package `"$windowsSystemImage`" --device `"pixel_6`"" $noFile
+
+          $stdout = Join-Path $env:RUNNER_TEMP "simdeck-android-emulator.out.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "simdeck-android-emulator.err.log"
+          $serial = "emulator-5554"
+          $args = @(
+            "-avd", "SimDeck_Pixel_CI",
+            "-qt-hide-window",
+            "-no-audio",
+            "-no-boot-anim",
+            "-no-snapshot-load",
+            "-no-snapshot-save",
+            "-wipe-data",
+            "-gpu", "swiftshader_indirect",
+            "-feature", "-Vulkan",
+            "-grpc", "8554",
+            "-port", "5554",
+            "-no-metrics",
+            "-skip-adb-auth",
+            "-camera-back", "none",
+            "-camera-front", "none",
+            "-cores", "2",
+            "-memory", "2048",
+            "-verbose"
+          )
+          if ($accelSupported) {
+            $args += @("-accel", "on")
+          } else {
+            $args += @("-accel", "off")
+          }
+          function Write-EmulatorDiagnostics {
+            Write-Host "adb devices:"
+            & $adb devices -l
+            if (Test-Path $stdout) {
+              Write-Host "emulator stdout tail:"
+              Get-Content $stdout -Tail 80
+            }
+            if (Test-Path $stderr) {
+              Write-Host "emulator stderr tail:"
+              Get-Content $stderr -Tail 120
+            }
+          }
+          Write-Host "Starting Android emulator"
+          $process = Start-Process -FilePath $emulator -ArgumentList $args -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $process.Id | Out-File -FilePath emulator.pid -Encoding ascii
+          $deviceDeadline = (Get-Date).AddMinutes(10)
+          $deviceSeen = $false
+          do {
+            if ($process.HasExited) {
+              Write-EmulatorDiagnostics
+              throw "Android emulator exited early with code $($process.ExitCode)."
+            }
+            $devices = (& $adb devices)
+            if ($devices -match "$serial\s+device") {
+              $deviceSeen = $true
+              break
+            }
+            Start-Sleep -Seconds 5
+          } while ((Get-Date) -lt $deviceDeadline)
+          if (-not $deviceSeen) {
+            Write-EmulatorDiagnostics
+            throw "Android emulator did not appear in adb before the timeout."
+          }
+          $deadline = (Get-Date).AddMinutes(20)
+          do {
+            if ($process.HasExited) {
+              Write-EmulatorDiagnostics
+              throw "Android emulator exited early with code $($process.ExitCode)."
+            }
+            $booted = (& $adb -s $serial shell getprop sys.boot_completed 2>$null | Out-String).Trim()
+            if ($booted -eq "1") {
+              break
+            }
+            Start-Sleep -Seconds 5
+          } while ((Get-Date) -lt $deadline)
+          if ($booted -ne "1") {
+            Write-EmulatorDiagnostics
+            throw "Android emulator did not boot before the timeout."
+          }
+          & $adb -s $serial shell settings put global window_animation_scale 0
+          & $adb -s $serial shell settings put global transition_animation_scale 0
+          & $adb -s $serial shell settings put global animator_duration_scale 0
+          $env:SIMDECK_INTEGRATION_ANDROID_AVD = "SimDeck_Pixel_CI"
+          $env:SIMDECK_INTEGRATION_REQUIRE_RUNNING_ANDROID = "1"
+          $env:SIMDECK_INTEGRATION_VERBOSE = "1"
+          npm run test:integration:android
+          $testExitCode = $LASTEXITCODE
+          if ($testExitCode -ne 0) {
+            Write-EmulatorDiagnostics
+            throw "Android integration tests failed with exit code $testExitCode."
+          }
+
+      - name: Stop Android emulator (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sdk = $env:ANDROID_HOME
+          if (-not $sdk) {
+            $sdk = $env:ANDROID_SDK_ROOT
+          }
+          if ($sdk) {
+            $adb = Join-Path $sdk "platform-tools\adb.exe"
+            if (Test-Path $adb) {
+              & $adb emu kill
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "No Android emulator accepted adb emu kill."
+                $global:LASTEXITCODE = 0
+              }
+            }
+          }
+          if (Test-Path emulator.pid) {
+            Stop-Process -Id (Get-Content emulator.pid) -Force -ErrorAction SilentlyContinue
+          }
+          exit 0

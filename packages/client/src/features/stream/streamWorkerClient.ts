@@ -2183,7 +2183,10 @@ class WebRtcStreamClient implements StreamClientBackend {
     document.body.appendChild(audio);
     this.audioElement = audio;
     const startPlayback = () => {
-      if (generation !== this.connectGeneration || audio !== this.audioElement) {
+      if (
+        generation !== this.connectGeneration ||
+        audio !== this.audioElement
+      ) {
         return;
       }
       void audio.play().catch(() => {
@@ -2829,7 +2832,9 @@ function configureReceiverCodecPreferences(transceiver: RTCRtpTransceiver) {
   ]);
 }
 
-function configureAudioReceiverCodecPreferences(transceiver: RTCRtpTransceiver) {
+function configureAudioReceiverCodecPreferences(
+  transceiver: RTCRtpTransceiver,
+) {
   if (!transceiver.setCodecPreferences) {
     return;
   }
