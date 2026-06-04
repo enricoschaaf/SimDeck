@@ -80,6 +80,10 @@ const WEBRTC_AUDIO_PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const WEBRTC_AUDIO_SAMPLE_RATE: u32 = 48_000;
 const WEBRTC_AUDIO_CHANNELS: u16 = 2;
 const WEBRTC_AUDIO_FRAME_DURATION: Duration = Duration::from_millis(20);
+const WEBRTC_AUDIO_SILENCE_TIMEOUT: Duration = Duration::from_millis(18);
+const WEBRTC_OPUS_SILENCE_PACKET: &[u8] = &[
+    0x28, 0x0B, 0xE4, 0x89, 0x1A, 0x2C, 0x08, 0x8A, 0xAE, 0xF8, 0x3A, 0xEC,
+];
 static WEBRTC_MEDIA_STREAMS: OnceLock<Mutex<HashMap<String, Vec<WebRtcMediaStreamToken>>>> =
     OnceLock::new();
 const MAX_WEBRTC_MEDIA_STREAMS_PER_UDID: usize = 16;
@@ -283,6 +287,21 @@ pub async fn create_answer(
         ),
     }
 
+    let audio_track = if wants_audio {
+        let track = Arc::new(TrackLocalStaticSample::new(
+            opus_audio_codec_capability(),
+            "simdeck-audio".to_owned(),
+            "simdeck".to_owned(),
+        ));
+        let audio_sender = peer_connection
+            .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await
+            .map_err(|error| AppError::internal(format!("add WebRTC audio track: {error}")))?;
+        tokio::spawn(async move { while audio_sender.read_rtcp().await.is_ok() {} });
+        Some(track)
+    } else {
+        None
+    };
     let video_track = Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
             mime_type: MIME_TYPE_H264.to_owned(),
@@ -299,21 +318,6 @@ pub async fn create_answer(
         .add_track(video_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
         .await
         .map_err(|error| AppError::internal(format!("add WebRTC video track: {error}")))?;
-    let audio_track = if wants_audio {
-        let track = Arc::new(TrackLocalStaticSample::new(
-            opus_audio_codec_capability(),
-            "simdeck-audio".to_owned(),
-            "simdeck".to_owned(),
-        ));
-        let audio_sender = peer_connection
-            .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-            .await
-            .map_err(|error| AppError::internal(format!("add WebRTC audio track: {error}")))?;
-        tokio::spawn(async move { while audio_sender.read_rtcp().await.is_ok() {} });
-        Some(track)
-    } else {
-        None
-    };
     let rtcp_source = source.clone();
     let rtcp_udid = udid.clone();
     tokio::spawn(async move {
@@ -1689,50 +1693,82 @@ fn spawn_simulator_audio_stream(
 ) {
     tokio::spawn(async move {
         let (sample_tx, mut sample_rx) = mpsc::unbounded_channel();
-        let mut capture: Option<SimulatorAudioCapture> = None;
-        let mut refresh = time::interval(WEBRTC_AUDIO_PROCESS_REFRESH_INTERVAL);
+        let (audio_stop_tx, _) = broadcast::channel(1);
+        let mut capture_cancellation = cancellation.resubscribe();
+        let mut capture_stop = audio_stop_tx.subscribe();
+        let capture_state = state.clone();
+        let capture_udid = udid.clone();
+        tokio::spawn(async move {
+            let mut capture: Option<SimulatorAudioCapture> = None;
+            let mut refresh = time::interval(WEBRTC_AUDIO_PROCESS_REFRESH_INTERVAL);
+            loop {
+                tokio::select! {
+                    _ = capture_cancellation.recv() => break,
+                    _ = capture_stop.recv() => break,
+                    _ = refresh.tick() => {
+                        let process_ids = match resolve_simulator_audio_process_ids(capture_state.clone(), &capture_udid).await {
+                            Ok(process_ids) => process_ids,
+                            Err(error) => {
+                                warn!("WebRTC audio process discovery failed for {capture_udid}: {error}");
+                                continue;
+                            }
+                        };
+                        if process_ids.is_empty() {
+                            capture = None;
+                            continue;
+                        }
+                        if let Some(active_capture) = capture.as_ref().cloned() {
+                            let update_process_ids = process_ids.clone();
+                            let update_result = task::spawn_blocking(move || {
+                                active_capture.update_processes(&update_process_ids)
+                            }).await;
+                            let update_result = match update_result {
+                                Ok(result) => result,
+                                Err(error) => Err(AppError::internal(format!(
+                                    "Failed to join audio capture update task: {error}"
+                                ))),
+                            };
+                            if let Err(error) = update_result {
+                                warn!("WebRTC audio capture update failed for {capture_udid}: {error}");
+                                capture = None;
+                            }
+                            continue;
+                        }
+                        let tx = sample_tx.clone();
+                        match task::spawn_blocking(move || SimulatorAudioCapture::start(&process_ids, tx)).await {
+                            Ok(Ok(new_capture)) => {
+                                capture = Some(new_capture);
+                            }
+                            Ok(Err(error)) => {
+                                warn!("WebRTC audio capture unavailable for {capture_udid}: {error}");
+                            }
+                            Err(error) => {
+                                warn!("WebRTC audio capture task failed for {capture_udid}: {error}");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let mut silence = time::interval(WEBRTC_AUDIO_FRAME_DURATION);
+        silence.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        let mut last_audio_write_at: Option<Instant> = None;
         loop {
             tokio::select! {
                 _ = cancellation.recv() => break,
-                _ = refresh.tick() => {
-                    let process_ids = match resolve_simulator_audio_process_ids(state.clone(), &udid).await {
-                        Ok(process_ids) => process_ids,
-                        Err(error) => {
-                            warn!("WebRTC audio process discovery failed for {udid}: {error}");
-                            continue;
-                        }
-                    };
-                    if process_ids.is_empty() {
-                        capture = None;
+                _ = silence.tick() => {
+                    if last_audio_write_at.is_some_and(|instant| instant.elapsed() < WEBRTC_AUDIO_SILENCE_TIMEOUT) {
                         continue;
                     }
-                    if let Some(active_capture) = capture.as_ref().cloned() {
-                        let update_process_ids = process_ids.clone();
-                        let update_result = task::spawn_blocking(move || {
-                            active_capture.update_processes(&update_process_ids)
-                        }).await;
-                        let update_result = match update_result {
-                            Ok(result) => result,
-                            Err(error) => Err(AppError::internal(format!(
-                                "Failed to join audio capture update task: {error}"
-                            ))),
-                        };
-                        if let Err(error) = update_result {
-                            warn!("WebRTC audio capture update failed for {udid}: {error}");
-                            capture = None;
+                    match write_webrtc_audio_sample(&audio_track, Bytes::from_static(WEBRTC_OPUS_SILENCE_PACKET)).await {
+                        Ok(true) => {
+                            last_audio_write_at = Some(Instant::now());
                         }
-                        continue;
-                    }
-                    let tx = sample_tx.clone();
-                    match task::spawn_blocking(move || SimulatorAudioCapture::start(&process_ids, tx)).await {
-                        Ok(Ok(new_capture)) => {
-                            capture = Some(new_capture);
-                        }
-                        Ok(Err(error)) => {
-                            warn!("WebRTC audio capture unavailable for {udid}: {error}");
-                        }
+                        Ok(false) => {}
                         Err(error) => {
-                            warn!("WebRTC audio capture task failed for {udid}: {error}");
+                            warn!("WebRTC audio write failed for {udid}: {error}");
+                            let _ = audio_stop_tx.send(());
+                            return;
                         }
                     }
                 }
@@ -1748,23 +1784,43 @@ fn spawn_simulator_audio_stream(
                         );
                         continue;
                     }
-                    let sample = WebRtcSample {
-                        data: sample.data.clone(),
-                        duration: WEBRTC_AUDIO_FRAME_DURATION,
-                        ..Default::default()
-                    };
-                    match time::timeout(WEBRTC_AUDIO_WRITE_TIMEOUT, audio_track.write_sample(&sample)).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => {
+                    match write_webrtc_audio_sample(&audio_track, sample.data.clone()).await {
+                        Ok(true) => {
+                            last_audio_write_at = Some(Instant::now());
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
                             warn!("WebRTC audio write failed for {udid}: {error}");
+                            let _ = audio_stop_tx.send(());
                             return;
                         }
-                        Err(_) => {}
                     }
                 }
             }
         }
+        let _ = audio_stop_tx.send(());
     });
+}
+
+async fn write_webrtc_audio_sample(
+    audio_track: &TrackLocalStaticSample,
+    data: Bytes,
+) -> Result<bool, String> {
+    let sample = WebRtcSample {
+        data,
+        duration: WEBRTC_AUDIO_FRAME_DURATION,
+        ..Default::default()
+    };
+    match time::timeout(
+        WEBRTC_AUDIO_WRITE_TIMEOUT,
+        audio_track.write_sample(&sample),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(true),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Ok(false),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3163,7 +3219,7 @@ mod tests {
         ANDROID_WEBRTC_RGBA_CHUNK_BYTES, ANDROID_WEBRTC_RGBA_CHUNK_HEADER_BYTES,
         ANDROID_WEBRTC_RGBA_CHUNK_MAGIC, ANDROID_WEBRTC_RGBA_FORMAT_RGBA8888,
         ANDROID_WEBRTC_RGBA_VERSION, ANNEX_B_START_CODE, WEBRTC_AUDIO_CHANNELS,
-        WEBRTC_AUDIO_SAMPLE_RATE,
+        WEBRTC_AUDIO_SAMPLE_RATE, WEBRTC_OPUS_SILENCE_PACKET,
     };
     use crate::android;
     use crate::metrics::counters::Metrics;
@@ -3241,6 +3297,12 @@ mod tests {
         assert_eq!(codec.channels, WEBRTC_AUDIO_CHANNELS);
         assert!(codec.sdp_fmtp_line.contains("stereo=1"));
         assert!(codec.sdp_fmtp_line.contains("useinbandfec=1"));
+    }
+
+    #[test]
+    fn opus_silence_packet_uses_real_low_bitrate_audio_frame() {
+        assert_eq!(WEBRTC_OPUS_SILENCE_PACKET.len(), 12);
+        assert_ne!(WEBRTC_OPUS_SILENCE_PACKET, &[0xF8, 0xFF, 0xFE]);
     }
 
     #[test]

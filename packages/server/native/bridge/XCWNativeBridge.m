@@ -358,6 +358,7 @@ static const uint16_t XCWOpusChannels = 2;
 static const UInt32 XCWOpusFramesPerPacket = 960;
 static const UInt32 XCWOpusBitRate = 96000;
 static const UInt32 XCWOpusFallbackMaxPacketBytes = 1500;
+static const NSUInteger XCWAudioProcessStableRefreshes = 3;
 static const OSStatus XCWAudioConverterNoDataStatus = -1;
 
 static int16_t XCWClampPCM16(double value) {
@@ -847,6 +848,13 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
 - (BOOL)updateProcessIDs:(const int32_t *)processIDs
                    count:(size_t)processCount
                    error:(NSError * _Nullable __autoreleasing *)error;
+- (BOOL)applyProcessIDs:(const int32_t *)processIDs
+                  count:(size_t)processCount
+       requireProcesses:(BOOL)requireProcesses
+        debounceChanges:(BOOL)debounceChanges
+                  error:(NSError * _Nullable __autoreleasing *)error;
+- (BOOL)shouldApplyProcessObjectIDs:(NSArray<NSNumber *> *)processObjectIDs;
+- (void)clearPendingProcessObjectIDs;
 - (void)invalidate;
 - (void)handleInputData:(const AudioBufferList *)inputData
               inputTime:(const AudioTimeStamp *)inputTime;
@@ -862,6 +870,8 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
     AudioDeviceIOProcID _ioProcID;
     AudioStreamBasicDescription _streamDescription;
     NSArray<NSNumber *> *_processObjectIDs;
+    NSArray<NSNumber *> *_pendingProcessObjectIDs;
+    NSUInteger _pendingProcessObjectIDRefreshes;
     XCWOpusAudioEncoder *_opusEncoder;
 }
 
@@ -877,6 +887,8 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
     _aggregateDeviceID = kAudioObjectUnknown;
     _ioProcID = NULL;
     _processObjectIDs = @[];
+    _pendingProcessObjectIDs = nil;
+    _pendingProcessObjectIDRefreshes = 0;
     _opusEncoder = [[XCWOpusAudioEncoder alloc] init];
     return self;
 }
@@ -888,30 +900,36 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
 - (BOOL)startWithProcessIDs:(const int32_t *)processIDs
                       count:(size_t)processCount
                       error:(NSError * _Nullable __autoreleasing *)error {
-    return [self rebuildWithProcessIDs:processIDs count:processCount requireProcesses:YES error:error];
+    return [self applyProcessIDs:processIDs count:processCount requireProcesses:YES debounceChanges:NO error:error];
 }
 
 - (BOOL)updateProcessIDs:(const int32_t *)processIDs
                    count:(size_t)processCount
                    error:(NSError * _Nullable __autoreleasing *)error {
-    return [self rebuildWithProcessIDs:processIDs count:processCount requireProcesses:NO error:error];
+    return [self applyProcessIDs:processIDs count:processCount requireProcesses:NO debounceChanges:YES error:error];
 }
 
-- (BOOL)rebuildWithProcessIDs:(const int32_t *)processIDs
-                        count:(size_t)processCount
-             requireProcesses:(BOOL)requireProcesses
-                        error:(NSError * _Nullable __autoreleasing *)error {
+- (BOOL)applyProcessIDs:(const int32_t *)processIDs
+                  count:(size_t)processCount
+       requireProcesses:(BOOL)requireProcesses
+        debounceChanges:(BOOL)debounceChanges
+                  error:(NSError * _Nullable __autoreleasing *)error {
     if (@available(macOS 14.2, *)) {
         NSArray<NSNumber *> *processObjectIDs = XCWAudioProcessObjectIDsForProcessIDs(processIDs, processCount);
+        if (_aggregateDeviceID != kAudioObjectUnknown && [_processObjectIDs isEqualToArray:processObjectIDs]) {
+            [self clearPendingProcessObjectIDs];
+            return YES;
+        }
+        if (debounceChanges && _aggregateDeviceID != kAudioObjectUnknown && ![self shouldApplyProcessObjectIDs:processObjectIDs]) {
+            return YES;
+        }
         if (processObjectIDs.count == 0) {
+            [self clearPendingProcessObjectIDs];
             [self stopGraph];
             if (requireProcesses && error != NULL) {
                 *error = XCWAudioCaptureError(20, @"No simulator audio processes are currently connected to Core Audio.");
             }
             return !requireProcesses;
-        }
-        if (_aggregateDeviceID != kAudioObjectUnknown && [_processObjectIDs isEqualToArray:processObjectIDs]) {
-            return YES;
         }
         [self stopGraph];
         return [self startGraphWithProcessObjectIDs:processObjectIDs error:error];
@@ -921,6 +939,21 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
         *error = XCWAudioCaptureError(21, @"Per-simulator audio capture requires macOS 14.2 or newer.");
     }
     return NO;
+}
+
+- (BOOL)shouldApplyProcessObjectIDs:(NSArray<NSNumber *> *)processObjectIDs {
+    if (_pendingProcessObjectIDs != nil && [_pendingProcessObjectIDs isEqualToArray:processObjectIDs]) {
+        _pendingProcessObjectIDRefreshes += 1;
+    } else {
+        _pendingProcessObjectIDs = [processObjectIDs copy];
+        _pendingProcessObjectIDRefreshes = 1;
+    }
+    return _pendingProcessObjectIDRefreshes >= XCWAudioProcessStableRefreshes;
+}
+
+- (void)clearPendingProcessObjectIDs {
+    _pendingProcessObjectIDs = nil;
+    _pendingProcessObjectIDRefreshes = 0;
 }
 
 - (BOOL)startGraphWithProcessObjectIDs:(NSArray<NSNumber *> *)processObjectIDs
@@ -1015,6 +1048,7 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
     }
 
     _processObjectIDs = [processObjectIDs copy];
+    [self clearPendingProcessObjectIDs];
     return YES;
 }
 
@@ -1033,6 +1067,7 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
         _tapID = kAudioObjectUnknown;
     }
     _processObjectIDs = @[];
+    [self clearPendingProcessObjectIDs];
     memset(&_streamDescription, 0, sizeof(_streamDescription));
     [_opusEncoder invalidate];
 }
