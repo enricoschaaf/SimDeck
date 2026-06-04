@@ -22,7 +22,7 @@ use tokio::task;
 use tokio::time::{self, Instant};
 use tracing::{info, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_PCMU};
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
@@ -77,9 +77,8 @@ const ANDROID_WEBRTC_RGBA_FORMAT_RGBA8888: u8 = 1;
 const ANDROID_WEBRTC_RGBA_BUFFERED_FRAME_LIMIT: usize = 2;
 const ANDROID_WEBRTC_FPS: u64 = 30;
 const WEBRTC_AUDIO_PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const WEBRTC_AUDIO_SAMPLE_RATE: u32 = 8_000;
-const WEBRTC_AUDIO_CHANNELS: u16 = 1;
-const WEBRTC_AUDIO_FRAME_SAMPLES: usize = 160;
+const WEBRTC_AUDIO_SAMPLE_RATE: u32 = 48_000;
+const WEBRTC_AUDIO_CHANNELS: u16 = 2;
 const WEBRTC_AUDIO_FRAME_DURATION: Duration = Duration::from_millis(20);
 static WEBRTC_MEDIA_STREAMS: OnceLock<Mutex<HashMap<String, Vec<WebRtcMediaStreamToken>>>> =
     OnceLock::new();
@@ -246,7 +245,7 @@ pub async fn create_answer(
         )
         .map_err(|error| AppError::internal(format!("register WebRTC H.264 codec: {error}")))?;
     if wants_audio {
-        register_pcmu_audio_codec(&mut media_engine)?;
+        register_opus_audio_codec(&mut media_engine)?;
     }
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut media_engine)
@@ -302,7 +301,7 @@ pub async fn create_answer(
         .map_err(|error| AppError::internal(format!("add WebRTC video track: {error}")))?;
     let audio_track = if wants_audio {
         let track = Arc::new(TrackLocalStaticSample::new(
-            pcmu_audio_codec_capability(),
+            opus_audio_codec_capability(),
             "simdeck-audio".to_owned(),
             "simdeck".to_owned(),
         ));
@@ -397,7 +396,7 @@ pub async fn create_answer(
         kind: "answer".to_owned(),
         audio: wants_audio.then(|| WebRtcAudioMetadata {
             channels: WEBRTC_AUDIO_CHANNELS,
-            codec: "PCMU".to_owned(),
+            codec: "opus".to_owned(),
             sample_rate: WEBRTC_AUDIO_SAMPLE_RATE,
         }),
         video: WebRtcVideoMetadata {
@@ -434,7 +433,7 @@ async fn create_android_rgba_answer(
 
     let api = if wants_audio {
         let mut media_engine = MediaEngine::default();
-        register_pcmu_audio_codec(&mut media_engine)?;
+        register_opus_audio_codec(&mut media_engine)?;
         let mut registry = Registry::new();
         registry = register_default_interceptors(registry, &mut media_engine).map_err(|error| {
             AppError::internal(format!(
@@ -479,7 +478,7 @@ async fn create_android_rgba_answer(
         .map_err(|error| AppError::internal(format!("create RGBA WebRTC data channel: {error}")))?;
     let audio_track = if wants_audio {
         let track = Arc::new(TrackLocalStaticSample::new(
-            pcmu_audio_codec_capability(),
+            opus_audio_codec_capability(),
             "simdeck-audio".to_owned(),
             "simdeck".to_owned(),
         ));
@@ -557,7 +556,7 @@ async fn create_android_rgba_answer(
         kind: "answer".to_owned(),
         audio: wants_audio.then(|| WebRtcAudioMetadata {
             channels: WEBRTC_AUDIO_CHANNELS,
-            codec: "PCMU".to_owned(),
+            codec: "opus".to_owned(),
             sample_rate: WEBRTC_AUDIO_SAMPLE_RATE,
         }),
         video: WebRtcVideoMetadata {
@@ -1349,27 +1348,27 @@ fn h264_rtcp_feedback() -> Vec<RTCPFeedback> {
     ]
 }
 
-fn pcmu_audio_codec_capability() -> RTCRtpCodecCapability {
+fn opus_audio_codec_capability() -> RTCRtpCodecCapability {
     RTCRtpCodecCapability {
-        mime_type: MIME_TYPE_PCMU.to_owned(),
+        mime_type: MIME_TYPE_OPUS.to_owned(),
         clock_rate: WEBRTC_AUDIO_SAMPLE_RATE,
         channels: WEBRTC_AUDIO_CHANNELS,
-        sdp_fmtp_line: String::new(),
+        sdp_fmtp_line: "minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1".to_owned(),
         rtcp_feedback: Vec::new(),
     }
 }
 
-fn register_pcmu_audio_codec(media_engine: &mut MediaEngine) -> Result<(), AppError> {
+fn register_opus_audio_codec(media_engine: &mut MediaEngine) -> Result<(), AppError> {
     media_engine
         .register_codec(
             RTCRtpCodecParameters {
-                capability: pcmu_audio_codec_capability(),
-                payload_type: 0,
+                capability: opus_audio_codec_capability(),
+                payload_type: 111,
                 ..Default::default()
             },
             RTPCodecType::Audio,
         )
-        .map_err(|error| AppError::internal(format!("register WebRTC PCMU codec: {error}")))
+        .map_err(|error| AppError::internal(format!("register WebRTC Opus codec: {error}")))
 }
 
 fn rtcp_packet_requests_keyframe(packet: &(dyn RtcpPacket + Send + Sync)) -> bool {
@@ -1546,22 +1545,22 @@ struct SimulatorAudioCapture {
 struct SimulatorAudioCaptureInner {
     handle: AtomicUsize,
     callback_user_data: AtomicUsize,
-    sender: mpsc::UnboundedSender<SharedAudioPcmSample>,
+    sender: mpsc::UnboundedSender<SharedEncodedAudioSample>,
 }
 
 #[derive(Debug)]
-struct AudioPcmSample {
+struct EncodedAudioSample {
     sample_rate: u32,
     channels: u16,
     data: Bytes,
 }
 
-type SharedAudioPcmSample = Arc<AudioPcmSample>;
+type SharedEncodedAudioSample = Arc<EncodedAudioSample>;
 
 impl SimulatorAudioCapture {
     fn start(
         process_ids: &[i32],
-        sender: mpsc::UnboundedSender<SharedAudioPcmSample>,
+        sender: mpsc::UnboundedSender<SharedEncodedAudioSample>,
     ) -> Result<Self, AppError> {
         if process_ids.is_empty() {
             return Err(AppError::native(
@@ -1673,7 +1672,7 @@ impl SimulatorAudioCaptureInner {
         if data.is_empty() {
             return;
         }
-        let packet = Arc::new(AudioPcmSample {
+        let packet = Arc::new(EncodedAudioSample {
             sample_rate: sample.sample_rate,
             channels: sample.channels,
             data,
@@ -1692,7 +1691,6 @@ fn spawn_simulator_audio_stream(
         let (sample_tx, mut sample_rx) = mpsc::unbounded_channel();
         let mut capture: Option<SimulatorAudioCapture> = None;
         let mut refresh = time::interval(WEBRTC_AUDIO_PROCESS_REFRESH_INTERVAL);
-        let mut packetizer = PcmuAudioPacketizer::new();
         loop {
             tokio::select! {
                 _ = cancellation.recv() => break,
@@ -1705,9 +1703,7 @@ fn spawn_simulator_audio_stream(
                         }
                     };
                     if process_ids.is_empty() {
-                        if capture.take().is_some() {
-                            packetizer.reset();
-                        }
+                        capture = None;
                         continue;
                     }
                     if let Some(active_capture) = capture.as_ref().cloned() {
@@ -1724,7 +1720,6 @@ fn spawn_simulator_audio_stream(
                         if let Err(error) = update_result {
                             warn!("WebRTC audio capture update failed for {udid}: {error}");
                             capture = None;
-                            packetizer.reset();
                         }
                         continue;
                     }
@@ -1732,7 +1727,6 @@ fn spawn_simulator_audio_stream(
                     match task::spawn_blocking(move || SimulatorAudioCapture::start(&process_ids, tx)).await {
                         Ok(Ok(new_capture)) => {
                             capture = Some(new_capture);
-                            packetizer.reset();
                         }
                         Ok(Err(error)) => {
                             warn!("WebRTC audio capture unavailable for {udid}: {error}");
@@ -1746,22 +1740,26 @@ fn spawn_simulator_audio_stream(
                     let Some(sample) = sample else {
                         break;
                     };
-                    for packet in packetizer.push(&sample) {
-                        let sample = WebRtcSample {
-                            data: packet,
-                            duration: WEBRTC_AUDIO_FRAME_DURATION,
-                            ..Default::default()
-                        };
-                        match time::timeout(WEBRTC_AUDIO_WRITE_TIMEOUT, audio_track.write_sample(&sample)).await {
-                            Ok(Ok(())) => {}
-                            Ok(Err(error)) => {
-                                warn!("WebRTC audio write failed for {udid}: {error}");
-                                return;
-                            }
-                            Err(_) => {
-                                packetizer.reset();
-                            }
+                    if sample.sample_rate != WEBRTC_AUDIO_SAMPLE_RATE || sample.channels != WEBRTC_AUDIO_CHANNELS {
+                        warn!(
+                            "Ignoring unexpected WebRTC Opus audio packet format for {udid}: {} Hz, {} channels",
+                            sample.sample_rate,
+                            sample.channels
+                        );
+                        continue;
+                    }
+                    let sample = WebRtcSample {
+                        data: sample.data.clone(),
+                        duration: WEBRTC_AUDIO_FRAME_DURATION,
+                        ..Default::default()
+                    };
+                    match time::timeout(WEBRTC_AUDIO_WRITE_TIMEOUT, audio_track.write_sample(&sample)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            warn!("WebRTC audio write failed for {udid}: {error}");
+                            return;
                         }
+                        Err(_) => {}
                     }
                 }
             }
@@ -1918,121 +1916,6 @@ fn is_simulator_audio_probe_process(command: &str) -> bool {
     executable == "simctl"
         || executable == "xcrun" && command.contains(" simctl ")
         || executable == "ps"
-}
-
-struct PcmuAudioPacketizer {
-    sample_rate: u32,
-    channels: u16,
-    source_position: f64,
-    mono_samples: Vec<i16>,
-    encoded_samples: Vec<u8>,
-}
-
-impl PcmuAudioPacketizer {
-    fn new() -> Self {
-        Self {
-            sample_rate: 0,
-            channels: 0,
-            source_position: 0.0,
-            mono_samples: Vec::new(),
-            encoded_samples: Vec::new(),
-        }
-    }
-
-    fn reset(&mut self) {
-        self.sample_rate = 0;
-        self.channels = 0;
-        self.source_position = 0.0;
-        self.mono_samples.clear();
-        self.encoded_samples.clear();
-    }
-
-    fn push(&mut self, sample: &AudioPcmSample) -> Vec<Bytes> {
-        if sample.sample_rate == 0 || sample.channels == 0 {
-            return Vec::new();
-        }
-        if self.sample_rate != sample.sample_rate || self.channels != sample.channels {
-            self.reset();
-            self.sample_rate = sample.sample_rate;
-            self.channels = sample.channels;
-        }
-
-        self.append_mono_samples(sample);
-        self.encode_available_samples();
-        self.drain_audio_packets()
-    }
-
-    fn append_mono_samples(&mut self, sample: &AudioPcmSample) {
-        let channels = usize::from(sample.channels);
-        let bytes_per_frame = channels * 2;
-        if bytes_per_frame == 0 {
-            return;
-        }
-        for frame in sample.data.chunks_exact(bytes_per_frame) {
-            let mut sum = 0i32;
-            for channel in 0..channels {
-                let offset = channel * 2;
-                sum += i16::from_le_bytes([frame[offset], frame[offset + 1]]) as i32;
-            }
-            self.mono_samples.push((sum / channels as i32) as i16);
-        }
-    }
-
-    fn encode_available_samples(&mut self) {
-        if self.sample_rate == 0 || self.mono_samples.is_empty() {
-            return;
-        }
-        let step = f64::from(self.sample_rate) / f64::from(WEBRTC_AUDIO_SAMPLE_RATE);
-        let len = self.mono_samples.len() as f64;
-        while self.source_position < len {
-            let index = self.source_position.floor() as usize;
-            let Some(sample) = self.mono_samples.get(index).copied() else {
-                break;
-            };
-            self.encoded_samples.push(linear_pcm_to_mulaw(sample));
-            self.source_position += step;
-        }
-
-        let consumed = (self.source_position.floor() as usize).min(self.mono_samples.len());
-        if consumed > 0 {
-            self.mono_samples.drain(0..consumed);
-            self.source_position -= consumed as f64;
-        }
-    }
-
-    fn drain_audio_packets(&mut self) -> Vec<Bytes> {
-        let mut packets = Vec::new();
-        while self.encoded_samples.len() >= WEBRTC_AUDIO_FRAME_SAMPLES {
-            let packet =
-                Bytes::copy_from_slice(&self.encoded_samples[..WEBRTC_AUDIO_FRAME_SAMPLES]);
-            self.encoded_samples.drain(0..WEBRTC_AUDIO_FRAME_SAMPLES);
-            packets.push(packet);
-        }
-        packets
-    }
-}
-
-fn linear_pcm_to_mulaw(sample: i16) -> u8 {
-    const BIAS: i32 = 0x84;
-    const CLIP: i32 = 32635;
-
-    let mut pcm = i32::from(sample);
-    let sign = if pcm < 0 {
-        pcm = -pcm;
-        0x80
-    } else {
-        0x00
-    };
-    pcm = pcm.min(CLIP) + BIAS;
-
-    let mut exponent = 7;
-    let mut mask = 0x4000;
-    while exponent > 0 && (pcm & mask) == 0 {
-        exponent -= 1;
-        mask >>= 1;
-    }
-    let mantissa = (pcm >> (exponent + 3)) & 0x0f;
-    (!(sign | (exponent << 4) | mantissa) & 0xff) as u8
 }
 
 #[derive(Clone)]
@@ -3275,11 +3158,12 @@ mod tests {
     use super::{
         android_rgba_webrtc_frame_chunks, append_avcc_parameter_sets, append_length_prefixed_nalus,
         h264_annex_b_sample, h264_frame_has_idr, h264_frame_is_decoder_sync, h264_sdp_fmtp_line,
-        is_annex_b, is_h264_codec, linear_pcm_to_mulaw, rtcp_packet_requests_keyframe,
-        rtp_packet_pacing, sdp_has_media_type, PcmuAudioPacketizer, WebRtcMetricsGuard,
-        WebRtcSendTiming, ANDROID_WEBRTC_RGBA_CHUNK_BYTES, ANDROID_WEBRTC_RGBA_CHUNK_HEADER_BYTES,
+        is_annex_b, is_h264_codec, opus_audio_codec_capability, rtcp_packet_requests_keyframe,
+        rtp_packet_pacing, sdp_has_media_type, WebRtcMetricsGuard, WebRtcSendTiming,
+        ANDROID_WEBRTC_RGBA_CHUNK_BYTES, ANDROID_WEBRTC_RGBA_CHUNK_HEADER_BYTES,
         ANDROID_WEBRTC_RGBA_CHUNK_MAGIC, ANDROID_WEBRTC_RGBA_FORMAT_RGBA8888,
-        ANDROID_WEBRTC_RGBA_VERSION, ANNEX_B_START_CODE, WEBRTC_AUDIO_FRAME_SAMPLES,
+        ANDROID_WEBRTC_RGBA_VERSION, ANNEX_B_START_CODE, WEBRTC_AUDIO_CHANNELS,
+        WEBRTC_AUDIO_SAMPLE_RATE,
     };
     use crate::android;
     use crate::metrics::counters::Metrics;
@@ -3349,20 +3233,14 @@ mod tests {
     }
 
     #[test]
-    fn pcmu_packetizer_outputs_twenty_ms_silence_frames() {
-        let mut packetizer = PcmuAudioPacketizer::new();
-        let pcm = vec![0_u8; 960 * 2 * 2];
-        let packets = packetizer.push(&super::AudioPcmSample {
-            sample_rate: 48_000,
-            channels: 2,
-            data: Bytes::from(pcm),
-        });
+    fn opus_audio_codec_uses_browser_native_wideband_settings() {
+        let codec = opus_audio_codec_capability();
 
-        assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].len(), WEBRTC_AUDIO_FRAME_SAMPLES);
-        assert!(packets[0]
-            .iter()
-            .all(|sample| *sample == linear_pcm_to_mulaw(0)));
+        assert_eq!(codec.mime_type, "audio/opus");
+        assert_eq!(codec.clock_rate, WEBRTC_AUDIO_SAMPLE_RATE);
+        assert_eq!(codec.channels, WEBRTC_AUDIO_CHANNELS);
+        assert!(codec.sdp_fmtp_line.contains("stereo=1"));
+        assert!(codec.sdp_fmtp_line.contains("useinbandfec=1"));
     }
 
     #[test]

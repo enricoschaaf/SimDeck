@@ -2841,14 +2841,14 @@ function configureAudioReceiverCodecPreferences(
   const capabilities = RTCRtpReceiver.getCapabilities("audio");
   const codecs = capabilities?.codecs ?? [];
   const preferred = codecs.filter(
-    (codec) => codec.mimeType.toLowerCase() === "audio/pcmu",
+    (codec) => codec.mimeType.toLowerCase() === "audio/opus",
   );
   if (preferred.length === 0) {
     return;
   }
   transceiver.setCodecPreferences([
     ...preferred,
-    ...codecs.filter((codec) => codec.mimeType.toLowerCase() !== "audio/pcmu"),
+    ...codecs.filter((codec) => codec.mimeType.toLowerCase() !== "audio/opus"),
   ]);
 }
 

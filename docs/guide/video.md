@@ -77,7 +77,7 @@ simdeck service restart --video-codec software --low-latency
 
 The browser tries WebRTC first. If WebRTC cannot render a frame, the UI can fall back to H.264 over WebSocket when the browser supports WebCodecs.
 
-Audio is carried on the WebRTC path using a browser-compatible PCMU track. On
+Audio is carried on the WebRTC path using a browser-native Opus track. On
 macOS 14.2 and newer, SimDeck uses Core Audio process taps over the selected
 simulator or emulator process tree, then routes that tap through a private
 aggregate device into the WebRTC audio track. If macOS has not granted system

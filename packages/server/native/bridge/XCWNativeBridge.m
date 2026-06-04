@@ -353,6 +353,13 @@ static NSError *XCWAudioCaptureStatusError(NSInteger code, NSString *operation, 
     return XCWAudioCaptureError(code, [NSString stringWithFormat:@"%@ failed with OSStatus %@.", operation, XCWAudioOSStatusString(status)]);
 }
 
+static const uint32_t XCWOpusSampleRate = 48000;
+static const uint16_t XCWOpusChannels = 2;
+static const UInt32 XCWOpusFramesPerPacket = 960;
+static const UInt32 XCWOpusBitRate = 96000;
+static const UInt32 XCWOpusFallbackMaxPacketBytes = 1500;
+static const OSStatus XCWAudioConverterNoDataStatus = -1;
+
 static int16_t XCWClampPCM16(double value) {
     if (!isfinite(value)) {
         return 0;
@@ -585,6 +592,242 @@ static BOOL XCWAudioGetObjectStreamFormat(AudioObjectID objectID,
     return status == noErr && asbd->mSampleRate > 0 && asbd->mChannelsPerFrame > 0;
 }
 
+typedef struct XCWOpusInputContext {
+    const uint8_t *bytes;
+    UInt32 byteCount;
+    UInt32 bytesPerFrame;
+    UInt16 channels;
+    UInt32 consumedBytes;
+} XCWOpusInputContext;
+
+static OSStatus XCWOpusEncoderInputProc(AudioConverterRef inAudioConverter,
+                                        UInt32 *ioNumberDataPackets,
+                                        AudioBufferList *ioData,
+                                        AudioStreamPacketDescription **outDataPacketDescription,
+                                        void *inUserData) {
+    (void)inAudioConverter;
+    if (outDataPacketDescription != NULL) {
+        *outDataPacketDescription = NULL;
+    }
+    if (ioNumberDataPackets == NULL || ioData == NULL || inUserData == NULL) {
+        return paramErr;
+    }
+    XCWOpusInputContext *context = (XCWOpusInputContext *)inUserData;
+    if (context->bytes == NULL || context->bytesPerFrame == 0 || context->consumedBytes >= context->byteCount) {
+        *ioNumberDataPackets = 0;
+        return XCWAudioConverterNoDataStatus;
+    }
+
+    UInt32 availableBytes = context->byteCount - context->consumedBytes;
+    UInt32 availablePackets = availableBytes / context->bytesPerFrame;
+    UInt32 packets = MIN(*ioNumberDataPackets, availablePackets);
+    if (packets == 0) {
+        *ioNumberDataPackets = 0;
+        return XCWAudioConverterNoDataStatus;
+    }
+
+    UInt32 bytes = packets * context->bytesPerFrame;
+    ioData->mNumberBuffers = 1;
+    ioData->mBuffers[0].mNumberChannels = context->channels;
+    ioData->mBuffers[0].mDataByteSize = bytes;
+    ioData->mBuffers[0].mData = (void *)(context->bytes + context->consumedBytes);
+    context->consumedBytes += bytes;
+    *ioNumberDataPackets = packets;
+    return noErr;
+}
+
+@interface XCWOpusAudioEncoder : NSObject
+
+@property (nonatomic, readonly) uint16_t channels;
+
+- (NSArray<NSData *> *)encodePCM:(NSData *)pcm
+                      sampleRate:(uint32_t)sampleRate
+                        channels:(uint16_t)channels
+                           error:(NSError * _Nullable __autoreleasing *)error;
+- (void)invalidate;
+
+@end
+
+@implementation XCWOpusAudioEncoder {
+    AudioConverterRef _converter;
+    NSMutableData *_pendingPCM;
+    uint32_t _inputSampleRate;
+    uint16_t _inputChannels;
+    UInt32 _inputBytesPerFrame;
+    UInt32 _maxOutputPacketSize;
+    NSUInteger _inputFramesPerOpusPacket;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self == nil) {
+        return nil;
+    }
+    _pendingPCM = [NSMutableData data];
+    _channels = XCWOpusChannels;
+    return self;
+}
+
+- (void)dealloc {
+    [self invalidate];
+}
+
+- (NSArray<NSData *> *)encodePCM:(NSData *)pcm
+                      sampleRate:(uint32_t)sampleRate
+                        channels:(uint16_t)channels
+                           error:(NSError * _Nullable __autoreleasing *)error {
+    if (pcm.length == 0 || sampleRate == 0 || channels == 0) {
+        return @[];
+    }
+    if (_converter == NULL || _inputSampleRate != sampleRate || _inputChannels != channels) {
+        [self invalidate];
+        if (![self configureWithSampleRate:sampleRate channels:channels error:error]) {
+            return @[];
+        }
+    }
+
+    [_pendingPCM appendData:pcm];
+    NSMutableArray<NSData *> *packets = [NSMutableArray array];
+    while ([self pendingFrameCount] >= _inputFramesPerOpusPacket) {
+        NSData *packet = [self encodeNextPacket:error];
+        if (packet == nil) {
+            break;
+        }
+        if (packet.length > 0) {
+            [packets addObject:packet];
+        }
+    }
+    return packets;
+}
+
+- (BOOL)configureWithSampleRate:(uint32_t)sampleRate
+                       channels:(uint16_t)channels
+                          error:(NSError * _Nullable __autoreleasing *)error {
+    _inputSampleRate = sampleRate;
+    _inputChannels = channels;
+    _inputBytesPerFrame = MAX((UInt32)channels * (UInt32)sizeof(int16_t), 1);
+    _inputFramesPerOpusPacket = MAX((NSUInteger)llround(((double)sampleRate * (double)XCWOpusFramesPerPacket) / (double)XCWOpusSampleRate), (NSUInteger)1);
+
+    AudioStreamBasicDescription input = {0};
+    input.mSampleRate = sampleRate;
+    input.mFormatID = kAudioFormatLinearPCM;
+    input.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+    input.mBytesPerPacket = _inputBytesPerFrame;
+    input.mFramesPerPacket = 1;
+    input.mBytesPerFrame = _inputBytesPerFrame;
+    input.mChannelsPerFrame = channels;
+    input.mBitsPerChannel = 16;
+
+    AudioStreamBasicDescription output = {0};
+    output.mSampleRate = XCWOpusSampleRate;
+    output.mFormatID = kAudioFormatOpus;
+    output.mChannelsPerFrame = XCWOpusChannels;
+    output.mFramesPerPacket = XCWOpusFramesPerPacket;
+
+    OSStatus status = AudioConverterNew(&input, &output, &_converter);
+    if (status != noErr || _converter == NULL) {
+        if (error != NULL) {
+            *error = XCWAudioCaptureStatusError(31, @"Create Core Audio Opus encoder", status);
+        }
+        _converter = NULL;
+        return NO;
+    }
+
+    UInt32 bitRate = XCWOpusBitRate;
+    (void)AudioConverterSetProperty(_converter, kAudioConverterEncodeBitRate, sizeof(bitRate), &bitRate);
+
+    _maxOutputPacketSize = 0;
+    UInt32 propertySize = sizeof(_maxOutputPacketSize);
+    status = AudioConverterGetProperty(_converter,
+                                       kAudioConverterPropertyMaximumOutputPacketSize,
+                                       &propertySize,
+                                       &_maxOutputPacketSize);
+    if (status != noErr || _maxOutputPacketSize == 0) {
+        _maxOutputPacketSize = XCWOpusFallbackMaxPacketBytes;
+    }
+    _maxOutputPacketSize = MIN(MAX(_maxOutputPacketSize, (UInt32)256), (UInt32)4096);
+    [_pendingPCM setLength:0];
+    return YES;
+}
+
+- (NSUInteger)pendingFrameCount {
+    if (_inputBytesPerFrame == 0) {
+        return 0;
+    }
+    return _pendingPCM.length / _inputBytesPerFrame;
+}
+
+- (NSData *)encodeNextPacket:(NSError * _Nullable __autoreleasing *)error {
+    if (_converter == NULL || _inputBytesPerFrame == 0 || _inputFramesPerOpusPacket == 0) {
+        return nil;
+    }
+    const NSUInteger inputBytes = MIN(_pendingPCM.length, _inputFramesPerOpusPacket * (NSUInteger)_inputBytesPerFrame);
+    if (inputBytes == 0 || inputBytes > UINT32_MAX) {
+        return nil;
+    }
+
+    XCWOpusInputContext context = {
+        .bytes = (const uint8_t *)_pendingPCM.bytes,
+        .byteCount = (UInt32)inputBytes,
+        .bytesPerFrame = _inputBytesPerFrame,
+        .channels = _inputChannels,
+        .consumedBytes = 0,
+    };
+    NSMutableData *output = [NSMutableData dataWithLength:_maxOutputPacketSize];
+    AudioBufferList outputBuffer = {
+        .mNumberBuffers = 1,
+        .mBuffers = {
+            {
+                .mNumberChannels = XCWOpusChannels,
+                .mDataByteSize = _maxOutputPacketSize,
+                .mData = output.mutableBytes,
+            },
+        },
+    };
+    UInt32 outputPackets = 1;
+    AudioStreamPacketDescription packetDescription = {0};
+    OSStatus status = AudioConverterFillComplexBuffer(_converter,
+                                                      XCWOpusEncoderInputProc,
+                                                      &context,
+                                                      &outputPackets,
+                                                      &outputBuffer,
+                                                      &packetDescription);
+    if (context.consumedBytes > 0 && context.consumedBytes <= _pendingPCM.length) {
+        [_pendingPCM replaceBytesInRange:NSMakeRange(0, context.consumedBytes)
+                               withBytes:NULL
+                                  length:0];
+    }
+    if (status == XCWAudioConverterNoDataStatus || outputPackets == 0 || outputBuffer.mBuffers[0].mDataByteSize == 0) {
+        if (context.consumedBytes == 0) {
+            return nil;
+        }
+        return [NSData data];
+    }
+    if (status != noErr) {
+        if (error != NULL) {
+            *error = XCWAudioCaptureStatusError(32, @"Encode Opus audio packet", status);
+        }
+        return nil;
+    }
+    output.length = outputBuffer.mBuffers[0].mDataByteSize;
+    return output;
+}
+
+- (void)invalidate {
+    if (_converter != NULL) {
+        AudioConverterDispose(_converter);
+        _converter = NULL;
+    }
+    [_pendingPCM setLength:0];
+    _inputSampleRate = 0;
+    _inputChannels = 0;
+    _inputBytesPerFrame = 0;
+    _maxOutputPacketSize = 0;
+    _inputFramesPerOpusPacket = 0;
+}
+
+@end
+
 @class XCWNativeAudioCapture;
 static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
                                            const AudioTimeStamp *inNow,
@@ -619,6 +862,7 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
     AudioDeviceIOProcID _ioProcID;
     AudioStreamBasicDescription _streamDescription;
     NSArray<NSNumber *> *_processObjectIDs;
+    XCWOpusAudioEncoder *_opusEncoder;
 }
 
 - (instancetype)initWithAudioCallback:(xcw_native_audio_callback)callback
@@ -633,6 +877,7 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
     _aggregateDeviceID = kAudioObjectUnknown;
     _ioProcID = NULL;
     _processObjectIDs = @[];
+    _opusEncoder = [[XCWOpusAudioEncoder alloc] init];
     return self;
 }
 
@@ -789,6 +1034,7 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
     }
     _processObjectIDs = @[];
     memset(&_streamDescription, 0, sizeof(_streamDescription));
+    [_opusEncoder invalidate];
 }
 
 - (void)invalidate {
@@ -810,13 +1056,29 @@ static OSStatus XCWNativeAudioDeviceIOProc(AudioObjectID inDevice,
         return;
     }
 
-    xcw_native_audio_sample sample = {
-        .timestamp_us = XCWAudioTimestampUS(inputTime),
-        .sample_rate = sampleRate,
-        .channels = channels,
-        .data = XCWSharedBytesFromData(pcm),
-    };
-    _callback(&sample, _callbackUserData);
+    NSError *encodeError = nil;
+    NSArray<NSData *> *packets = [_opusEncoder encodePCM:pcm
+                                              sampleRate:sampleRate
+                                                channels:channels
+                                                   error:&encodeError];
+    if (encodeError != nil) {
+        NSLog(@"SimDeck audio capture failed to encode Opus packet: %@", encodeError.localizedDescription);
+        return;
+    }
+
+    uint64_t timestampUS = XCWAudioTimestampUS(inputTime);
+    for (NSData *packet in packets) {
+        if (packet.length == 0) {
+            continue;
+        }
+        xcw_native_audio_sample sample = {
+            .timestamp_us = timestampUS,
+            .sample_rate = XCWOpusSampleRate,
+            .channels = _opusEncoder.channels,
+            .data = XCWSharedBytesFromData(packet),
+        };
+        _callback(&sample, _callbackUserData);
+    }
 }
 
 @end
