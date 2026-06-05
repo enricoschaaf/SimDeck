@@ -271,7 +271,7 @@ jobs:
           SIMDECK_BUILD_TARGET=aarch64-apple-darwin npm run build:cli
           cp build/simdeck-bin build/simdeck-bin-darwin-arm64
 
-          SIMDECK_BUILD_TARGET=x86_64-apple-darwin npm run build:cli
+          SIMDECK_DISABLE_X264=1 SIMDECK_BUILD_TARGET=x86_64-apple-darwin npm run build:cli
           cp build/simdeck-bin build/simdeck-bin-darwin-x64
 
           lipo -create \

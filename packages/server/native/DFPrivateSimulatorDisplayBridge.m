@@ -773,6 +773,7 @@ static id DFCallSwiftSelfGetterByFunction(id selfObject, void *function) {
     }
 
     id result = nil;
+#if defined(__aarch64__)
     __asm__ volatile(
         "mov x20, %1\n"
         "blr %2\n"
@@ -781,6 +782,17 @@ static id DFCallSwiftSelfGetterByFunction(id selfObject, void *function) {
         : "r" (selfObject), "r" (function)
         : "x0", "x20", "x30", "memory"
     );
+#elif defined(__x86_64__)
+    __asm__ volatile(
+        "movq %1, %%r13\n"
+        "callq *%2\n"
+        : "=a" (result)
+        : "r" (selfObject), "r" (function)
+        : "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r13", "memory"
+    );
+#else
+    (void)result;
+#endif
     return result;
 }
 
@@ -899,6 +911,7 @@ static uint32_t __attribute__((unused)) DFCallSwiftSelfGetterU32(id selfObject, 
     }
 
     uint32_t result = 0;
+#if defined(__aarch64__)
     __asm__ volatile(
         "mov x20, %1\n"
         "blr %2\n"
@@ -907,6 +920,17 @@ static uint32_t __attribute__((unused)) DFCallSwiftSelfGetterU32(id selfObject, 
         : "r" (selfObject), "r" (function)
         : "x0", "x20", "x30", "memory"
     );
+#elif defined(__x86_64__)
+    __asm__ volatile(
+        "movq %1, %%r13\n"
+        "callq *%2\n"
+        : "=a" (result)
+        : "r" (selfObject), "r" (function)
+        : "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r13", "memory"
+    );
+#else
+    (void)result;
+#endif
     return result;
 }
 
@@ -921,6 +945,7 @@ static uintptr_t __attribute__((unused)) DFCallSwiftUWordGetter(const char *symb
     }
 
     uintptr_t result = 0;
+#if defined(__aarch64__)
     __asm__ volatile(
         "blr %1\n"
         "mov %0, x0\n"
@@ -928,6 +953,16 @@ static uintptr_t __attribute__((unused)) DFCallSwiftUWordGetter(const char *symb
         : "r" (function)
         : "x0", "x30", "memory"
     );
+#elif defined(__x86_64__)
+    __asm__ volatile(
+        "callq *%1\n"
+        : "=a" (result)
+        : "r" (function)
+        : "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "memory"
+    );
+#else
+    (void)result;
+#endif
     return result;
 }
 
@@ -941,6 +976,7 @@ static BOOL __attribute__((unused)) DFCallSwiftVoidMethodWithSelfAndTwoArgs(id s
         return NO;
     }
 
+#if defined(__aarch64__)
     __asm__ volatile(
         "mov x20, %0\n"
         "mov x0, %1\n"
@@ -950,6 +986,19 @@ static BOOL __attribute__((unused)) DFCallSwiftVoidMethodWithSelfAndTwoArgs(id s
         : "r" (selfObject), "r" (firstArgument), "r" (secondArgument), "r" (function)
         : "x0", "x1", "x20", "x30", "memory"
     );
+#elif defined(__x86_64__)
+    __asm__ volatile(
+        "movq %0, %%r13\n"
+        "movq %1, %%rdi\n"
+        "movq %2, %%rsi\n"
+        "callq *%3\n"
+        :
+        : "r" (selfObject), "r" (firstArgument), "r" (secondArgument), "r" (function)
+        : "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r13", "memory"
+    );
+#else
+    return NO;
+#endif
     return YES;
 }
 
@@ -958,6 +1007,7 @@ static BOOL DFCallSwiftVoidMethodWithSelfAndObjectByFunction(id selfObject, id f
         return NO;
     }
 
+#if defined(__aarch64__)
     __asm__ volatile(
         "mov x20, %0\n"
         "mov x0, %1\n"
@@ -966,6 +1016,18 @@ static BOOL DFCallSwiftVoidMethodWithSelfAndObjectByFunction(id selfObject, id f
         : "r" (selfObject), "r" (firstArgument), "r" (function)
         : "x0", "x20", "x30", "memory"
     );
+#elif defined(__x86_64__)
+    __asm__ volatile(
+        "movq %0, %%r13\n"
+        "movq %1, %%rdi\n"
+        "callq *%2\n"
+        :
+        : "r" (selfObject), "r" (firstArgument), "r" (function)
+        : "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r13", "memory"
+    );
+#else
+    return NO;
+#endif
     return YES;
 }
 
@@ -996,6 +1058,7 @@ static BOOL __attribute__((unused)) DFCallSwiftVoidMethodWithSelfAndUWordAndBool
     }
 
     uintptr_t enabledValue = secondArgument ? 1 : 0;
+#if defined(__aarch64__)
     __asm__ volatile(
         "mov x20, %0\n"
         "mov x0, %1\n"
@@ -1005,6 +1068,19 @@ static BOOL __attribute__((unused)) DFCallSwiftVoidMethodWithSelfAndUWordAndBool
         : "r" (selfObject), "r" (firstArgument), "r" (enabledValue), "r" (function)
         : "x0", "x1", "x20", "x30", "memory"
     );
+#elif defined(__x86_64__)
+    __asm__ volatile(
+        "movq %0, %%r13\n"
+        "movq %1, %%rdi\n"
+        "movq %2, %%rsi\n"
+        "callq *%3\n"
+        :
+        : "r" (selfObject), "r" (firstArgument), "r" (enabledValue), "r" (function)
+        : "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r13", "memory"
+    );
+#else
+    return NO;
+#endif
     return YES;
 }
 
@@ -1019,6 +1095,7 @@ static BOOL __attribute__((unused)) DFCallSwiftThrowingMethodWithSelfAndObjectAn
     }
 
     uintptr_t thrownBits = 0;
+#if defined(__aarch64__)
     __asm__ volatile(
         "mov x20, %1\n"
         "mov x0, %2\n"
@@ -1030,6 +1107,22 @@ static BOOL __attribute__((unused)) DFCallSwiftThrowingMethodWithSelfAndObjectAn
         : "r" (selfObject), "r" (firstArgument), "r" (secondArgument), "r" (function)
         : "x0", "x1", "x20", "x21", "x30", "memory"
     );
+#elif defined(__x86_64__)
+    __asm__ volatile(
+        "movq %1, %%r13\n"
+        "movq %2, %%rdi\n"
+        "movq %3, %%rsi\n"
+        "xorq %%r12, %%r12\n"
+        "callq *%4\n"
+        "movq %%r12, %0\n"
+        : "=r" (thrownBits)
+        : "r" (selfObject), "r" (firstArgument), "r" (secondArgument), "r" (function)
+        : "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "memory"
+    );
+#else
+    (void)thrownBits;
+    return NO;
+#endif
 
     if (thrownBits >= 0x1000) {
         DFLog(@"SimulatorKit connect(screen:inputs:) returned x21 = 0x%llx", (unsigned long long)thrownBits);
@@ -1660,6 +1753,7 @@ static BOOL DFCallSwiftUnitAngleMeasurementGetterByFunction(id selfObject, void 
     }
 
     DFUnitAngleMeasurement result = { nil, 0 };
+#if defined(__aarch64__)
     __asm__ volatile(
         "mov x20, %0\n"
         "mov x8, %1\n"
@@ -1668,6 +1762,18 @@ static BOOL DFCallSwiftUnitAngleMeasurementGetterByFunction(id selfObject, void 
         : "r" (selfObject), "r" (&result), "r" (function)
         : "x8", "x20", "x30", "memory"
     );
+#elif defined(__x86_64__)
+    __asm__ volatile(
+        "movq %0, %%r13\n"
+        "movq %1, %%rax\n"
+        "callq *%2\n"
+        :
+        : "r" (selfObject), "r" (&result), "r" (function)
+        : "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r13", "memory"
+    );
+#else
+    return NO;
+#endif
 
     *measurement = result;
     return YES;
@@ -1695,6 +1801,7 @@ static BOOL DFCallSwiftUnitAngleMeasurementSetterByFunction(id selfObject, DFUni
     }
 
     DFUnitAngleMeasurement value = measurement;
+#if defined(__aarch64__)
     __asm__ volatile(
         "mov x20, %0\n"
         "mov x0, %1\n"
@@ -1703,6 +1810,18 @@ static BOOL DFCallSwiftUnitAngleMeasurementSetterByFunction(id selfObject, DFUni
         : "r" (selfObject), "r" (&value), "r" (function)
         : "x0", "x20", "x30", "memory"
     );
+#elif defined(__x86_64__)
+    __asm__ volatile(
+        "movq %0, %%r13\n"
+        "movq %1, %%rdi\n"
+        "callq *%2\n"
+        :
+        : "r" (selfObject), "r" (&value), "r" (function)
+        : "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r13", "memory"
+    );
+#else
+    return NO;
+#endif
 
     return YES;
 }

@@ -18,6 +18,13 @@ fn main() {
     let cli = root.join("native");
     let camera = cli.join("camera");
     let native = cli.join("bridge");
+    let x264_enabled = std::env::var("SIMDECK_DISABLE_X264")
+        .ok()
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            !(value == "1" || value == "true" || value == "yes" || value == "on")
+        })
+        .unwrap_or(true);
 
     let files = [
         camera.join("SimDeckCameraService.m"),
@@ -34,7 +41,12 @@ fn main() {
     ];
 
     let mut build = cc::Build::new();
-    let x264_flags = pkg_config_flags("x264", true);
+    println!("cargo:rerun-if-env-changed=SIMDECK_DISABLE_X264");
+    let x264_flags = if x264_enabled {
+        pkg_config_flags("x264", true)
+    } else {
+        Vec::new()
+    };
     build
         .files(files.iter())
         .include(&camera)
@@ -44,6 +56,7 @@ fn main() {
         .flag("-fmodules")
         .flag_if_supported("-Wall")
         .flag_if_supported("-Wextra");
+    build.define("SIMDECK_HAS_X264", if x264_enabled { "1" } else { "0" });
     apply_pkg_config_compile_flags(&mut build, &x264_flags);
 
     for file in &files {
@@ -95,7 +108,9 @@ fn main() {
     );
 
     build.compile("xcw_native_bridge");
-    emit_pkg_config_link_flags(&x264_flags);
+    if x264_enabled {
+        emit_pkg_config_link_flags(&x264_flags);
+    }
 
     for framework in [
         "Foundation",

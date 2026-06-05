@@ -5,7 +5,20 @@
 #import <os/lock.h>
 #import <QuartzCore/QuartzCore.h>
 #import <VideoToolbox/VideoToolbox.h>
+
+#ifndef SIMDECK_HAS_X264
+#define SIMDECK_HAS_X264 1
+#endif
+
+#if SIMDECK_HAS_X264
 #import <x264.h>
+#else
+typedef struct x264_t x264_t;
+typedef struct {
+    int unused;
+} x264_picture_t;
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -58,6 +71,14 @@ typedef NS_ENUM(NSUInteger, XCWVideoEncoderMode) {
     XCWVideoEncoderModeH264Software,
 };
 
+static BOOL XCWX264Available(void) {
+#if SIMDECK_HAS_X264
+    return YES;
+#else
+    return NO;
+#endif
+}
+
 static XCWVideoEncoderMode XCWVideoEncoderModeFromEnvironment(void) {
     const char *rawValue = getenv("SIMDECK_VIDEO_CODEC");
     NSString *value = rawValue != NULL ? [[[NSString alloc] initWithUTF8String:rawValue] lowercaseString] : @"";
@@ -68,7 +89,7 @@ static XCWVideoEncoderMode XCWVideoEncoderModeFromEnvironment(void) {
         return XCWVideoEncoderModeH264Hardware;
     }
     if ([value isEqualToString:@"software"]) {
-        return XCWVideoEncoderModeH264Software;
+        return XCWX264Available() ? XCWVideoEncoderModeH264Software : XCWVideoEncoderModeH264Hardware;
     }
     return XCWVideoEncoderModeAuto;
 }
@@ -207,7 +228,7 @@ static NSString *XCWVideoEncoderIDForMode(XCWVideoEncoderMode mode) {
         case XCWVideoEncoderModeH264Hardware:
             return @"com.apple.videotoolbox.videoencoder.ave.avc";
         case XCWVideoEncoderModeH264Software:
-            return @"org.videolan.x264";
+            return XCWX264Available() ? @"org.videolan.x264" : nil;
         default:
             return nil;
     }
@@ -241,6 +262,7 @@ static NSString *XCWCodecStringFromSPS(NSData *spsData) {
     return [NSString stringWithFormat:@"avc1.%02x%02x%02x", bytes[1], bytes[2], bytes[3]];
 }
 
+#if SIMDECK_HAS_X264
 static NSData *XCWFirstAnnexBNALUOfType(NSData *sampleData, uint8_t nalType) {
     const uint8_t *bytes = sampleData.bytes;
     NSUInteger length = sampleData.length;
@@ -299,6 +321,7 @@ static NSString *XCWCodecStringFromAnnexBSample(NSData *sampleData) {
     NSData *spsData = XCWFirstAnnexBNALUOfType(sampleData, 7);
     return spsData.length >= 4 ? XCWCodecStringFromSPS(spsData) : @"avc1.42e01f";
 }
+#endif
 
 static NSData *XCWAVCDecoderConfigurationRecord(NSData *spsData, NSData *ppsData, int nalLengthHeader) {
     if (spsData.length == 0 || ppsData.length == 0) {
@@ -531,6 +554,7 @@ static BOOL XCWPixelFormatSupportsSoftwareScaling(OSType pixelFormat) {
     }
 }
 
+#if SIMDECK_HAS_X264
 static void XCWCopyPlaneRows(uint8_t *destination,
                              size_t destinationStride,
                              const uint8_t *source,
@@ -543,6 +567,7 @@ static void XCWCopyPlaneRows(uint8_t *destination,
                rowBytes);
     }
 }
+#endif
 
 static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
                                          void *sourceFrameRefCon,
@@ -1018,6 +1043,9 @@ static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
 }
 
 - (void)switchActiveEncoderModeLocked:(XCWVideoEncoderMode)mode {
+    if (mode == XCWVideoEncoderModeH264Software && !XCWX264Available()) {
+        mode = XCWVideoEncoderModeH264Hardware;
+    }
     if (_activeEncoderMode == mode) {
         return;
     }
@@ -1044,11 +1072,11 @@ static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
         [self switchActiveEncoderModeLocked:_encoderMode];
         return;
     }
-    if (!_clientForeground) {
+    if (!_clientForeground && XCWX264Available()) {
         [self switchActiveEncoderModeLocked:XCWVideoEncoderModeH264Software];
         return;
     }
-    if (_autoSoftwareFallbackUntilUs != 0 && nowUs < _autoSoftwareFallbackUntilUs) {
+    if (XCWX264Available() && _autoSoftwareFallbackUntilUs != 0 && nowUs < _autoSoftwareFallbackUntilUs) {
         [self switchActiveEncoderModeLocked:XCWVideoEncoderModeH264Software];
         return;
     }
@@ -1058,12 +1086,17 @@ static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
     }
     if ([self acquireAutoHardwareSlotIfNeededLocked]) {
         [self switchActiveEncoderModeLocked:XCWVideoEncoderModeAuto];
-    } else {
+    } else if (XCWX264Available()) {
         [self switchActiveEncoderModeLocked:XCWVideoEncoderModeH264Software];
+    } else {
+        [self switchActiveEncoderModeLocked:XCWVideoEncoderModeH264Hardware];
     }
 }
 
 - (void)enterAutoSoftwareFallbackLockedAtTimeUs:(uint64_t)nowUs {
+    if (!XCWX264Available()) {
+        return;
+    }
     if (_encoderMode != XCWVideoEncoderModeAuto ||
         _activeEncoderMode == XCWVideoEncoderModeH264Software) {
         return;
@@ -1579,6 +1612,12 @@ static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
 }
 
 - (BOOL)ensureX264EncoderWithWidth:(int32_t)width height:(int32_t)height {
+#if !SIMDECK_HAS_X264
+    (void)width;
+    (void)height;
+    _lastSessionStatus = -10;
+    return NO;
+#else
     if (_x264Encoder != NULL && _x264Width == width && _x264Height == height) {
         return YES;
     }
@@ -1656,9 +1695,11 @@ static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
     _lastSessionStatus = 0;
     _lastPrepareStatus = 0;
     return YES;
+#endif
 }
 
 - (void)invalidateX264EncoderLocked {
+#if SIMDECK_HAS_X264
     if (_x264PictureAllocated) {
         x264_picture_clean(&_x264Picture);
         _x264PictureAllocated = NO;
@@ -1672,9 +1713,21 @@ static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
     _x264FrameIndex = 0;
     _x264ColorConversionReady = NO;
     _x264Codec = nil;
+#else
+    _x264Encoder = NULL;
+    _x264PictureAllocated = NO;
+    _x264Width = 0;
+    _x264Height = 0;
+    _x264FrameIndex = 0;
+    _x264ColorConversionReady = NO;
+    _x264Codec = nil;
+#endif
 }
 
 - (BOOL)ensureX264ColorConversionLocked {
+#if !SIMDECK_HAS_X264
+    return NO;
+#else
     if (_x264ColorConversionReady) {
         return YES;
     }
@@ -1699,9 +1752,14 @@ static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
     _lastScaleStatus = status;
     _x264ColorConversionReady = status == kvImageNoError;
     return _x264ColorConversionReady;
+#endif
 }
 
 - (BOOL)copyPixelBufferIntoX264PictureLocked:(CVPixelBufferRef)pixelBuffer {
+#if !SIMDECK_HAS_X264
+    (void)pixelBuffer;
+    return NO;
+#else
     if (_x264Encoder == NULL || !_x264PictureAllocated) {
         return NO;
     }
@@ -1776,6 +1834,7 @@ static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
 
     CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
     return copied;
+#endif
 }
 
 - (void)recordEncodeLatencyLockedWithSubmittedAtUs:(uint64_t)submittedAtUs measuredAtUs:(uint64_t)measuredAtUs {
@@ -1820,6 +1879,18 @@ static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
                                   timeUs:(uint64_t)nowUs
                       relativeTimestampUs:(uint64_t)relativeTimestampUs
                            forceKeyFrame:(BOOL)forceKeyFrame {
+#if !SIMDECK_HAS_X264
+    (void)pixelBuffer;
+    (void)targetWidth;
+    (void)targetHeight;
+    (void)nowUs;
+    (void)relativeTimestampUs;
+    (void)forceKeyFrame;
+    _lastEncodeStatus = -10;
+    _encodeFailureCount += 1;
+    _needsKeyFrame = YES;
+    return NO;
+#else
     if (![self ensureX264EncoderWithWidth:targetWidth height:targetHeight]) {
         _encodeFailureCount += 1;
         _needsKeyFrame = YES;
@@ -1881,6 +1952,7 @@ static void XCWH264EncoderOutputCallback(void *outputCallbackRefCon,
                        nil,
                        dimensions);
     return YES;
+#endif
 }
 
 - (BOOL)shouldUseSoftwareScalerForSourceWidth:(int32_t)sourceWidth
