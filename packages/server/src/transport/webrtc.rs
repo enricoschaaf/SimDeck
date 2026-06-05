@@ -17,7 +17,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task;
 use tokio::time::{self, Instant};
 use tracing::{info, warn};
@@ -1549,7 +1549,7 @@ struct SimulatorAudioCapture {
 struct SimulatorAudioCaptureInner {
     handle: AtomicUsize,
     callback_user_data: AtomicUsize,
-    sender: mpsc::UnboundedSender<SharedEncodedAudioSample>,
+    sender: watch::Sender<Option<SharedEncodedAudioSample>>,
 }
 
 #[derive(Debug)]
@@ -1564,7 +1564,7 @@ type SharedEncodedAudioSample = Arc<EncodedAudioSample>;
 impl SimulatorAudioCapture {
     fn start(
         process_ids: &[i32],
-        sender: mpsc::UnboundedSender<SharedEncodedAudioSample>,
+        sender: watch::Sender<Option<SharedEncodedAudioSample>>,
     ) -> Result<Self, AppError> {
         if process_ids.is_empty() {
             return Err(AppError::native(
@@ -1681,7 +1681,7 @@ impl SimulatorAudioCaptureInner {
             channels: sample.channels,
             data,
         });
-        let _ = self.sender.send(packet);
+        self.sender.send_replace(Some(packet));
     }
 }
 
@@ -1692,7 +1692,7 @@ fn spawn_simulator_audio_stream(
     mut cancellation: broadcast::Receiver<()>,
 ) {
     tokio::spawn(async move {
-        let (sample_tx, mut sample_rx) = mpsc::unbounded_channel();
+        let (sample_tx, mut sample_rx) = watch::channel(None);
         let (audio_stop_tx, _) = broadcast::channel(1);
         let mut capture_cancellation = cancellation.resubscribe();
         let mut capture_stop = audio_stop_tx.subscribe();
@@ -1772,9 +1772,12 @@ fn spawn_simulator_audio_stream(
                         }
                     }
                 }
-                sample = sample_rx.recv() => {
-                    let Some(sample) = sample else {
+                sample = sample_rx.changed() => {
+                    if sample.is_err() {
                         break;
+                    }
+                    let Some(sample) = sample_rx.borrow_and_update().clone() else {
+                        continue;
                     };
                     if sample.sample_rate != WEBRTC_AUDIO_SAMPLE_RATE || sample.channels != WEBRTC_AUDIO_CHANNELS {
                         warn!(
