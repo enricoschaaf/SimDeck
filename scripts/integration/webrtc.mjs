@@ -28,6 +28,10 @@ const coreSimulatorCommandTimeoutMs = Number(
 const simdeckBootTimeoutMs = Number(
   process.env.SIMDECK_INTEGRATION_BOOT_TIMEOUT_MS ?? "300000",
 );
+const fixtureLaunchMaxRecoveries = Number(
+  process.env.SIMDECK_INTEGRATION_FIXTURE_LAUNCH_MAX_RECOVERIES ??
+    (process.env.CI === "true" ? "2" : "1"),
+);
 
 let simulatorUDID = "";
 let serverProcess = null;
@@ -98,9 +102,15 @@ async function main() {
   await launchFixtureWithRecovery(fixture.appPath);
 
   const screenshotPath = path.join(tempRoot, "reference.png");
-  simdeckJson(["screenshot", simulatorUDID, "--output", screenshotPath], {
-    timeoutMs: 30_000,
-  });
+  await retrySimdeckJson(
+    ["screenshot", simulatorUDID, "--output", screenshotPath],
+    "WebRTC reference screenshot",
+    {
+      attempts: process.env.CI === "true" ? 3 : 2,
+      delayMs: 5_000,
+      timeoutMs: process.env.CI === "true" ? 120_000 : 60_000,
+    },
+  );
   const { width, height } = pngSize(screenshotPath);
   console.log(`reference screenshot ${width}x${height}`);
 
@@ -188,7 +198,7 @@ async function waitForHealth() {
 
 async function launchFixtureWithRecovery(appPath, options = {}) {
   const recoveryCount = options.recoveryCount ?? 0;
-  const maxRecoveries = options.maxRecoveries ?? 1;
+  const maxRecoveries = options.maxRecoveries ?? fixtureLaunchMaxRecoveries;
 
   simdeckJson(["install", simulatorUDID, appPath], {
     timeoutMs: 60_000,

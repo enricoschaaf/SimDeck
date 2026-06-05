@@ -5,7 +5,7 @@ description: Use for simulator lifecycle, app install/launch, live viewing, UI i
 
 # SimDeck Agent Guide
 
-SimDeck automates iOS Simulators and Android emulators. Use the CLI for automation and the browser UI for live human visibility. iOS works with NativeScript, UIKit, SwiftUI, React Native, Expo, and Flutter apps; Android works through ADB, emulator lifecycle, screenshots, logs, and UIAutomator hierarchy dumps.
+SimDeck automates iOS Simulators and Android emulators. Use the CLI for automation and the browser UI for live human visibility. iOS works with NativeScript, UIKit, SwiftUI, React Native, Expo, and Flutter apps; Android live viewing uses the emulator `-share-vid` shared display surface plus SimDeck's native host H.264 encoder, with lifecycle, screenshots, logs, and UIAutomator hierarchy dumps also handled through ADB.
 
 SimDeck uses one long-running local service. Run `simdeck` first; it starts or
 reuses the background service and prints the browser URL plus pairing code.
@@ -98,6 +98,9 @@ Build apps with project tooling.
 
 Android devices use IDs like `android:Pixel_8_API_36`. `simdeck list` discovers
 AVDs from the Android SDK.
+SimDeck-owned Android boots use the emulator shared-video surface plus
+`--android-gpu host` by default. Use `simdeck service restart --android-gpu auto`
+or `--android-gpu swiftshader_indirect` only when host GPU rendering is unstable.
 
 ## Fast agent inspection
 
