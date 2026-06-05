@@ -2,11 +2,14 @@ use crate::error::AppError;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
+#[cfg(unix)]
 use std::ffi::CString;
 use std::ffi::OsString;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::mem::MaybeUninit;
 use std::net::{SocketAddr, TcpStream};
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -35,6 +38,9 @@ const MODIFIER_CONTROL: u32 = 1 << 1;
 const MODIFIER_OPTION: u32 = 1 << 2;
 const MODIFIER_COMMAND: u32 = 1 << 3;
 const MODIFIER_CAPS_LOCK: u32 = 1 << 4;
+
+#[cfg(not(unix))]
+type RawFd = i32;
 
 type TimedMap<T> = Option<(Instant, HashMap<String, T>)>;
 type DisplayMetricsCache = HashMap<String, (Instant, AndroidDisplayMetrics)>;
@@ -1102,6 +1108,7 @@ impl AndroidSharedVideoFrameStream {
 
 impl Drop for AndroidSharedVideoFrameStream {
     fn drop(&mut self) {
+        #[cfg(unix)]
         unsafe {
             if !self.ptr.is_null() && self.length > 0 {
                 libc::munmap(self.ptr.cast(), self.length);
@@ -1150,75 +1157,86 @@ fn round_android_h264_dimension(value: u32) -> u32 {
 }
 
 fn open_android_shared_video_memory(handle: &str) -> Result<(RawFd, *mut u8, usize), AppError> {
-    let mut names = vec![handle.to_owned()];
-    if !handle.starts_with('/') {
-        names.push(format!("/{handle}"));
-    }
-    let mut last_error = None;
-    for name in names {
-        let c_name = CString::new(name.as_str())
-            .map_err(|_| AppError::native("Android shared video handle contains a NUL byte."))?;
-        let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0) };
-        if fd < 0 {
-            last_error = Some(std::io::Error::last_os_error());
-            continue;
-        }
-
-        let mut stat = MaybeUninit::<libc::stat>::uninit();
-        if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
-            let error = std::io::Error::last_os_error();
-            unsafe {
-                libc::close(fd);
-            }
-            last_error = Some(error);
-            continue;
-        }
-        let stat = unsafe { stat.assume_init() };
-        let length = usize::try_from(stat.st_size).map_err(|_| {
-            unsafe {
-                libc::close(fd);
-            }
-            AppError::native(format!(
-                "Android emulator shared video `{handle}` reported an invalid size."
-            ))
-        })?;
-        if length <= ANDROID_SHARED_VIDEO_HEADER_BYTES {
-            unsafe {
-                libc::close(fd);
-            }
-            return Err(AppError::native(format!(
-                "Android emulator shared video `{handle}` is smaller than the display header."
-            )));
-        }
-
-        let ptr = unsafe {
-            libc::mmap(
-                ptr::null_mut(),
-                length,
-                libc::PROT_READ,
-                libc::MAP_SHARED,
-                fd,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            let error = std::io::Error::last_os_error();
-            unsafe {
-                libc::close(fd);
-            }
-            last_error = Some(error);
-            continue;
-        }
-        return Ok((fd, ptr.cast::<u8>(), length));
+    #[cfg(not(unix))]
+    {
+        return Err(AppError::native(format!(
+            "Android emulator shared video `{handle}` requires POSIX shared memory and is not available on this host."
+        )));
     }
 
-    Err(AppError::native(format!(
+    #[cfg(unix)]
+    {
+        let mut names = vec![handle.to_owned()];
+        if !handle.starts_with('/') {
+            names.push(format!("/{handle}"));
+        }
+        let mut last_error = None;
+        for name in names {
+            let c_name = CString::new(name.as_str()).map_err(|_| {
+                AppError::native("Android shared video handle contains a NUL byte.")
+            })?;
+            let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0) };
+            if fd < 0 {
+                last_error = Some(std::io::Error::last_os_error());
+                continue;
+            }
+
+            let mut stat = MaybeUninit::<libc::stat>::uninit();
+            if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+                let error = std::io::Error::last_os_error();
+                unsafe {
+                    libc::close(fd);
+                }
+                last_error = Some(error);
+                continue;
+            }
+            let stat = unsafe { stat.assume_init() };
+            let length = usize::try_from(stat.st_size).map_err(|_| {
+                unsafe {
+                    libc::close(fd);
+                }
+                AppError::native(format!(
+                    "Android emulator shared video `{handle}` reported an invalid size."
+                ))
+            })?;
+            if length <= ANDROID_SHARED_VIDEO_HEADER_BYTES {
+                unsafe {
+                    libc::close(fd);
+                }
+                return Err(AppError::native(format!(
+                    "Android emulator shared video `{handle}` is smaller than the display header."
+                )));
+            }
+
+            let ptr = unsafe {
+                libc::mmap(
+                    ptr::null_mut(),
+                    length,
+                    libc::PROT_READ,
+                    libc::MAP_SHARED,
+                    fd,
+                    0,
+                )
+            };
+            if ptr == libc::MAP_FAILED {
+                let error = std::io::Error::last_os_error();
+                unsafe {
+                    libc::close(fd);
+                }
+                last_error = Some(error);
+                continue;
+            }
+            return Ok((fd, ptr.cast::<u8>(), length));
+        }
+
+        Err(AppError::native(format!(
         "Android emulator shared video `{handle}` is unavailable. Start the emulator through SimDeck or launch it with `-share-vid`{}.",
         last_error
             .as_ref()
             .map(|error| format!(" ({error})"))
             .unwrap_or_default()
     )))
+    }
 }
 
 fn read_android_shared_video_header_volatile(
