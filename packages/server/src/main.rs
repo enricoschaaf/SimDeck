@@ -5,6 +5,7 @@ mod auth;
 mod camera;
 mod config;
 mod core_simulator;
+mod deep_links;
 mod devtools;
 mod error;
 mod inspector;
@@ -810,14 +811,11 @@ enum PasteboardCommand {
 
 #[derive(Subcommand)]
 enum CameraCommand {
-    Sources,
     Start {
         #[arg(value_name = "UDID_OR_BUNDLE_ID", num_args = 1..=2)]
         args: Vec<String>,
         #[arg(long)]
         file: Option<String>,
-        #[arg(long, num_args = 0..=1, require_equals = false)]
-        webcam: Option<Option<String>>,
         #[arg(long, default_value = "auto")]
         mirror: String,
     },
@@ -825,8 +823,6 @@ enum CameraCommand {
         udid: Option<String>,
         #[arg(long)]
         file: Option<String>,
-        #[arg(long, num_args = 0..=1, require_equals = false)]
-        webcam: Option<Option<String>>,
         #[arg(long)]
         placeholder: bool,
         #[arg(long)]
@@ -4212,27 +4208,12 @@ fn main() -> anyhow::Result<()> {
             }
         },
         Command::Camera { command } => match command {
-            CameraCommand::Sources => {
-                let service_url = command_service_url(explicit_server_url.as_deref())?;
-                println_json(&service_camera_request_json(
-                    &service_url,
-                    "GET",
-                    "/api/camera/webcams",
-                    None,
-                )?)?;
-                Ok(())
-            }
-            CameraCommand::Start {
-                args,
-                file,
-                webcam,
-                mirror,
-            } => {
+            CameraCommand::Start { args, file, mirror } => {
                 let (udid, bundle_id) =
                     parse_optional_udid_value_args("camera start", args, "BUNDLE_ID")?;
                 let udid = resolve_device_udid(udid.as_deref())?;
                 let service_url = command_service_url(explicit_server_url.as_deref())?;
-                let source = camera_source_from_args(file, webcam, false)?;
+                let source = camera_source_from_args(file, false)?;
                 let status = service_camera_request_json(
                     &service_url,
                     "POST",
@@ -4249,13 +4230,12 @@ fn main() -> anyhow::Result<()> {
             CameraCommand::Switch {
                 udid,
                 file,
-                webcam,
                 placeholder,
                 mirror,
             } => {
                 let udid = resolve_device_udid(udid.as_deref())?;
                 let service_url = command_service_url(explicit_server_url.as_deref())?;
-                let source = camera_source_from_args(file, webcam, placeholder)?;
+                let source = camera_source_from_args(file, placeholder)?;
                 let status = service_camera_request_json(
                     &service_url,
                     "POST",
@@ -5722,28 +5702,17 @@ fn read_text_input(
 
 fn camera_source_from_args(
     file: Option<String>,
-    webcam: Option<Option<String>>,
     placeholder: bool,
 ) -> anyhow::Result<camera::CameraSource> {
-    let source_count =
-        usize::from(file.is_some()) + usize::from(webcam.is_some()) + usize::from(placeholder);
+    let source_count = usize::from(file.is_some()) + usize::from(placeholder);
     if source_count > 1 {
         return Err(crate::error::AppError::bad_request(
-            "Choose only one camera source: --file, --webcam, or --placeholder.",
+            "Choose only one camera source: --file or --placeholder.",
         )
         .into());
     }
     if let Some(file) = file {
         return Ok(camera::file_source(file.trim()));
-    }
-    if let Some(webcam) = webcam {
-        return Ok(camera::CameraSource {
-            kind: camera::CameraSourceKind::Webcam,
-            arg: webcam.and_then(|value| {
-                let trimmed = value.trim().to_owned();
-                (!trimmed.is_empty()).then_some(trimmed)
-            }),
-        });
     }
     Ok(camera::CameraSource::default())
 }

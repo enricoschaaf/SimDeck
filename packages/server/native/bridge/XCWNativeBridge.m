@@ -550,6 +550,16 @@ bool xcw_native_launch_bundle(const char *udid, const char *bundle_id, char **er
     }
 }
 
+bool xcw_native_terminate_bundle(const char *udid, const char *bundle_id, char **error_message) {
+    @autoreleasepool {
+        return XCWPerformSimctlAction(error_message, ^BOOL(XCWSimctl *simctl, NSError **error) {
+            return [simctl terminateBundleID:XCWStringFromCString(bundle_id)
+                               simulatorUDID:XCWStringFromCString(udid)
+                                       error:error];
+        });
+    }
+}
+
 char *xcw_native_get_chrome_profile(const char *udid, char **error_message) {
     @autoreleasepool {
         NSDictionary *simulator = XCWSimulatorRecordForUDID(udid, error_message);

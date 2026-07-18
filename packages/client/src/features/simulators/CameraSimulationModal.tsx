@@ -1,8 +1,15 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 
 import {
   fetchCameraStatus,
-  fetchCameraWebcams,
+  cameraSocketUrl,
   startCameraSimulation,
   stopCameraSimulation,
   switchCameraSimulationSource,
@@ -10,9 +17,16 @@ import {
 import type {
   CameraSourceKind,
   CameraStatusResponse,
-  CameraWebcam,
   SimulatorMetadata,
 } from "../../api/types";
+import {
+  cameraVideoConstraints,
+  videoDevices,
+  startCameraFeed,
+  type CameraDevice,
+  type CameraFeed,
+  type CameraStats,
+} from "./cameraTransport";
 
 interface CameraSimulationModalProps {
   foregroundBundleId?: string | null;
@@ -21,7 +35,7 @@ interface CameraSimulationModalProps {
   selectedSimulator: SimulatorMetadata | null;
 }
 
-type SourceMode = "placeholder" | "webcam" | "media";
+type SourceMode = "placeholder" | "camera" | "media";
 type MirrorMode = "auto" | "on" | "off";
 
 export function CameraSimulationModal({
@@ -33,14 +47,17 @@ export function CameraSimulationModal({
   const [bundleId, setBundleId] = useState("");
   const [sourceMode, setSourceMode] = useState<SourceMode>("placeholder");
   const [mediaPath, setMediaPath] = useState("");
-  const [webcamId, setWebcamId] = useState("");
+  const [cameraId, setCameraId] = useState("");
+  const [cameras, setCameras] = useState<CameraDevice[]>([]);
+  const [cameraStats, setCameraStats] = useState<CameraStats | null>(null);
   const [mirror, setMirror] = useState<MirrorMode>("auto");
   const [status, setStatus] = useState<CameraStatusResponse | null>(null);
-  const [webcams, setWebcams] = useState<CameraWebcam[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [error, setError] = useState("");
+  const cameraFeedRef = useRef<CameraFeed | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
 
   const udid = selectedSimulator?.udid ?? "";
   const canApply = Boolean(
@@ -58,7 +75,6 @@ export function CameraSimulationModal({
     setIsApplying(false);
     setIsStopping(false);
     void refreshStatus();
-    void refreshWebcams();
   }, [foregroundBundleId, open, udid]);
 
   useEffect(() => {
@@ -73,6 +89,22 @@ export function CameraSimulationModal({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose, open]);
+
+  const stopCameraFeed = useCallback((stopTracks: boolean) => {
+    cameraFeedRef.current?.stop();
+    cameraFeedRef.current = null;
+    setCameraStats(null);
+    if (stopTracks) {
+      for (const track of cameraStreamRef.current?.getTracks() ?? []) {
+        track.stop();
+      }
+      cameraStreamRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => stopCameraFeed(true);
+  }, [stopCameraFeed, udid]);
 
   const activeBundleText = useMemo(() => {
     const bundleIds = status?.bundleIds ?? [];
@@ -103,7 +135,7 @@ export function CameraSimulationModal({
         setMirror(nextStatus.mirror);
       }
       if (
-        nextStatus.source === "webcam" ||
+        nextStatus.source === "camera" ||
         nextStatus.source === "placeholder"
       ) {
         setSourceMode(nextStatus.source);
@@ -114,12 +146,7 @@ export function CameraSimulationModal({
         setSourceMode("media");
       }
       if (nextStatus.arg) {
-        if (nextStatus.source === "webcam") {
-          setWebcamId(nextStatus.arg);
-        } else if (
-          nextStatus.source === "image" ||
-          nextStatus.source === "video"
-        ) {
+        if (nextStatus.source === "image" || nextStatus.source === "video") {
           setMediaPath(nextStatus.arg);
         }
       }
@@ -135,19 +162,9 @@ export function CameraSimulationModal({
     }
   }
 
-  async function refreshWebcams() {
-    try {
-      const response = await fetchCameraWebcams();
-      setWebcams(response.webcams ?? []);
-      setWebcamId((current) => current || response.webcams?.[0]?.id || "");
-    } catch {
-      setWebcams([]);
-    }
-  }
-
   function requestSource(): { kind: CameraSourceKind; arg?: string } {
-    if (sourceMode === "webcam") {
-      return { kind: "webcam", arg: webcamId || undefined };
+    if (sourceMode === "camera") {
+      return { kind: "camera" };
     }
     if (sourceMode === "media") {
       const value = mediaPath.trim();
@@ -155,6 +172,42 @@ export function CameraSimulationModal({
       return { kind, arg: value };
     }
     return { kind: "placeholder" };
+  }
+
+  async function cameraStream(): Promise<MediaStream> {
+    const current = cameraStreamRef.current;
+    if (
+      current?.getVideoTracks().some((track) => track.readyState === "live")
+    ) {
+      return current;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Camera capture is unavailable in this browser.");
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: cameraVideoConstraints(cameraId),
+    });
+    cameraStreamRef.current = stream;
+    const selectedId = stream.getVideoTracks()[0]?.getSettings().deviceId ?? "";
+    if (selectedId) {
+      setCameraId(selectedId);
+    }
+    const devices = videoDevices(
+      await navigator.mediaDevices.enumerateDevices(),
+    );
+    setCameras(devices);
+    return stream;
+  }
+
+  async function startCurrentCameraFeed(stream: MediaStream) {
+    cameraFeedRef.current?.stop();
+    cameraFeedRef.current = await startCameraFeed({
+      socketUrl: cameraSocketUrl(udid),
+      stream,
+      onError: setError,
+      onStats: setCameraStats,
+    });
   }
 
   async function apply(event: FormEvent<HTMLFormElement>) {
@@ -173,14 +226,26 @@ export function CameraSimulationModal({
     }
     setIsApplying(true);
     setError("");
+    let stream: MediaStream | null = null;
     try {
+      if (sourceMode === "camera") {
+        stream = await cameraStream();
+      }
       const nextStatus = await startCameraSimulation(udid, {
         bundleId: bundleId.trim(),
         mirror,
         source: requestSource(),
       });
       setStatus(nextStatus);
+      if (stream) {
+        await startCurrentCameraFeed(stream);
+      } else {
+        stopCameraFeed(true);
+      }
     } catch (applyError) {
+      if (stream) {
+        stopCameraFeed(true);
+      }
       setError(
         applyError instanceof Error
           ? applyError.message
@@ -197,13 +262,25 @@ export function CameraSimulationModal({
     }
     setIsApplying(true);
     setError("");
+    let stream: MediaStream | null = null;
     try {
+      if (sourceMode === "camera") {
+        stream = await cameraStream();
+      }
       const nextStatus = await switchCameraSimulationSource(udid, {
         mirror,
         source: requestSource(),
       });
       setStatus(nextStatus);
+      if (stream) {
+        await startCurrentCameraFeed(stream);
+      } else {
+        stopCameraFeed(true);
+      }
     } catch (switchError) {
+      if (stream) {
+        stopCameraFeed(true);
+      }
       setError(
         switchError instanceof Error
           ? switchError.message
@@ -218,6 +295,7 @@ export function CameraSimulationModal({
     setIsStopping(true);
     setError("");
     try {
+      stopCameraFeed(true);
       const nextStatus = await stopCameraSimulation(udid);
       setStatus(nextStatus);
     } catch (stopError) {
@@ -276,11 +354,11 @@ export function CameraSimulationModal({
               Media
             </button>
             <button
-              className={sourceMode === "webcam" ? "active" : ""}
-              onClick={() => setSourceMode("webcam")}
+              className={sourceMode === "camera" ? "active" : ""}
+              onClick={() => setSourceMode("camera")}
               type="button"
             >
-              Webcam
+              Camera
             </button>
           </div>
           <fieldset
@@ -310,19 +388,17 @@ export function CameraSimulationModal({
                 />
               </label>
             ) : null}
-            {sourceMode === "webcam" ? (
+            {sourceMode === "camera" ? (
               <label className="new-sim-field">
-                <span>Mac Camera:</span>
+                <span>Camera:</span>
                 <select
-                  onChange={(event) => setWebcamId(event.currentTarget.value)}
-                  value={webcamId}
+                  onChange={(event) => setCameraId(event.currentTarget.value)}
+                  value={cameraId}
                 >
-                  {webcams.length === 0 ? (
-                    <option value="">No cameras found</option>
-                  ) : null}
-                  {webcams.map((webcam) => (
-                    <option key={webcam.id} value={webcam.id}>
-                      {webcam.name}
+                  <option value="">Default camera</option>
+                  {cameras.map((camera) => (
+                    <option key={camera.id} value={camera.id}>
+                      {camera.name}
                     </option>
                   ))}
                 </select>
@@ -346,6 +422,16 @@ export function CameraSimulationModal({
                 ? "Loading camera status..."
                 : `Status: ${activeBundleText}`}
             </p>
+            {cameraStats ? (
+              <p className="new-sim-status camera-sim-transport-status">
+                H.264 · {cameraStats.encodedFramesPerSecond} fps ·{" "}
+                {(cameraStats.bitrate / 1_000_000).toFixed(1)} Mbps ·{" "}
+                {cameraStats.outputWidth}×{cameraStats.outputHeight}
+                {cameraStats.skippedFrames > 0
+                  ? ` · ${cameraStats.skippedFrames} dropped`
+                  : ""}
+              </p>
+            ) : null}
           </fieldset>
           {error ? <p className="new-sim-error">{error}</p> : null}
         </div>

@@ -18,6 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)toggleAppearanceForSimulatorUDID:(NSString *)udid error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)openURL:(NSString *)urlString simulatorUDID:(NSString *)udid error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)launchBundleID:(NSString *)bundleID simulatorUDID:(NSString *)udid error:(NSError * _Nullable * _Nullable)error;
+- (BOOL)terminateBundleID:(NSString *)bundleID simulatorUDID:(NSString *)udid error:(NSError * _Nullable * _Nullable)error;
 - (nullable NSData *)screenshotPNGForSimulatorUDID:(NSString *)udid error:(NSError * _Nullable * _Nullable)error;
 - (nullable NSData *)screenshotPNGForSimulatorUDID:(NSString *)udid
                                       includeBezel:(BOOL)includeBezel

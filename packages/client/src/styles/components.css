@@ -680,7 +680,7 @@
 
 .camera-source-switcher {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  width: 270px;
+  width: min(100%, 340px);
 }
 
 .new-sim-fieldset {
@@ -701,6 +701,210 @@
 .camera-sim-status {
   margin-top: 10px;
   text-align: center;
+}
+
+.camera-sim-transport-status {
+  margin-top: 4px;
+  color: var(--new-sim-muted-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.deep-link-window {
+  width: min(920px, calc(100vw - 32px));
+  height: min(780px, calc(100dvh - 48px));
+}
+
+.deep-link-tools {
+  display: grid;
+  gap: 10px;
+  padding: 18px 22px 16px;
+  border-bottom: 1px solid var(--new-sim-titlebar-border);
+}
+
+.deep-link-tools > input,
+.deep-link-custom input,
+.deep-link-parameters input {
+  min-width: 0;
+  height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--new-sim-control-border);
+  border-radius: 7px;
+  background: var(--new-sim-input-bg);
+  color: var(--new-sim-text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.deep-link-tools > input:focus,
+.deep-link-custom input:focus,
+.deep-link-parameters input:focus {
+  border-color: var(--new-sim-focus);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--new-sim-focus) 28%, transparent);
+}
+
+.deep-link-custom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.deep-link-custom input,
+.deep-link-card code {
+  font-family:
+    ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+}
+
+.deep-link-custom button,
+.deep-link-open {
+  min-width: 92px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--new-sim-button-bg);
+  color: var(--new-sim-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.deep-link-custom button:hover:not(:disabled),
+.deep-link-open:hover:not(:disabled) {
+  background: var(--new-sim-button-hover-bg);
+}
+
+.deep-link-custom button:disabled,
+.deep-link-open:disabled {
+  opacity: 0.45;
+}
+
+.deep-link-list {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 22px 28px;
+  scrollbar-color: var(--new-sim-control-border) transparent;
+  scrollbar-width: thin;
+}
+
+.deep-link-list > section > h3 {
+  margin: 0 0 16px;
+  color: var(--new-sim-title-text);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.deep-link-list > section + section {
+  margin-top: 28px;
+}
+
+.deep-link-group + .deep-link-group {
+  margin-top: 20px;
+}
+
+.deep-link-group > h4 {
+  margin: 0 0 8px;
+  color: var(--new-sim-muted-text);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.deep-link-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.deep-link-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--new-sim-control-border);
+  border-radius: 10px;
+  background: color-mix(
+    in srgb,
+    var(--new-sim-control-bg) 44%,
+    var(--new-sim-panel-bg)
+  );
+}
+
+.deep-link-card-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.deep-link-card-heading > div {
+  min-width: 0;
+}
+
+.deep-link-card h4 {
+  margin: 0;
+  color: var(--new-sim-text);
+  font-size: 13px;
+}
+
+.deep-link-card code {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--new-sim-muted-text);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deep-link-card p {
+  margin: 7px 0 0;
+  color: var(--new-sim-muted-text);
+  font-size: 11px;
+}
+
+.deep-link-open {
+  flex: 0 0 auto;
+  min-width: 62px;
+  height: 28px;
+}
+
+.deep-link-parameters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.deep-link-parameters label {
+  min-width: 0;
+}
+
+.deep-link-parameters span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--new-sim-muted-text);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.deep-link-parameters input {
+  width: 100%;
+  height: 29px;
+  font-size: 11px;
+}
+
+.deep-link-actions {
+  padding-top: 16px;
+  border-top: 1px solid var(--new-sim-titlebar-border);
+}
+
+.deep-link-target,
+.deep-link-empty {
+  color: var(--new-sim-muted-text);
+  font-size: 12px;
 }
 
 .new-sim-fieldset:disabled {
@@ -956,6 +1160,20 @@
   .new-sim-button {
     flex: 1 1 120px;
     min-width: 0;
+  }
+
+  .deep-link-window {
+    height: calc(100dvh - 24px);
+  }
+
+  .deep-link-tools,
+  .deep-link-list {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .deep-link-grid {
+    grid-template-columns: 1fr;
   }
 }
 

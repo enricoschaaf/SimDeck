@@ -47,6 +47,7 @@ bool xcw_native_shutdown_simulator(const char * _Nonnull udid, char * _Nullable 
 bool xcw_native_toggle_appearance(const char * _Nonnull udid, char * _Nullable * _Nullable error_message);
 bool xcw_native_open_url(const char * _Nonnull udid, const char * _Nonnull url, char * _Nullable * _Nullable error_message);
 bool xcw_native_launch_bundle(const char * _Nonnull udid, const char * _Nonnull bundle_id, char * _Nullable * _Nullable error_message);
+bool xcw_native_terminate_bundle(const char * _Nonnull udid, const char * _Nonnull bundle_id, char * _Nullable * _Nullable error_message);
 char * _Nullable xcw_native_get_chrome_profile(const char * _Nonnull udid, char * _Nullable * _Nullable error_message);
 xcw_native_owned_bytes xcw_native_render_chrome_png(const char * _Nonnull udid, bool include_buttons, char * _Nullable * _Nullable error_message);
 xcw_native_owned_bytes xcw_native_render_chrome_button_png(const char * _Nonnull udid, const char * _Nonnull button_name, bool pressed, char * _Nullable * _Nullable error_message);

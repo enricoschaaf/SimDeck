@@ -77,6 +77,7 @@ import type {
 } from "../features/viewport/types";
 import { useViewportLayout } from "../features/viewport/useViewportLayout";
 import { CameraSimulationModal } from "../features/simulators/CameraSimulationModal";
+import { DeepLinkModal } from "../features/simulators/DeepLinkModal";
 import { NewSimulatorModal } from "../features/simulators/NewSimulatorModal";
 import { nextViewportWheelPanState } from "../features/viewport/viewportWheel";
 import {
@@ -508,13 +509,17 @@ export function AppShell({
   remoteStream = shouldUseRemoteStreamDefault(apiRoot),
 }: AppShellProps = {}) {
   configureSimDeckClient({ apiRoot });
+  const embedded = readEmbeddedQueryParam();
+  const resolvedFixedSimulatorUDID =
+    fixedSimulatorUDID ?? (embedded ? (readDeviceQueryParam() ?? null) : null);
+  const simulatorSelectionHidden = hideSimulatorSelection || embedded;
   const initialStreamTransportRef = useRef<StreamTransport>(
     readStreamTransportQueryParam(),
   );
   const [initialUiState] = useState(readPersistedUiState);
   const [initialSelectedUDID] = useState(
     () =>
-      fixedSimulatorUDID ??
+      resolvedFixedSimulatorUDID ??
       readDeviceQueryParam() ??
       initialUiState.selectedUDID,
   );
@@ -547,6 +552,7 @@ export function AppShell({
   const [simulatorMenuOpen, setSimulatorMenuOpen] = useState(false);
   const [newSimulatorOpen, setNewSimulatorOpen] = useState(false);
   const [cameraSimulationOpen, setCameraSimulationOpen] = useState(false);
+  const [deepLinkOpen, setDeepLinkOpen] = useState(false);
   const [localError, setLocalError] = useState("");
   const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(
     null,
@@ -628,6 +634,31 @@ export function AppShell({
   const [touchIndicators, setTouchIndicators] = useState<TouchIndicator[]>([]);
   const [selectedSimulatorState, setSelectedSimulatorState] =
     useState<SimulatorStateResponse | null>(null);
+
+  useEffect(() => {
+    if (window.parent === window) {
+      return;
+    }
+
+    let lastSentAt = 0;
+    const reportActivity = () => {
+      const now = Date.now();
+      if (now - lastSentAt < 1_000) {
+        return;
+      }
+      lastSentAt = now;
+      window.parent.postMessage({ type: "simdeck:activity" }, "*");
+    };
+    const events = ["keydown", "pointerdown", "touchstart", "wheel"] as const;
+    for (const event of events) {
+      window.addEventListener(event, reportActivity, { passive: true });
+    }
+    return () => {
+      for (const event of events) {
+        window.removeEventListener(event, reportActivity);
+      }
+    };
+  }, []);
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const simulatorMenuRef = useRef<HTMLDivElement | null>(null);
@@ -731,12 +762,12 @@ export function AppShell({
   });
 
   const baseSelectedSimulator =
-    (fixedSimulatorUDID
+    (resolvedFixedSimulatorUDID
       ? (simulators.find(
-          (simulator) => simulator.udid === fixedSimulatorUDID,
+          (simulator) => simulator.udid === resolvedFixedSimulatorUDID,
         ) ??
         simulators.find((simulator) =>
-          simulatorMatchesIdentifier(simulator, fixedSimulatorUDID),
+          simulatorMatchesIdentifier(simulator, resolvedFixedSimulatorUDID),
         ))
       : null) ??
     simulators.find((simulator) => simulator.udid === selectedUDID) ??
@@ -997,7 +1028,7 @@ export function AppShell({
       !selectedSimulator ||
       !streamError ||
       readDeviceQueryParam() ||
-      fixedSimulatorUDID ||
+      resolvedFixedSimulatorUDID ||
       !isStreamAttachFailure(streamError)
     ) {
       return;
@@ -1023,7 +1054,7 @@ export function AppShell({
     }
   }, [
     failedStreamUDIDs,
-    fixedSimulatorUDID,
+    resolvedFixedSimulatorUDID,
     selectedSimulator,
     simulators,
     streamError,
@@ -1347,13 +1378,13 @@ export function AppShell({
 
   useEffect(() => {
     if (
-      !fixedSimulatorUDID &&
+      !resolvedFixedSimulatorUDID &&
       selectedSimulator &&
       selectedSimulator.udid !== selectedUDID
     ) {
       setSelectedUDID(selectedSimulator.udid);
     }
-  }, [fixedSimulatorUDID, selectedSimulator, selectedUDID]);
+  }, [resolvedFixedSimulatorUDID, selectedSimulator, selectedUDID]);
 
   useEffect(() => {
     if (!selectedSimulator) {
@@ -2046,13 +2077,19 @@ export function AppShell({
     }
   }, [touchOverlayVisible]);
 
-  useKeyboardInput({
+  const keyboardInput = useKeyboardInput({
     enabled: Boolean(selectedSimulator?.isBooted && selectedSimulator.udid),
     onKey: ({ keyCode, modifiers }) => {
       if (!selectedSimulator) {
         return;
       }
       sendControl(selectedSimulator.udid, { type: "key", keyCode, modifiers });
+    },
+    onText: (text) => {
+      if (!selectedSimulator) {
+        return;
+      }
+      sendControl(selectedSimulator.udid, { type: "text", text });
     },
     onToggleSoftwareKeyboard: () => {
       toggleSoftwareKeyboard();
@@ -3111,26 +3148,8 @@ export function AppShell({
     if (!selectedSimulator) {
       return;
     }
-    const nextValue = window.prompt(
-      `Open URL on ${selectedSimulator.name}`,
-      openURLValueRef.current,
-    );
-    if (nextValue == null) {
-      return;
-    }
-    const trimmed = nextValue.trim();
-    if (!trimmed) {
-      return;
-    }
-    openURLValueRef.current = trimmed;
-    writePersistedUiState((current) => ({
-      ...current,
-      openURLValue: trimmed,
-    }));
     setMenuOpen(false);
-    void runAction(() =>
-      openSimulatorUrl(selectedSimulator.udid, { url: trimmed }),
-    );
+    setDeepLinkOpen(true);
   }
 
   function promptForBundleID() {
@@ -3434,6 +3453,7 @@ export function AppShell({
     if (activeElement instanceof HTMLElement) {
       activeElement.blur();
     }
+    keyboardInput.focus();
   }
 
   function handleSimulatorCreated(response: {
@@ -3651,6 +3671,16 @@ export function AppShell({
 
   return (
     <div className="app">
+      <textarea
+        aria-hidden="true"
+        autoCapitalize="none"
+        autoComplete="off"
+        className="simulator-keyboard-sink"
+        data-simdeck-keyboard-sink="true"
+        ref={keyboardInput.sinkRef}
+        spellCheck={false}
+        tabIndex={-1}
+      />
       {pairingRequired ? (
         <div className="pairing-gate" role="dialog" aria-modal="true">
           <form className="pairing-panel" onSubmit={submitPairing}>
@@ -3694,7 +3724,7 @@ export function AppShell({
         error={toolbarError}
         filteredSimulators={filteredSimulators}
         hierarchyVisible={hierarchyVisible}
-        hideSimulatorSelection={hideSimulatorSelection}
+        hideSimulatorSelection={simulatorSelectionHidden}
         isLoading={isLoading}
         menuOpen={menuOpen}
         menuRef={menuRef}
@@ -3839,7 +3869,7 @@ export function AppShell({
       <NewSimulatorModal
         onClose={() => setNewSimulatorOpen(false)}
         onCreated={handleSimulatorCreated}
-        open={newSimulatorOpen && !hideSimulatorSelection}
+        open={newSimulatorOpen && !simulatorSelectionHidden}
         selectedSimulator={selectedSimulator}
       />
       <CameraSimulationModal
@@ -3848,6 +3878,22 @@ export function AppShell({
         }
         onClose={() => setCameraSimulationOpen(false)}
         open={cameraSimulationOpen}
+        selectedSimulator={selectedSimulator}
+      />
+      <DeepLinkModal
+        onClose={() => setDeepLinkOpen(false)}
+        onOpen={async (url) => {
+          if (!selectedSimulator) {
+            throw new Error("Select a simulator before opening a deep link.");
+          }
+          openURLValueRef.current = url;
+          writePersistedUiState((current) => ({
+            ...current,
+            openURLValue: url,
+          }));
+          await openSimulatorUrl(selectedSimulator.udid, { url });
+        }}
+        open={deepLinkOpen}
         selectedSimulator={selectedSimulator}
       />
       <SimulatorViewport
@@ -4088,6 +4134,13 @@ function readDeviceQueryParam(): string | undefined {
   const value = new URLSearchParams(window.location.search).get("device");
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function readEmbeddedQueryParam(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return new URLSearchParams(window.location.search).get("embedded") === "1";
 }
 
 function isStreamAttachFailure(message: string): boolean {

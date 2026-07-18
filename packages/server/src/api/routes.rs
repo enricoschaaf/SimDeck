@@ -5,6 +5,7 @@ use crate::auth;
 use crate::camera::{self, CameraStartRequest, CameraSwitchRequest};
 use crate::config::Config;
 use crate::config::UserConfig;
+use crate::deep_links;
 use crate::devtools;
 use crate::error::AppError;
 use crate::inspector::{InspectorHub, PublishedInspector};
@@ -29,6 +30,8 @@ use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use regex::Regex;
@@ -61,6 +64,9 @@ const FOREGROUND_APP_STALE_TTL: Duration = Duration::from_secs(30);
 const FOREGROUND_APP_ROUTE_TIMEOUT: Duration = Duration::from_millis(1200);
 const APP_UPLOAD_FILE_NAME_HEADER: &str = "x-simdeck-filename";
 const MAX_APP_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_SEMANTIC_TEXT_BYTES: usize = 1024 * 1024;
+const HID_KEY_V: u16 = 25;
+const HID_MODIFIER_COMMAND: u32 = 1 << 3;
 const FOREGROUND_PROCESS_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 const ACCESSIBILITY_SOURCE_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(250);
 const ACCESSIBILITY_TREE_CACHE_TTL: Duration = Duration::from_secs(5);
@@ -560,6 +566,9 @@ pub(crate) enum ControlMessage {
         key_code: u16,
         modifiers: Option<u32>,
     },
+    Text {
+        text: String,
+    },
     Button {
         button: String,
         duration_ms: Option<u32>,
@@ -776,6 +785,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/pair", post(pair_browser))
         .route("/api/health", get(health))
+        .route("/api/deep-links", get(deep_link_inventory))
         .route("/api/metrics", get(metrics))
         .route(
             "/api/stream-quality",
@@ -807,7 +817,6 @@ pub fn router(state: AppState) -> Router {
             "/api/simulators/create-options",
             get(simulator_create_options),
         )
-        .route("/api/camera/webcams", get(camera_webcams))
         .route("/api/simulators/{udid}/state", get(simulator_state))
         .route("/api/simulators/{udid}/processes", get(simulator_processes))
         .route(
@@ -857,6 +866,10 @@ pub fn router(state: AppState) -> Router {
             "/api/simulators/{udid}/camera/source",
             post(switch_camera_source),
         )
+        .route(
+            "/api/simulators/{udid}/camera/stream",
+            get(camera_stream_socket),
+        )
         .route("/api/simulators/{udid}/action", post(simulator_action))
         .route("/api/simulators/{udid}/control", get(control_socket))
         .route("/api/simulators/{udid}/input", get(control_socket))
@@ -905,6 +918,10 @@ pub fn router(state: AppState) -> Router {
                 .make_span_with(DefaultMakeSpan::new().level(Level::WARN))
                 .on_failure(DefaultOnFailure::new().level(Level::WARN)),
         )
+}
+
+async fn deep_link_inventory() -> Result<Json<deep_links::DeepLinkManifest>, AppError> {
+    Ok(Json(deep_links::configured_manifest()?))
 }
 
 async fn require_api_auth(
@@ -2682,13 +2699,6 @@ async fn refresh_stream(
     Ok(json(json_value!({ "ok": true })))
 }
 
-async fn camera_webcams() -> Result<Json<Value>, AppError> {
-    let webcams = task::spawn_blocking(camera::list_webcams_value)
-        .await
-        .map_err(|error| AppError::internal(format!("Camera task failed. {error}")))??;
-    Ok(json(webcams))
-}
-
 async fn camera_status(Path(udid): Path<String>) -> Result<Json<Value>, AppError> {
     if android::is_android_id(&udid) {
         return Err(AppError::bad_request(
@@ -2749,6 +2759,60 @@ async fn stop_camera(Path(udid): Path<String>) -> Result<Json<Value>, AppError> 
         .await
         .map_err(|error| AppError::internal(format!("Camera task failed. {error}")))??;
     Ok(json(status))
+}
+
+async fn camera_stream_socket(Path(udid): Path<String>, websocket: WebSocketUpgrade) -> Response {
+    if android::is_android_id(&udid) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json_value!({
+                "ok": false,
+                "error": "Camera simulation is only supported for iOS simulators.",
+            })),
+        )
+            .into_response();
+    }
+    websocket
+        .max_message_size(2 * 1024 * 1024)
+        .on_upgrade(move |socket| handle_camera_stream_socket(udid, socket))
+        .into_response()
+}
+
+async fn handle_camera_stream_socket(udid: String, mut socket: WebSocket) {
+    if socket
+        .send(Message::Text(
+            json_value!({ "ready": true, "codec": "h264" })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    while let Some(message) = socket.next().await {
+        let packet = match message {
+            Ok(Message::Binary(packet)) => packet,
+            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Text(_)) => continue,
+        };
+        let packet_udid = udid.clone();
+        let result =
+            task::spawn_blocking(move || camera::publish_camera_packet(&packet_udid, &packet))
+                .await
+                .map_err(|error| AppError::internal(format!("Camera task failed. {error}")))
+                .and_then(|result| result);
+        if let Err(error) = result {
+            let _ = socket
+                .send(Message::Text(
+                    json_value!({ "error": error.to_string() })
+                        .to_string()
+                        .into(),
+                ))
+                .await;
+            break;
+        }
+    }
 }
 
 async fn simulator_action(
@@ -2867,6 +2931,7 @@ async fn run_android_control_message(
                     key_code,
                     modifiers,
                 } => android.send_key(&udid, key_code, modifiers.unwrap_or(0)),
+                ControlMessage::Text { text } => android.type_text(&udid, &text),
                 ControlMessage::Button {
                     button,
                     duration_ms,
@@ -3036,7 +3101,8 @@ async fn run_control_queue(
                 run_toggle_appearance_control(bridge.clone(), udid.clone()).await
             }
             message if session.is_tvos() => {
-                run_tvos_control_message(session.clone(), message, &mut tvos_touch).await
+                run_tvos_control_message(session.clone(), bridge.clone(), message, &mut tvos_touch)
+                    .await
             }
             message @ ControlMessage::MultiTouch { .. } => {
                 let should_clear_input = control_message_ends_touch(&message);
@@ -3055,7 +3121,7 @@ async fn run_control_queue(
                 }
                 result
             }
-            message => run_control_message(session.clone(), message).await,
+            message => run_control_message(session.clone(), bridge.clone(), message).await,
         };
         if let Err(error) = result {
             tracing::debug!("Control message failed for {udid}: {error}");
@@ -3096,6 +3162,7 @@ fn control_message_ends_touch(message: &ControlMessage) -> bool {
 
 pub(crate) async fn run_control_message(
     session: SimulatorSession,
+    bridge: NativeBridge,
     message: ControlMessage,
 ) -> Result<(), AppError> {
     task::spawn_blocking(move || match message {
@@ -3136,6 +3203,7 @@ pub(crate) async fn run_control_message(
             key_code,
             modifiers,
         } => session.send_key(key_code, modifiers.unwrap_or(0)),
+        ControlMessage::Text { text } => send_semantic_text(&session, &bridge, &text),
         ControlMessage::Button {
             button,
             duration_ms,
@@ -3174,6 +3242,24 @@ pub(crate) async fn run_control_message(
     })
     .await
     .map_err(|error| AppError::internal(format!("Failed to join control task: {error}")))?
+}
+
+fn send_semantic_text(
+    session: &SimulatorSession,
+    bridge: &NativeBridge,
+    text: &str,
+) -> Result<(), AppError> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    if text.len() > MAX_SEMANTIC_TEXT_BYTES {
+        return Err(AppError::bad_request(format!(
+            "Semantic text input must not exceed {MAX_SEMANTIC_TEXT_BYTES} UTF-8 bytes."
+        )));
+    }
+
+    bridge.set_pasteboard_text(session.udid(), text)?;
+    session.send_key(HID_KEY_V, HID_MODIFIER_COMMAND)
 }
 
 pub(crate) async fn bridge_input_session_for_control(
@@ -3227,6 +3313,7 @@ pub(crate) async fn run_bridge_multitouch_control_message(
 
 pub(crate) async fn run_tvos_control_message(
     session: SimulatorSession,
+    bridge: NativeBridge,
     message: ControlMessage,
     active_touch: &mut TvosControlTouchGesture,
 ) -> Result<(), AppError> {
@@ -3255,7 +3342,7 @@ pub(crate) async fn run_tvos_control_message(
             }
             active_touch.update(x1, y1, &phase)?
         }
-        other => return run_control_message(session, other).await,
+        other => return run_control_message(session, bridge, other).await,
     };
 
     if let Some(key_code) = key_code {

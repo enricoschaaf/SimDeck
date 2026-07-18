@@ -506,61 +506,6 @@ fn number_field(value: &Value, field: &str) -> Result<f64, AppError> {
         .ok_or_else(|| AppError::not_found(format!("Missing numeric frame field `{field}`.")))
 }
 
-fn hid_for_character(character: char) -> Option<(u16, u32)> {
-    let shift: u32 = 1;
-    let mapping = match character {
-        'a'..='z' => (character as u16 - b'a' as u16 + 4, 0),
-        'A'..='Z' => (character as u16 - b'A' as u16 + 4, shift),
-        '1' => (30, 0),
-        '!' => (30, shift),
-        '2' => (31, 0),
-        '@' => (31, shift),
-        '3' => (32, 0),
-        '#' => (32, shift),
-        '4' => (33, 0),
-        '$' => (33, shift),
-        '5' => (34, 0),
-        '%' => (34, shift),
-        '6' => (35, 0),
-        '^' => (35, shift),
-        '7' => (36, 0),
-        '&' => (36, shift),
-        '8' => (37, 0),
-        '*' => (37, shift),
-        '9' => (38, 0),
-        '(' => (38, shift),
-        '0' => (39, 0),
-        ')' => (39, shift),
-        '\n' | '\r' => (40, 0),
-        '\t' => (43, 0),
-        ' ' => (44, 0),
-        '-' => (45, 0),
-        '_' => (45, shift),
-        '=' => (46, 0),
-        '+' => (46, shift),
-        '[' => (47, 0),
-        '{' => (47, shift),
-        ']' => (48, 0),
-        '}' => (48, shift),
-        '\\' => (49, 0),
-        '|' => (49, shift),
-        ';' => (51, 0),
-        ':' => (51, shift),
-        '\'' => (52, 0),
-        '"' => (52, shift),
-        '`' => (53, 0),
-        '~' => (53, shift),
-        ',' => (54, 0),
-        '<' => (54, shift),
-        '.' => (55, 0),
-        '>' => (55, shift),
-        '/' => (56, 0),
-        '?' => (56, shift),
-        _ => return None,
-    };
-    Some(mapping)
-}
-
 fn normalized_gesture_coordinates(
     preset: &str,
     delta: Option<f64>,

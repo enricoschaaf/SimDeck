@@ -21,6 +21,7 @@ export type ControlMessage =
   | ({ type: "edgeTouch" } & EdgeTouchPayload)
   | ({ type: "multiTouch" } & MultiTouchPayload)
   | ({ type: "key" } & KeyPayload)
+  | { type: "text"; text: string }
   | ({ type: "button" } & ButtonPayload)
   | ({ type: "crown" } & CrownPayload)
   | ({ type: "scroll" } & ScrollPayload)

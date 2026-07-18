@@ -103,14 +103,6 @@ async function main() {
     timeoutMs: commandTimeoutMs,
   });
 
-  step("check camera sources");
-  const sources = simdeckJson(["camera", "sources"]);
-  if (!Array.isArray(sources.webcams)) {
-    throw new Error(
-      `camera sources did not return a webcams array: ${JSON.stringify(sources)}`,
-    );
-  }
-
   step("verify initial camera status");
   const initialStatus = simdeckJson(["camera", "status", simulatorUDID]);
   if (initialStatus.alive !== false) {

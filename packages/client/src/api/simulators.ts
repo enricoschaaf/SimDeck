@@ -1,14 +1,15 @@
-import { apiRequest } from "./client";
+import { accessTokenFromLocation, apiRequest } from "./client";
+import { apiUrl } from "./config";
 import type {
   AccessibilitySourcePreference,
   AccessibilityTreeResponse,
   CameraStartRequest,
   CameraStatusResponse,
-  CameraWebcamsResponse,
   ChromeDevToolsTargetDiscovery,
   ChromeProfile,
   CreateSimulatorRequest,
   CreateSimulatorResponse,
+  DeepLinkManifest,
   InspectorRequestResponse,
   SimulatorPerformanceResponse,
   SimulatorLogsResponse,
@@ -20,6 +21,12 @@ import type {
   StackSampleResponse,
   WebKitTargetDiscovery,
 } from "./types";
+
+export async function fetchDeepLinkInventory(
+  options: RequestInit = {},
+): Promise<DeepLinkManifest> {
+  return apiRequest<DeepLinkManifest>("/api/deep-links", options);
+}
 
 export async function listSimulators(
   options: RequestInit = {},
@@ -178,12 +185,6 @@ export async function sampleSimulatorProcess(
   );
 }
 
-export async function fetchCameraWebcams(
-  options: RequestInit = {},
-): Promise<CameraWebcamsResponse> {
-  return apiRequest<CameraWebcamsResponse>("/api/camera/webcams", options);
-}
-
 export async function fetchCameraStatus(
   udid: string,
   options: RequestInit = {},
@@ -227,6 +228,19 @@ export async function stopCameraSimulation(
     `/api/simulators/${encodeURIComponent(udid)}/camera`,
     { method: "DELETE" },
   );
+}
+
+export function cameraSocketUrl(udid: string): string {
+  const url = new URL(
+    apiUrl(`/api/simulators/${encodeURIComponent(udid)}/camera/stream`),
+    window.location.href,
+  );
+  const token = accessTokenFromLocation();
+  if (token) {
+    url.searchParams.set("simdeckToken", token);
+  }
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 }
 
 export async function fetchWebKitTargets(

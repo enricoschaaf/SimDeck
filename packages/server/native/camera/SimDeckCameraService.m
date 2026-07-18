@@ -1,13 +1,16 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreImage/CoreImage.h>
+#import <CoreMedia/CoreMedia.h>
 #import <Foundation/Foundation.h>
+#import <VideoToolbox/VideoToolbox.h>
 
 #import "SimDeckCameraShared.h"
 
 #import <CoreVideo/CoreVideo.h>
 #import <dispatch/dispatch.h>
 #import <fcntl.h>
+#import <pthread.h>
 #import <signal.h>
 #import <stdatomic.h>
 #import <stdbool.h>
@@ -27,8 +30,6 @@ static uint8_t *gPixels = NULL;
 static size_t gMappedSize = 0;
 static dispatch_queue_t gWriteQueue;
 static dispatch_source_t gPlaceholderTimer;
-static AVCaptureSession *gWebcamSession;
-static id gWebcamDelegate;
 static atomic_uint gSourceGeneration;
 static atomic_ullong gPublishedFrames;
 static atomic_ullong gDroppedFrames;
@@ -38,6 +39,22 @@ static uint32_t gSourceKind = SIMDECK_CAMERA_SOURCE_PLACEHOLDER;
 static OSType gLastPixelFormat = 0;
 static BOOL gServiceStarted = NO;
 static NSString *gActiveUDID = nil;
+
+typedef struct {
+    VTDecompressionSessionRef session;
+    CMVideoFormatDescriptionRef format;
+} SimDeckBrowserH264Decoder;
+
+static SimDeckBrowserH264Decoder gBrowserDecoder;
+static pthread_mutex_t gBrowserFrameLock = PTHREAD_MUTEX_INITIALIZER;
+static dispatch_queue_t gBrowserPublishQueue;
+static CVPixelBufferRef gLatestBrowserPixelBuffer = NULL;
+static BOOL gBrowserPublishScheduled = NO;
+static CIContext *gBrowserRenderContext;
+static atomic_ullong gBrowserDecodeErrors;
+static atomic_uint gLastCameraSequence;
+
+static void StopBrowserSource(void);
 
 static NSObject *CameraLock(void) {
     static NSObject *lock;
@@ -53,14 +70,6 @@ static void RunOnMainSync(dispatch_block_t block) {
         block();
     } else {
         dispatch_sync(dispatch_get_main_queue(), block);
-    }
-}
-
-static void RunMainRunLoopUntil(BOOL (^isFinished)(void), NSTimeInterval timeout) {
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
-    while (!isFinished() && [deadline timeIntervalSinceNow] > 0) {
-        [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode
-                              beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
     }
 }
 
@@ -88,61 +97,11 @@ static NSString *FourCCString(OSType value) {
     return [NSString stringWithUTF8String:chars] ?: [NSString stringWithFormat:@"0x%08x", value];
 }
 
-static NSString *AuthorizationStatusName(AVAuthorizationStatus status) {
-    switch (status) {
-        case AVAuthorizationStatusAuthorized: return @"authorized";
-        case AVAuthorizationStatusDenied: return @"denied";
-        case AVAuthorizationStatusRestricted: return @"restricted";
-        case AVAuthorizationStatusNotDetermined: return @"not-determined";
-    }
-    return @"unknown";
-}
-
-static BOOL EnsureCameraAccess(NSString **error) {
-    AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
-    if (status == AVAuthorizationStatusAuthorized) {
-        return YES;
-    }
-    if (status == AVAuthorizationStatusNotDetermined) {
-        __block BOOL granted = NO;
-        __block BOOL finished = NO;
-        void (^requestAccess)(void) = ^{
-            [NSApplication sharedApplication];
-            [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-            [NSApp activateIgnoringOtherApps:YES];
-            [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL didGrant) {
-                granted = didGrant;
-                finished = YES;
-            }];
-        };
-        if ([NSThread isMainThread]) {
-            requestAccess();
-            RunMainRunLoopUntil(^BOOL{
-                return finished;
-            }, 60.0);
-        } else {
-            dispatch_async(dispatch_get_main_queue(), requestAccess);
-            NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:60.0];
-            while (!finished && [deadline timeIntervalSinceNow] > 0) {
-                usleep(50 * 1000);
-            }
-        }
-        if (granted) {
-            return YES;
-        }
-        status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
-    }
-    if (error) {
-        *error = [NSString stringWithFormat:@"Mac camera permission is %@ for SimDeck.", AuthorizationStatusName(status)];
-    }
-    return NO;
-}
-
 static uint32_t SourceKindForName(NSString *name) {
     NSString *lower = name.lowercaseString;
     if ([lower isEqualToString:@"image"]) return SIMDECK_CAMERA_SOURCE_IMAGE;
     if ([lower isEqualToString:@"video"]) return SIMDECK_CAMERA_SOURCE_VIDEO;
-    if ([lower isEqualToString:@"webcam"]) return SIMDECK_CAMERA_SOURCE_WEBCAM;
+    if ([lower isEqualToString:@"camera"]) return SIMDECK_CAMERA_SOURCE_CAMERA;
     return SIMDECK_CAMERA_SOURCE_PLACEHOLDER;
 }
 
@@ -150,7 +109,7 @@ static NSString *SourceNameForKind(uint32_t kind) {
     switch (kind) {
         case SIMDECK_CAMERA_SOURCE_IMAGE: return @"image";
         case SIMDECK_CAMERA_SOURCE_VIDEO: return @"video";
-        case SIMDECK_CAMERA_SOURCE_WEBCAM: return @"webcam";
+        case SIMDECK_CAMERA_SOURCE_CAMERA: return @"camera";
         default: return @"placeholder";
     }
 }
@@ -332,65 +291,301 @@ static BOOL CanDecodeImageAtPath(NSString *path, NSString **error) {
     return NO;
 }
 
-@interface SimDeckCameraWebcamWriter : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
-@property (nonatomic, copy) NSString *label;
-@end
-
-@implementation SimDeckCameraWebcamWriter
-
-- (void)captureOutput:(AVCaptureOutput *)output
- didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
-       fromConnection:(AVCaptureConnection *)connection {
-    (void)output;
-    (void)connection;
-    PublishPixelBuffer(CMSampleBufferGetImageBuffer(sampleBuffer),
-                       SIMDECK_CAMERA_SOURCE_WEBCAM,
-                       self.label);
+static void PublishBrowserPixelBuffer(CVPixelBufferRef pixelBuffer) {
+    if (!pixelBuffer || !gHeader || !gPixels || gSourceKind != SIMDECK_CAMERA_SOURCE_CAMERA) return;
+    gLastPixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    CIImage *source = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+    if (!source) {
+        atomic_fetch_add(&gDroppedFrames, 1);
+        return;
+    }
+    size_t sourceWidth = CVPixelBufferGetWidth(pixelBuffer);
+    size_t sourceHeight = CVPixelBufferGetHeight(pixelBuffer);
+    if (sourceWidth == 0 || sourceHeight == 0) return;
+    CGFloat scale = MIN((CGFloat)gWidth / sourceWidth, (CGFloat)gHeight / sourceHeight);
+    CIImage *scaled = [source imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
+    CGRect scaledExtent = scaled.extent;
+    CGFloat targetX = ((CGFloat)gWidth - scaledExtent.size.width) / 2.0 - scaledExtent.origin.x;
+    CGFloat targetY = ((CGFloat)gHeight - scaledExtent.size.height) / 2.0 - scaledExtent.origin.y;
+    CIImage *positioned = [scaled imageByApplyingTransform:CGAffineTransformMakeTranslation(targetX, targetY)];
+    CGRect outputBounds = CGRectMake(0, 0, gWidth, gHeight);
+    CIImage *background = [[CIImage imageWithColor:[CIColor colorWithRed:0 green:0 blue:0 alpha:1]]
+        imageByCroppingToRect:outputBounds];
+    CIImage *composed = [positioned imageByCompositingOverImage:background];
+    dispatch_sync(gWriteQueue, ^{
+        gHeader->sequence += 1;
+        [gBrowserRenderContext render:composed
+                             toBitmap:gPixels
+                             rowBytes:gHeader->bytesPerRow
+                               bounds:outputBounds
+                               format:kCIFormatBGRA8
+                           colorSpace:nil];
+        gHeader->timestampNs = NowNs();
+        SetSourceMetadata(SIMDECK_CAMERA_SOURCE_CAMERA, @"camera");
+        gHeader->sequence += 1;
+        atomic_fetch_add(&gPublishedFrames, 1);
+    });
 }
 
-@end
-
-static NSArray<AVCaptureDevice *> *CameraDevices(void) {
-    AVCaptureDeviceDiscoverySession *session = [AVCaptureDeviceDiscoverySession
-        discoverySessionWithDeviceTypes:@[
-            AVCaptureDeviceTypeBuiltInWideAngleCamera,
-            AVCaptureDeviceTypeExternal,
-            AVCaptureDeviceTypeContinuityCamera,
-        ]
-                              mediaType:AVMediaTypeVideo
-                               position:AVCaptureDevicePositionUnspecified];
-    return session.devices ?: @[];
+static void DrainLatestBrowserFrame(void) {
+    while (gSourceKind == SIMDECK_CAMERA_SOURCE_CAMERA) {
+        pthread_mutex_lock(&gBrowserFrameLock);
+        CVPixelBufferRef pixelBuffer = gLatestBrowserPixelBuffer;
+        gLatestBrowserPixelBuffer = NULL;
+        if (!pixelBuffer) gBrowserPublishScheduled = NO;
+        pthread_mutex_unlock(&gBrowserFrameLock);
+        if (!pixelBuffer) return;
+        PublishBrowserPixelBuffer(pixelBuffer);
+        CVPixelBufferRelease(pixelBuffer);
+    }
 }
 
-static AVCaptureDevice *PickCamera(NSString *wanted) {
-    NSArray<AVCaptureDevice *> *devices = CameraDevices();
-    if (wanted.length == 0) {
-        for (AVCaptureDevice *device in devices) {
-            if (device.position == AVCaptureDevicePositionFront) return device;
+static void BrowserH264Output(void *refCon,
+                              void *sourceFrameRefCon,
+                              OSStatus status,
+                              VTDecodeInfoFlags infoFlags,
+                              CVImageBufferRef imageBuffer,
+                              CMTime presentationTimeStamp,
+                              CMTime presentationDuration) {
+    (void)refCon;
+    (void)sourceFrameRefCon;
+    (void)infoFlags;
+    (void)presentationTimeStamp;
+    (void)presentationDuration;
+    if (status != noErr) {
+        atomic_fetch_add(&gBrowserDecodeErrors, 1);
+        return;
+    }
+    if (!imageBuffer || gSourceKind != SIMDECK_CAMERA_SOURCE_CAMERA) return;
+
+    CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)imageBuffer;
+    CVPixelBufferRetain(pixelBuffer);
+    BOOL schedulePublisher = NO;
+    pthread_mutex_lock(&gBrowserFrameLock);
+    if (gLatestBrowserPixelBuffer) {
+        CVPixelBufferRelease(gLatestBrowserPixelBuffer);
+        atomic_fetch_add(&gDroppedFrames, 1);
+    }
+    gLatestBrowserPixelBuffer = pixelBuffer;
+    if (!gBrowserPublishScheduled) {
+        gBrowserPublishScheduled = YES;
+        schedulePublisher = YES;
+    }
+    pthread_mutex_unlock(&gBrowserFrameLock);
+    if (schedulePublisher) {
+        dispatch_async(gBrowserPublishQueue, ^{ DrainLatestBrowserFrame(); });
+    }
+}
+
+static void ReleaseBrowserH264Decoder(void) {
+    if (gBrowserDecoder.session) {
+        VTDecompressionSessionWaitForAsynchronousFrames(gBrowserDecoder.session);
+        VTDecompressionSessionInvalidate(gBrowserDecoder.session);
+        CFRelease(gBrowserDecoder.session);
+        gBrowserDecoder.session = NULL;
+    }
+    if (gBrowserDecoder.format) {
+        CFRelease(gBrowserDecoder.format);
+        gBrowserDecoder.format = NULL;
+    }
+}
+
+static BOOL ConfigureBrowserH264Decoder(NSData *configuration, NSString **error) {
+    const uint8_t *bytes = configuration.bytes;
+    NSUInteger length = configuration.length;
+    if (length < 7 || bytes[0] != 1) {
+        if (error) *error = @"Invalid camera H.264 decoder configuration.";
+        return NO;
+    }
+    size_t nalLengthSize = (bytes[4] & 0x03) + 1;
+    NSUInteger offset = 5;
+    NSUInteger sequenceCount = bytes[offset++] & 0x1f;
+    const uint8_t *parameterSets[64];
+    size_t parameterSetSizes[64];
+    size_t parameterSetCount = 0;
+    for (NSUInteger index = 0; index < sequenceCount; index += 1) {
+        if (offset + 2 > length || parameterSetCount >= 64) {
+            if (error) *error = @"Invalid camera H.264 decoder configuration.";
+            return NO;
         }
-        return devices.firstObject;
+        NSUInteger size = ((NSUInteger)bytes[offset] << 8) | bytes[offset + 1];
+        offset += 2;
+        if (size == 0 || offset + size > length) {
+            if (error) *error = @"Invalid camera H.264 decoder configuration.";
+            return NO;
+        }
+        parameterSets[parameterSetCount] = bytes + offset;
+        parameterSetSizes[parameterSetCount++] = size;
+        offset += size;
     }
-    NSString *needle = wanted.lowercaseString;
-    for (AVCaptureDevice *device in devices) {
-        if ([device.uniqueID.lowercaseString isEqualToString:needle]) return device;
+    if (offset >= length) {
+        if (error) *error = @"Invalid camera H.264 decoder configuration.";
+        return NO;
     }
-    for (AVCaptureDevice *device in devices) {
-        if ([device.localizedName.lowercaseString containsString:needle]) return device;
+    NSUInteger pictureCount = bytes[offset++];
+    for (NSUInteger index = 0; index < pictureCount; index += 1) {
+        if (offset + 2 > length || parameterSetCount >= 64) {
+            if (error) *error = @"Invalid camera H.264 decoder configuration.";
+            return NO;
+        }
+        NSUInteger size = ((NSUInteger)bytes[offset] << 8) | bytes[offset + 1];
+        offset += 2;
+        if (size == 0 || offset + size > length) {
+            if (error) *error = @"Invalid camera H.264 decoder configuration.";
+            return NO;
+        }
+        parameterSets[parameterSetCount] = bytes + offset;
+        parameterSetSizes[parameterSetCount++] = size;
+        offset += size;
     }
-    return nil;
+    if (sequenceCount == 0 || pictureCount == 0) {
+        if (error) *error = @"Camera H.264 configuration has no parameter sets.";
+        return NO;
+    }
+
+    ReleaseBrowserH264Decoder();
+    OSStatus status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
+        kCFAllocatorDefault,
+        parameterSetCount,
+        parameterSets,
+        parameterSetSizes,
+        (int)nalLengthSize,
+        &gBrowserDecoder.format
+    );
+    if (status != noErr || !gBrowserDecoder.format) {
+        if (error) *error = [NSString stringWithFormat:@"Camera H.264 format creation failed (%d).", status];
+        return NO;
+    }
+    NSDictionary *pixelAttributes = @{
+        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+    };
+    VTDecompressionOutputCallbackRecord callback = {
+        .decompressionOutputCallback = BrowserH264Output,
+        .decompressionOutputRefCon = NULL,
+    };
+    status = VTDecompressionSessionCreate(
+        kCFAllocatorDefault,
+        gBrowserDecoder.format,
+        NULL,
+        (__bridge CFDictionaryRef)pixelAttributes,
+        &callback,
+        &gBrowserDecoder.session
+    );
+    if (status != noErr || !gBrowserDecoder.session) {
+        if (error) *error = [NSString stringWithFormat:@"Camera H.264 decoder creation failed (%d).", status];
+        ReleaseBrowserH264Decoder();
+        return NO;
+    }
+    VTSessionSetProperty(gBrowserDecoder.session, kVTDecompressionPropertyKey_RealTime, kCFBooleanTrue);
+    atomic_store(&gBrowserDecodeErrors, 0);
+    atomic_store(&gLastCameraSequence, 0);
+    return YES;
+}
+
+static BOOL DecodeBrowserH264Frame(NSData *frame, BOOL keyFrame, NSString **error) {
+    if (!gBrowserDecoder.session || !gBrowserDecoder.format) {
+        if (error) *error = @"Camera H.264 decoder is not configured.";
+        return NO;
+    }
+    CMBlockBufferRef block = NULL;
+    OSStatus status = CMBlockBufferCreateWithMemoryBlock(
+        kCFAllocatorDefault,
+        NULL,
+        frame.length,
+        kCFAllocatorDefault,
+        NULL,
+        0,
+        frame.length,
+        0,
+        &block
+    );
+    if (status == noErr) {
+        status = CMBlockBufferReplaceDataBytes(frame.bytes, block, 0, frame.length);
+    }
+    CMSampleBufferRef sample = NULL;
+    if (status == noErr) {
+        size_t sampleSize = frame.length;
+        status = CMSampleBufferCreateReady(
+            kCFAllocatorDefault,
+            block,
+            gBrowserDecoder.format,
+            1,
+            0,
+            NULL,
+            1,
+            &sampleSize,
+            &sample
+        );
+    }
+    if (block) CFRelease(block);
+    if (status != noErr || !sample) {
+        if (error) *error = [NSString stringWithFormat:@"Camera H.264 sample creation failed (%d).", status];
+        if (sample) CFRelease(sample);
+        return NO;
+    }
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, YES);
+    if (attachments && CFArrayGetCount(attachments) > 0) {
+        CFMutableDictionaryRef attachment = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+        CFDictionarySetValue(attachment, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
+        if (!keyFrame) CFDictionarySetValue(attachment, kCMSampleAttachmentKey_NotSync, kCFBooleanTrue);
+    }
+    VTDecodeInfoFlags info = 0;
+    status = VTDecompressionSessionDecodeFrame(
+        gBrowserDecoder.session,
+        sample,
+        kVTDecodeFrame_EnableAsynchronousDecompression,
+        NULL,
+        &info
+    );
+    CFRelease(sample);
+    if (status != noErr) {
+        if (error) *error = [NSString stringWithFormat:@"Camera H.264 decode failed (%d).", status];
+        return NO;
+    }
+    return YES;
+}
+
+static void StopBrowserSource(void) {
+    ReleaseBrowserH264Decoder();
+    if (gBrowserPublishQueue) dispatch_sync(gBrowserPublishQueue, ^{});
+    pthread_mutex_lock(&gBrowserFrameLock);
+    if (gLatestBrowserPixelBuffer) {
+        CVPixelBufferRelease(gLatestBrowserPixelBuffer);
+        gLatestBrowserPixelBuffer = NULL;
+    }
+    gBrowserPublishScheduled = NO;
+    pthread_mutex_unlock(&gBrowserFrameLock);
 }
 
 static void StopCurrentSource(void) {
     atomic_fetch_add(&gSourceGeneration, 1);
+    if (gSourceKind == SIMDECK_CAMERA_SOURCE_CAMERA) {
+        StopBrowserSource();
+    }
     if (gPlaceholderTimer) {
         dispatch_source_cancel(gPlaceholderTimer);
         gPlaceholderTimer = nil;
     }
-    if (gWebcamSession) {
-        [gWebcamSession stopRunning];
-        gWebcamSession = nil;
+}
+
+static BOOL StartBrowserSource(NSString **error) {
+    (void)error;
+    StopCurrentSource();
+    if (!gBrowserPublishQueue) {
+        gBrowserPublishQueue = dispatch_queue_create("dev.nativescript.simdeck.camera.stream", DISPATCH_QUEUE_SERIAL);
     }
-    gWebcamDelegate = nil;
+    if (!gBrowserRenderContext) {
+        gBrowserRenderContext = [CIContext contextWithOptions:@{
+            kCIContextUseSoftwareRenderer: @NO,
+            kCIContextCacheIntermediates: @NO,
+            kCIContextWorkingColorSpace: [NSNull null],
+        }];
+    }
+    atomic_store(&gBrowserDecodeErrors, 0);
+    SetSourceState(SIMDECK_CAMERA_SOURCE_CAMERA, @"camera", nil);
+    SetSourceMetadata(SIMDECK_CAMERA_SOURCE_CAMERA, @"camera");
+    return YES;
 }
 
 static BOOL StartPlaceholder(NSString **error) {
@@ -486,69 +681,6 @@ static BOOL StartVideo(NSString *path, NSString **error) {
     return YES;
 }
 
-static BOOL StartWebcam(NSString *requestedDevice, NSString **error) {
-    if (!EnsureCameraAccess(error)) {
-        return NO;
-    }
-    AVCaptureDevice *device = PickCamera(requestedDevice);
-    if (!device) {
-        if (error) *error = requestedDevice.length > 0
-            ? [NSString stringWithFormat:@"No matching Mac camera: %@", requestedDevice]
-            : @"No Mac camera is available.";
-        return NO;
-    }
-    NSError *inputError = nil;
-    AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&inputError];
-    if (!input) {
-        if (error) *error = inputError.localizedDescription ?: @"Unable to open Mac camera.";
-        return NO;
-    }
-    AVCaptureSession *session = [[AVCaptureSession alloc] init];
-    session.sessionPreset = AVCaptureSessionPreset1280x720;
-    if (![session canAddInput:input]) {
-        if (error) *error = @"Unable to attach Mac camera input.";
-        return NO;
-    }
-    [session addInput:input];
-    AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
-    output.videoSettings = @{ (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA) };
-    output.alwaysDiscardsLateVideoFrames = YES;
-    SimDeckCameraWebcamWriter *writer = [[SimDeckCameraWebcamWriter alloc] init];
-    writer.label = device.localizedName ?: @"webcam";
-    [output setSampleBufferDelegate:writer queue:dispatch_queue_create("dev.nativescript.simdeck.camera.webcam", DISPATCH_QUEUE_SERIAL)];
-    if (![session canAddOutput:output]) {
-        if (error) *error = @"Unable to attach Mac camera output.";
-        return NO;
-    }
-    [session addOutput:output];
-    StopCurrentSource();
-    gWebcamSession = session;
-    gWebcamDelegate = writer;
-    [session startRunning];
-    if (!session.isRunning) {
-        if (error) *error = @"Mac camera session did not start.";
-        StopCurrentSource();
-        return NO;
-    }
-    uint64_t startFrames = atomic_load(&gPublishedFrames);
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:4.0];
-    while (atomic_load(&gPublishedFrames) == startFrames && [deadline timeIntervalSinceNow] > 0) {
-        [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-        usleep(20 * 1000);
-    }
-    if (atomic_load(&gPublishedFrames) == startFrames) {
-        if (error) {
-            *error = [NSString stringWithFormat:@"Mac camera session started but delivered no frames. Authorization=%@ pixelFormat=%@",
-                      AuthorizationStatusName([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]),
-                      gLastPixelFormat ? FourCCString(gLastPixelFormat) : @"none"];
-        }
-        StopCurrentSource();
-        return NO;
-    }
-    SetSourceState(SIMDECK_CAMERA_SOURCE_WEBCAM, @"webcam", device.uniqueID ?: device.localizedName);
-    return YES;
-}
-
 static BOOL SwitchSource(NSString *source, NSString *argument, NSString **error) {
     uint32_t kind = SourceKindForName(source);
     switch (kind) {
@@ -556,8 +688,8 @@ static BOOL SwitchSource(NSString *source, NSString *argument, NSString **error)
             return StartImage(argument ?: @"", error);
         case SIMDECK_CAMERA_SOURCE_VIDEO:
             return StartVideo(argument ?: @"", error);
-        case SIMDECK_CAMERA_SOURCE_WEBCAM:
-            return StartWebcam(argument ?: @"", error);
+        case SIMDECK_CAMERA_SOURCE_CAMERA:
+            return StartBrowserSource(error);
         default:
             return StartPlaceholder(error);
     }
@@ -579,9 +711,9 @@ static NSDictionary *StatusPayload(BOOL ok, NSString *error) {
     if (gSourceArgument.length > 0) payload[@"arg"] = gSourceArgument;
     if (gHeader) payload[@"sourceLabel"] = StringFromCString(gHeader->sourceLabel);
     if (gLastPixelFormat != 0) payload[@"pixelFormat"] = FourCCString(gLastPixelFormat);
-    payload[@"cameraAuthorization"] = AuthorizationStatusName([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]);
-    if (gSourceKind == SIMDECK_CAMERA_SOURCE_WEBCAM) {
-        payload[@"webcamRunning"] = @(gWebcamSession.isRunning);
+    if (gSourceKind == SIMDECK_CAMERA_SOURCE_CAMERA) {
+        payload[@"decodeErrors"] = @(atomic_load(&gBrowserDecodeErrors));
+        payload[@"cameraSequence"] = @(atomic_load(&gLastCameraSequence));
     }
     if (error.length > 0) payload[@"error"] = error;
     return payload;
@@ -619,19 +751,6 @@ static int OpenSharedMemory(void) {
     gHeader->mirrorMode = SIMDECK_CAMERA_MIRROR_AUTO;
     gPixels = ((uint8_t *)mapped) + SIMDECK_CAMERA_HEADER_SIZE;
     return 0;
-}
-
-static NSDictionary *WebcamsPayload(void) {
-    NSMutableArray *items = [NSMutableArray array];
-    for (AVCaptureDevice *device in CameraDevices()) {
-        [items addObject:@{
-            @"id": device.uniqueID ?: device.localizedName ?: @"",
-            @"name": device.localizedName ?: device.uniqueID ?: @"Camera",
-            @"position": device.position == AVCaptureDevicePositionFront ? @"front" :
-                device.position == AVCaptureDevicePositionBack ? @"back" : @"unspecified",
-        }];
-    }
-    return @{ @"webcams": items };
 }
 
 static void Cleanup(void) {
@@ -679,17 +798,6 @@ static char *JSONCString(NSDictionary *payload) {
     }
     NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"{}";
     return CopyCString(json);
-}
-
-char *simdeck_camera_list_webcams_json(char **errorMessage) {
-    (void)errorMessage;
-    __block char *result = NULL;
-    RunOnMainSync(^{
-        @autoreleasepool {
-            result = JSONCString(WebcamsPayload());
-        }
-    });
-    return result;
 }
 
 bool simdeck_camera_start(const char *udid,
@@ -749,11 +857,7 @@ char *simdeck_camera_status(const char *udid, char **errorMessage) {
             @synchronized (CameraLock()) {
                 NSString *requestedUDID = StringFromCString(udid);
                 if (!gServiceStarted || (requestedUDID.length > 0 && gActiveUDID.length > 0 && ![requestedUDID isEqualToString:gActiveUDID])) {
-                    result = JSONCString(@{
-                        @"ok": @YES,
-                        @"alive": @NO,
-                        @"cameraAuthorization": AuthorizationStatusName([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]),
-                    });
+                    result = JSONCString(@{ @"ok": @YES, @"alive": @NO });
                     return;
                 }
                 result = JSONCString(StatusPayload(YES, nil));
@@ -814,4 +918,47 @@ bool simdeck_camera_stop(const char *udid, char **errorMessage) {
         }
     });
     return stopped;
+}
+
+bool simdeck_camera_publish_packet(const char *udid,
+                                   const uint8_t *packet,
+                                   size_t packetLength,
+                                   char **errorMessage) {
+    __block BOOL ok = NO;
+    __block NSString *nativeError = nil;
+    @autoreleasepool {
+        @synchronized (CameraLock()) {
+            NSString *requestedUDID = StringFromCString(udid);
+            if (!gServiceStarted || ![requestedUDID isEqualToString:gActiveUDID]) {
+                nativeError = @"Camera simulation is not running for this simulator.";
+            } else if (gSourceKind != SIMDECK_CAMERA_SOURCE_CAMERA) {
+                nativeError = @"Camera source is not active.";
+            } else if (!packet || packetLength < 2 || packetLength > 2 * 1024 * 1024) {
+                nativeError = @"Invalid camera H.264 packet size.";
+            } else if (packet[0] == 1) {
+                ok = ConfigureBrowserH264Decoder(
+                    [NSData dataWithBytes:packet + 1 length:packetLength - 1],
+                    &nativeError
+                );
+            } else if (packet[0] == 2 && packetLength > 6) {
+                uint32_t sequence = ((uint32_t)packet[2] << 24)
+                    | ((uint32_t)packet[3] << 16)
+                    | ((uint32_t)packet[4] << 8)
+                    | (uint32_t)packet[5];
+                uint32_t previous = atomic_exchange(&gLastCameraSequence, sequence);
+                if (previous != 0 && sequence != previous + 1) {
+                    atomic_fetch_add(&gDroppedFrames, 1);
+                }
+                ok = DecodeBrowserH264Frame(
+                    [NSData dataWithBytes:packet + 6 length:packetLength - 6],
+                    packet[1] == 1,
+                    &nativeError
+                );
+            } else {
+                nativeError = @"Unknown camera H.264 packet.";
+            }
+        }
+    }
+    if (!ok) SetNativeError(errorMessage, nativeError);
+    return ok;
 }

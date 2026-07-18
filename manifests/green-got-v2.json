@@ -1,0 +1,268 @@
+{
+  "scheme": "green-got-staging",
+  "bundleId": "com.green-got.dev",
+  "links": [
+    {
+      "group": "Cards",
+      "title": "Activate · Green Code",
+      "url": "green-got-staging://v2/card/{id}/activate/green-code"
+    },
+    {
+      "group": "Cards",
+      "title": "Card · Activate",
+      "url": "green-got-staging://v2/card/{id}/activate"
+    },
+    {
+      "group": "Cards",
+      "title": "Activate · Success",
+      "url": "green-got-staging://v2/card/{id}/activate/success"
+    },
+    {
+      "group": "Cards",
+      "title": "Card details",
+      "url": "green-got-staging://v2/card/{id}"
+    },
+    {
+      "group": "Cards",
+      "title": "Info · Details",
+      "url": "green-got-staging://v2/card/{id}/info/details"
+    },
+    {
+      "group": "Cards",
+      "title": "Card · Info",
+      "url": "green-got-staging://v2/card/{id}/info"
+    },
+    {
+      "group": "Cards",
+      "title": "Card · Oppose",
+      "url": "green-got-staging://v2/card/{id}/oppose"
+    },
+    {
+      "group": "Cards",
+      "title": "Oppose · Success",
+      "url": "green-got-staging://v2/card/{id}/oppose/success"
+    },
+    {
+      "group": "Cards",
+      "title": "Pin · Code",
+      "url": "green-got-staging://v2/card/{id}/pin/code"
+    },
+    {
+      "group": "Cards",
+      "title": "Card · Pin",
+      "url": "green-got-staging://v2/card/{id}/pin"
+    },
+    {
+      "group": "Cards",
+      "title": "Card · Rename",
+      "url": "green-got-staging://v2/card/{id}/rename"
+    },
+    {
+      "group": "Cards",
+      "title": "Cards",
+      "url": "green-got-staging://v2/card"
+    },
+    {
+      "group": "Cards",
+      "title": "Order · Address",
+      "url": "green-got-staging://v2/card/order/address"
+    },
+    {
+      "group": "Cards",
+      "title": "Order · Confirmed",
+      "url": "green-got-staging://v2/card/order/confirmed"
+    },
+    {
+      "group": "Cards",
+      "title": "Card · Order",
+      "url": "green-got-staging://v2/card/order"
+    },
+    {
+      "group": "Cards",
+      "title": "Payment · Account",
+      "url": "green-got-staging://v2/card/order/payment/account"
+    },
+    {
+      "group": "Cards",
+      "title": "Payment · Card",
+      "url": "green-got-staging://v2/card/order/payment/card"
+    },
+    {
+      "group": "Cards",
+      "title": "Order · Payment",
+      "url": "green-got-staging://v2/card/order/payment"
+    },
+    {
+      "group": "Cards",
+      "title": "Order · Physical",
+      "url": "green-got-staging://v2/card/order/physical"
+    },
+    {
+      "group": "Cards",
+      "title": "Order · Pin",
+      "url": "green-got-staging://v2/card/order/pin"
+    },
+    {
+      "group": "Cards",
+      "title": "Order · Reason",
+      "url": "green-got-staging://v2/card/order/reason"
+    },
+    {
+      "group": "Cards",
+      "title": "Order · Recap",
+      "url": "green-got-staging://v2/card/order/recap"
+    },
+    {
+      "group": "Cards",
+      "title": "Order · Virtual",
+      "url": "green-got-staging://v2/card/order/virtual"
+    },
+    {
+      "group": "Authentication",
+      "title": "Challenge details",
+      "url": "green-got-staging://v2/challenge/{id}"
+    },
+    {
+      "group": "Authentication",
+      "title": "Challenge · Reminder",
+      "url": "green-got-staging://v2/challenge/{id}/reminder"
+    },
+    {
+      "group": "Authentication",
+      "title": "Challenge · Success",
+      "url": "green-got-staging://v2/challenge/{id}/success"
+    },
+    {
+      "group": "Authentication",
+      "title": "Challenges",
+      "url": "green-got-staging://v2/challenge"
+    },
+    {
+      "group": "Contacts",
+      "title": "Contact details",
+      "url": "green-got-staging://v2/contact/{id}"
+    },
+    {
+      "group": "Contacts",
+      "title": "Contact · Add",
+      "url": "green-got-staging://v2/contact/add"
+    },
+    {
+      "group": "Contacts",
+      "title": "Contacts",
+      "url": "green-got-staging://v2/contact"
+    },
+    {
+      "group": "Direct debits",
+      "title": "Direct debit mandate details",
+      "url": "green-got-staging://v2/direct-debit-mandate/{id}"
+    },
+    {
+      "group": "Direct debits",
+      "title": "Direct debit mandates",
+      "url": "green-got-staging://v2/direct-debit-mandate"
+    },
+    {
+      "group": "Documents",
+      "title": "Documents · Bank Statements",
+      "url": "green-got-staging://v2/documents/bank-statements"
+    },
+    {
+      "group": "Documents",
+      "title": "Documents · Certificates",
+      "url": "green-got-staging://v2/documents/certificates"
+    },
+    {
+      "group": "Documents",
+      "title": "Documents · Invoices",
+      "url": "green-got-staging://v2/documents/invoices"
+    },
+    {
+      "group": "Fraud",
+      "title": "Fraud · Monthly",
+      "url": "green-got-staging://v2/fraud/monthly/{type}"
+    },
+    {
+      "group": "Home",
+      "title": "V2 home",
+      "url": "green-got-staging://v2"
+    },
+    {
+      "group": "Authentication",
+      "title": "Login",
+      "url": "green-got-staging://v2/login",
+      "requiresAuthentication": false
+    },
+    {
+      "group": "Onboarding",
+      "title": "V2 onboarding",
+      "url": "green-got-staging://v2/onboarding",
+      "requiresAuthentication": false
+    },
+    {
+      "group": "Transfers",
+      "title": "Scheduled Transfer · Edit",
+      "url": "green-got-staging://v2/scheduled-transfer/{id}/edit"
+    },
+    {
+      "group": "Transfers",
+      "title": "Scheduled transfer details",
+      "url": "green-got-staging://v2/scheduled-transfer/{id}"
+    },
+    {
+      "group": "Transfers",
+      "title": "Scheduled transfers",
+      "url": "green-got-staging://v2/scheduled-transfer"
+    },
+    {
+      "group": "Transactions",
+      "title": "Transaction details",
+      "url": "green-got-staging://v2/transaction/{id}"
+    },
+    {
+      "group": "Transactions",
+      "title": "Transaction · Filters",
+      "url": "green-got-staging://v2/transaction/filters"
+    },
+    {
+      "group": "Transactions",
+      "title": "Transactions",
+      "url": "green-got-staging://v2/transaction"
+    },
+    {
+      "group": "Transfers",
+      "title": "Transfer · Form",
+      "url": "green-got-staging://v2/transfer/form"
+    },
+    {
+      "group": "Transfers",
+      "title": "Transfer",
+      "url": "green-got-staging://v2/transfer"
+    },
+    {
+      "group": "Transfers",
+      "title": "Transfer · Recap",
+      "url": "green-got-staging://v2/transfer/recap"
+    },
+    {
+      "group": "Profile",
+      "title": "User · Address",
+      "url": "green-got-staging://v2/user/address"
+    },
+    {
+      "group": "Profile",
+      "title": "Profile",
+      "url": "green-got-staging://v2/user"
+    },
+    {
+      "group": "Profile",
+      "title": "User · Phone",
+      "url": "green-got-staging://v2/user/phone"
+    },
+    {
+      "group": "Profile",
+      "title": "Phone · OTP",
+      "url": "green-got-staging://v2/user/phone/otp"
+    }
+  ]
+}

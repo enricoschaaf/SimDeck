@@ -163,6 +163,9 @@ enum BatchStep {
     Launch {
         bundle_id: String,
     },
+    Terminate {
+        bundle_id: String,
+    },
     OpenUrl {
         url: String,
     },

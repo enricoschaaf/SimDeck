@@ -18,7 +18,7 @@ pub enum CameraSourceKind {
     Placeholder,
     Image,
     Video,
-    Webcam,
+    Camera,
 }
 
 impl CameraSourceKind {
@@ -27,7 +27,7 @@ impl CameraSourceKind {
             Self::Placeholder => "placeholder",
             Self::Image => "image",
             Self::Video => "video",
-            Self::Webcam => "webcam",
+            Self::Camera => "camera",
         }
     }
 }
@@ -74,12 +74,6 @@ pub struct CameraStartOptions {
     pub bundle_id: Option<String>,
     pub source: CameraSource,
     pub mirror: Option<String>,
-}
-
-pub fn list_webcams_value() -> Result<Value, AppError> {
-    let mut error_message = std::ptr::null_mut();
-    let raw = unsafe { ffi::simdeck_camera_list_webcams_json(&mut error_message) };
-    native_json(raw, error_message, "Unable to list Mac cameras.")
 }
 
 pub fn start_camera(options: CameraStartOptions) -> Result<Value, AppError> {
@@ -140,6 +134,33 @@ pub fn stop_camera(udid: &str) -> Result<Value, AppError> {
     native_stop_camera(udid)?;
     let _ = fs::remove_file(injected_bundles_file(udid));
     Ok(json!({ "ok": true, "udid": udid, "alive": false }))
+}
+
+pub fn publish_camera_packet(udid: &str, packet: &[u8]) -> Result<(), AppError> {
+    validate_udid(udid)?;
+    if packet.len() < 2 || packet.len() > 2 * 1024 * 1024 {
+        return Err(AppError::bad_request(
+            "Camera H.264 packet must contain between 2 bytes and 2 MiB.",
+        ));
+    }
+    let udid = cstring("simulator UDID", udid)?;
+    let mut error_message = std::ptr::null_mut();
+    let ok = unsafe {
+        ffi::simdeck_camera_publish_packet(
+            udid.as_ptr(),
+            packet.as_ptr(),
+            packet.len(),
+            &mut error_message,
+        )
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(native_error(
+            error_message,
+            "Unable to publish camera packet.",
+        ))
+    }
 }
 
 fn native_start_camera(
@@ -328,7 +349,7 @@ fn normalize_source(mut source: CameraSource) -> Result<CameraSource, AppError> 
         source.arg = (!trimmed.is_empty()).then(|| trimmed.to_owned());
     }
     match source.kind {
-        CameraSourceKind::Placeholder => {
+        CameraSourceKind::Placeholder | CameraSourceKind::Camera => {
             source.arg = None;
         }
         CameraSourceKind::Image | CameraSourceKind::Video => {
@@ -350,7 +371,6 @@ fn normalize_source(mut source: CameraSource) -> Result<CameraSource, AppError> 
                 }
             }
         }
-        CameraSourceKind::Webcam => {}
     }
     Ok(source)
 }

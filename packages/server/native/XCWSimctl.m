@@ -735,6 +735,20 @@ static NSString *XCWRuntimeDisplayName(NSDictionary *runtime, NSString *runtimeI
     return NO;
 }
 
+- (BOOL)terminateBundleID:(NSString *)bundleID simulatorUDID:(NSString *)udid error:(NSError * _Nullable __autoreleasing *)error {
+    XCWProcessResult *result = [self.class runSimctl:@[@"terminate", udid, bundleID] error:error];
+    if (result == nil) {
+        return NO;
+    }
+    if (result.terminationStatus == 0 || [result.stderrString rangeOfString:@"found nothing to terminate" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        return YES;
+    }
+    if (error != NULL) {
+        *error = [self.class errorWithDescription:result.stderrString.length > 0 ? result.stderrString : @"Unable to terminate app in simulator." code:7];
+    }
+    return NO;
+}
+
 - (nullable NSData *)screenshotPNGForSimulatorUDID:(NSString *)udid error:(NSError * _Nullable __autoreleasing *)error {
     return [self screenshotPNGForSimulatorUDID:udid includeBezel:NO error:error];
 }
@@ -1207,8 +1221,8 @@ static NSString *XCWRuntimeDisplayName(NSDictionary *runtime, NSString *runtimeI
 
 - (BOOL)setPasteboardText:(NSString *)text simulatorUDID:(NSString *)udid error:(NSError * _Nullable __autoreleasing *)error {
     NSData *inputData = [text dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
-    XCWProcessResult *result = [XCWProcessRunner runLaunchPath:@"/usr/bin/xcrun"
-                                                     arguments:@[@"simctl", @"pbcopy", udid]
+    XCWProcessResult *result = [XCWProcessRunner runLaunchPath:@"/usr/bin/env"
+                                                     arguments:@[@"LC_CTYPE=en_US.UTF-8", @"/usr/bin/xcrun", @"simctl", @"pbcopy", udid]
                                                      inputData:inputData
                                                          error:error];
     if (result == nil) {

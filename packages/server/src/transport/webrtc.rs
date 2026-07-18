@@ -859,6 +859,7 @@ async fn run_android_webrtc_control_message(
         } => state
             .android
             .send_key(&udid, key_code, modifiers.unwrap_or(0)),
+        ControlMessage::Text { text } => state.android.type_text(&udid, &text),
         ControlMessage::Button {
             button,
             duration_ms,
@@ -990,10 +991,12 @@ async fn run_webrtc_control_queue(
                 }
             }
             message => {
+                let bridge = state.registry.bridge().clone();
                 let result = if session.is_tvos() {
-                    run_tvos_control_message(session.clone(), message, &mut tvos_touch).await
+                    run_tvos_control_message(session.clone(), bridge, message, &mut tvos_touch)
+                        .await
                 } else {
-                    run_control_message(session.clone(), message).await
+                    run_control_message(session.clone(), bridge, message).await
                 };
                 if let Err(error) = result {
                     warn!("WebRTC control message failed for {udid}: {error}");
@@ -2911,7 +2914,7 @@ impl Drop for WebRtcMetricsGuard {
         self.metrics
             .subscribers_disconnected
             .fetch_add(1, Ordering::Relaxed);
-        let _ = self.metrics.active_streams.fetch_update(
+        let _ = self.metrics.active_streams.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_sub(1)),

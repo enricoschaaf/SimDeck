@@ -476,6 +476,9 @@ async fn run_batch_steps(
     let continue_on_error = payload.continue_on_error.unwrap_or(false);
     let mut results = Vec::new();
     let mut failure_count = 0usize;
+    let mut failed_step = None;
+    let mut failure_error = None;
+    let mut failure_evidence = None;
     let mut should_warm_after_batch = false;
     for (index, step) in payload.steps.into_iter().enumerate() {
         let invalidates_ax_cache = batch_step_invalidates_ax_cache(&step);
@@ -501,18 +504,19 @@ async fn run_batch_steps(
             Err(error) => {
                 failure_count += 1;
                 let message = error.to_string();
+                let evidence = capture_batch_failure_evidence(state.clone(), udid.clone()).await;
                 results.push(json_value!({
                     "index": index,
                     "ok": false,
                     "elapsedMs": elapsed_ms,
                     "error": message,
+                    "evidence": evidence.clone(),
                 }));
+                failed_step.get_or_insert(index + 1);
+                failure_error.get_or_insert_with(|| message.clone());
+                failure_evidence.get_or_insert(evidence);
                 if !continue_on_error {
-                    return Err(AppError::bad_request(format!(
-                        "Batch step {} failed: {}",
-                        index + 1,
-                        message
-                    )));
+                    break;
                 }
             }
         }
@@ -523,8 +527,49 @@ async fn run_batch_steps(
     Ok(json_value!({
         "ok": failure_count == 0,
         "failureCount": failure_count,
+        "failedStep": failed_step,
+        "error": failure_error,
+        "evidence": failure_evidence,
         "steps": results,
     }))
+}
+
+async fn capture_batch_failure_evidence(state: AppState, udid: String) -> Value {
+    let screenshot_udid = udid.clone();
+    let screenshot = if android::is_android_id(&screenshot_udid) {
+        run_android_action(state.clone(), move |android| {
+            android.screenshot_png(&screenshot_udid)
+        })
+        .await
+    } else {
+        run_bridge_action(state.clone(), move |bridge| {
+            bridge.screenshot_png(&screenshot_udid, false)
+        })
+        .await
+    };
+    let accessibility = refresh_accessibility_tree_value(
+        state,
+        udid,
+        None,
+        Some(24),
+        false,
+        false,
+    )
+    .await;
+    json_value!({
+        "capturedAtMs": SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0),
+        "screenshot": screenshot
+            .map(|png| json_value!({
+                "mimeType": "image/png",
+                "base64": BASE64.encode(png),
+            }))
+            .unwrap_or_else(|error| json_value!({ "error": error.to_string() })),
+        "accessibility": accessibility
+            .unwrap_or_else(|error| json_value!({ "error": error.to_string() })),
+    })
 }
 
 fn batch_step_invalidates_ax_cache(step: &BatchStep) -> bool {
@@ -1097,16 +1142,10 @@ async fn run_batch_step(state: AppState, udid: String, step: BatchStep) -> Resul
             }
             run_bridge_action(state, move |bridge| {
                 let input = bridge.create_input_session(&udid)?;
-                for character in text.chars() {
-                    let Some((key_code, modifiers)) = hid_for_character(character) else {
-                        return Err(AppError::bad_request(format!(
-                            "Unsupported character for HID typing: {character:?}"
-                        )));
-                    };
-                    input.send_key(key_code, modifiers)?;
-                    if let Some(delay_ms) = delay_ms.filter(|delay_ms| *delay_ms > 0) {
-                        std::thread::sleep(Duration::from_millis(delay_ms));
-                    }
+                if !text.is_empty() {
+                    std::thread::sleep(Duration::from_millis(delay_ms.unwrap_or(100)));
+                    bridge.set_pasteboard_text(&udid, &text)?;
+                    input.send_key(HID_KEY_V, HID_MODIFIER_COMMAND)?;
                 }
                 Ok(())
             })
@@ -1174,6 +1213,18 @@ async fn run_batch_step(state: AppState, udid: String, step: BatchStep) -> Resul
             run_bridge_action(state, move |bridge| bridge.launch_bundle(&udid, &bundle_id)).await?;
             spawn_accessibility_warmup(warm_state, warm_udid);
             Ok(json_value!({ "action": "launch" }))
+        }
+        BatchStep::Terminate { bundle_id } => {
+            if android::is_android_id(&udid) {
+                return Err(AppError::bad_request(
+                    "Terminate is currently supported for iOS simulators only.",
+                ));
+            }
+            run_bridge_action(state, move |bridge| {
+                bridge.terminate_bundle(&udid, &bundle_id)
+            })
+            .await?;
+            Ok(json_value!({ "action": "terminate" }))
         }
         BatchStep::OpenUrl { url } => {
             if android::is_android_id(&udid) {

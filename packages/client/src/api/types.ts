@@ -60,6 +60,28 @@ export interface SimulatorsResponse {
   simulators: SimulatorMetadata[];
 }
 
+export interface DeepLinkManifest {
+  scheme: string;
+  bundleId?: string;
+  links: DeepLinkDefinition[];
+}
+
+export interface DeepLinkDefinition {
+  group: string;
+  title: string;
+  url: string;
+  requiresAuthentication: boolean;
+  description?: string;
+  parameters?: DeepLinkParameter[];
+}
+
+export interface DeepLinkParameter {
+  name: string;
+  label?: string;
+  placeholder?: string;
+  default?: string;
+}
+
 export interface SimulatorDeviceTypeOption {
   identifier: string;
   name: string;
@@ -223,7 +245,7 @@ export interface InstallUploadResponse {
   udid: string;
 }
 
-export type CameraSourceKind = "placeholder" | "image" | "video" | "webcam";
+export type CameraSourceKind = "placeholder" | "image" | "video" | "camera";
 
 export interface CameraSourceRequest {
   kind: CameraSourceKind;
@@ -234,16 +256,6 @@ export interface CameraStartRequest {
   bundleId?: string;
   source: CameraSourceRequest;
   mirror?: "auto" | "on" | "off";
-}
-
-export interface CameraWebcam {
-  id: string;
-  name: string;
-  position?: string;
-}
-
-export interface CameraWebcamsResponse {
-  webcams: CameraWebcam[];
 }
 
 export interface CameraStatusResponse {
@@ -259,6 +271,10 @@ export interface CameraStatusResponse {
   width?: number;
   height?: number;
   sequence?: number;
+  cameraSequence?: number;
+  decodeErrors?: number;
+  droppedFrames?: number;
+  frames?: number;
   appLogPath?: string;
   error?: string;
 }

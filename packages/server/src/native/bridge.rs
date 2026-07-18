@@ -426,6 +426,18 @@ impl NativeBridge {
         }
     }
 
+    pub fn terminate_bundle(&self, udid: &str, bundle_id: &str) -> Result<(), AppError> {
+        let udid = CString::new(udid).map_err(|e| AppError::bad_request(e.to_string()))?;
+        let bundle = CString::new(bundle_id).map_err(|e| AppError::bad_request(e.to_string()))?;
+        unsafe {
+            let mut error = ptr::null_mut();
+            bool_result(
+                ffi::xcw_native_terminate_bundle(udid.as_ptr(), bundle.as_ptr(), &mut error),
+                error,
+            )
+        }
+    }
+
     pub fn chrome_profile(&self, udid: &str) -> Result<ChromeProfile, AppError> {
         let udid = CString::new(udid).map_err(|e| AppError::bad_request(e.to_string()))?;
         let json = unsafe {
