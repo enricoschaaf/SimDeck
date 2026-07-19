@@ -694,8 +694,48 @@
 }
 
 .camera-sim-fieldset {
-  height: 238px;
+  min-height: 238px;
+  height: auto;
   align-content: center;
+}
+
+.camera-access-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 10px;
+  padding: 13px 14px;
+  border: 1px solid var(--new-sim-control-border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--new-sim-control-bg) 54%, transparent);
+}
+
+.camera-access-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--new-sim-focus);
+  box-shadow: 0 0 0 4px
+    color-mix(in srgb, var(--new-sim-focus) 16%, transparent);
+}
+
+.camera-access-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--new-sim-muted-text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.camera-access-copy strong {
+  color: var(--new-sim-text);
+  font-size: 13px;
+}
+
+.camera-access-button {
+  white-space: nowrap;
 }
 
 .camera-sim-status {
@@ -1051,6 +1091,15 @@
   background: var(--new-sim-button-hover-bg);
 }
 
+.new-sim-button.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.new-sim-button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 84%, white);
+}
+
 .new-sim-button:disabled {
   color: var(--new-sim-disabled-text);
   cursor: default;
@@ -1160,6 +1209,14 @@
   .new-sim-button {
     flex: 1 1 120px;
     min-width: 0;
+  }
+
+  .camera-access-panel {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .camera-access-button {
+    grid-column: 1 / -1;
   }
 
   .deep-link-window {

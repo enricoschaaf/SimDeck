@@ -3,7 +3,6 @@ export const MODIFIER_BITS = {
   control: 1 << 1,
   option: 1 << 2,
   command: 1 << 3,
-  capsLock: 1 << 4,
   function: 1 << 5,
 } as const;
 
@@ -62,7 +61,6 @@ export const BROWSER_CODE_TO_HID_USAGE: Record<string, number> = {
   Comma: 54,
   Period: 55,
   Slash: 56,
-  CapsLock: 57,
   F1: 58,
   F2: 59,
   F3: 60,
@@ -169,7 +167,6 @@ const KEY_TO_HID_USAGE: Record<string, number> = {
   ">": 55,
   "/": 56,
   "?": 56,
-  CapsLock: 57,
   Insert: 73,
   Home: 74,
   PageUp: 75,
@@ -182,13 +179,34 @@ const KEY_TO_HID_USAGE: Record<string, number> = {
   ArrowUp: 82,
 };
 
+const SHIFTED_CHARACTERS = new Set(
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()_+{}|:"~<>?',
+);
+
+export function keyPayloadForBrowserText(
+  text: string,
+): { keyCode: number; modifiers: number } | null {
+  const characters = [...text];
+  if (characters.length !== 1) {
+    return null;
+  }
+  const character = characters[0];
+  const keyCode = KEY_TO_HID_USAGE[character.toLowerCase()];
+  if (keyCode == null) {
+    return null;
+  }
+  return {
+    keyCode,
+    modifiers: SHIFTED_CHARACTERS.has(character) ? MODIFIER_BITS.shift : 0,
+  };
+}
+
 export function keyboardModifiers(event: KeyboardEvent): number {
   let value = 0;
   if (event.shiftKey) value |= MODIFIER_BITS.shift;
   if (event.ctrlKey) value |= MODIFIER_BITS.control;
   if (event.altKey) value |= MODIFIER_BITS.option;
   if (event.metaKey) value |= MODIFIER_BITS.command;
-  if (event.getModifierState?.("CapsLock")) value |= MODIFIER_BITS.capsLock;
   if (event.getModifierState?.("Fn")) value |= MODIFIER_BITS.function;
   return value;
 }

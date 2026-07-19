@@ -82,16 +82,54 @@ describe("SemanticKeyboardTranslator", () => {
     expect(operations).toEqual(["text:é", "key:80"]);
   });
 
-  it("batches browser text without waiting for a typing pause", () => {
+  it("types human-speed browser text as exact semantic HID keys", () => {
     vi.useFakeTimers();
-    const { text, translator } = keyboardHarness();
+    const { keys, text, translator } = keyboardHarness();
 
-    translator.beforeInput("insertText", "a");
-    vi.advanceTimersByTime(8);
-    translator.beforeInput("insertText", "b");
-    vi.advanceTimersByTime(8);
+    for (const character of "schaaf") {
+      translator.beforeInput("insertText", character);
+      vi.advanceTimersByTime(120);
+    }
 
-    expect(text).toEqual(["ab"]);
+    expect(keys).toEqual(
+      [22, 6, 11, 4, 4, 9].map((keyCode) => ({ keyCode, modifiers: 0 })),
+    );
+    expect(text).toEqual([]);
+  });
+
+  it("derives the intended character independently of keyboard layout", () => {
+    const { keys, translator } = keyboardHarness();
+
+    expect(translator.beforeInput("insertText", "@")).toBe(true);
+    expect(translator.beforeInput("insertText", "a")).toBe(true);
+    expect(translator.beforeInput("insertText", "A")).toBe(true);
+
+    expect(keys).toEqual([
+      { keyCode: 31, modifiers: 1 },
+      { keyCode: 4, modifiers: 0 },
+      { keyCode: 4, modifiers: 1 },
+    ]);
+  });
+
+  it("uses browser-resolved casing without toggling remote Caps Lock", () => {
+    const { keys, translator } = keyboardHarness();
+
+    expect(
+      translator.keyDown(
+        keyboardEvent({
+          code: "CapsLock",
+          getModifierState: (modifier) => modifier === "CapsLock",
+          key: "CapsLock",
+        }),
+      ),
+    ).toBe(false);
+    expect(translator.beforeInput("insertText", "A")).toBe(true);
+    expect(translator.beforeInput("insertText", "a")).toBe(true);
+
+    expect(keys).toEqual([
+      { keyCode: 4, modifiers: 1 },
+      { keyCode: 4, modifiers: 0 },
+    ]);
   });
 
   it("commits composed Unicode once", () => {

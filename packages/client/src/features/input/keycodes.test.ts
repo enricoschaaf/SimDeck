@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { keyCodeForKeyboardEvent } from "./keycodes";
+import { keyboardModifiers, keyCodeForKeyboardEvent } from "./keycodes";
 
 function keyboardEventLike(overrides: Partial<KeyboardEvent>): KeyboardEvent {
   return {
@@ -54,5 +54,16 @@ describe("keyCodeForKeyboardEvent", () => {
     });
 
     expect(keyCodeForKeyboardEvent(event)).toBe(11);
+  });
+
+  it("keeps Caps Lock local to the browser", () => {
+    const event = keyboardEventLike({
+      code: "CapsLock",
+      getModifierState: (modifier) => modifier === "CapsLock",
+      key: "CapsLock",
+    });
+
+    expect(keyCodeForKeyboardEvent(event)).toBeNull();
+    expect(keyboardModifiers(event)).toBe(0);
   });
 });

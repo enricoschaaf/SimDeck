@@ -1,4 +1,8 @@
-import { keyCodeForKeyboardEvent, keyboardModifiers } from "./keycodes";
+import {
+  keyCodeForKeyboardEvent,
+  keyboardModifiers,
+  keyPayloadForBrowserText,
+} from "./keycodes";
 
 export interface KeyboardEventLike {
   altKey: boolean;
@@ -112,7 +116,12 @@ export class SemanticKeyboardTranslator {
       return true;
     }
     this.ignoredCompositionCommit = null;
-    this.batcher.text(data);
+    const key = keyPayloadForBrowserText(data);
+    if (key) {
+      this.batcher.key(key);
+    } else {
+      this.batcher.text(data);
+    }
     return true;
   }
 

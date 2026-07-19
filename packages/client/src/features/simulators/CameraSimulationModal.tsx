@@ -37,6 +37,7 @@ interface CameraSimulationModalProps {
 
 type SourceMode = "placeholder" | "camera" | "media";
 type MirrorMode = "auto" | "on" | "off";
+type CameraAccess = "idle" | "requesting" | "granted" | "denied";
 
 export function CameraSimulationModal({
   foregroundBundleId,
@@ -49,6 +50,7 @@ export function CameraSimulationModal({
   const [mediaPath, setMediaPath] = useState("");
   const [cameraId, setCameraId] = useState("");
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
+  const [cameraAccess, setCameraAccess] = useState<CameraAccess>("idle");
   const [cameraStats, setCameraStats] = useState<CameraStats | null>(null);
   const [mirror, setMirror] = useState<MirrorMode>("auto");
   const [status, setStatus] = useState<CameraStatusResponse | null>(null);
@@ -63,7 +65,8 @@ export function CameraSimulationModal({
   const canApply = Boolean(
     selectedSimulator?.isBooted &&
     bundleId.trim() &&
-    (sourceMode !== "media" || mediaPath.trim()),
+    (sourceMode !== "media" || mediaPath.trim()) &&
+    (sourceMode !== "camera" || cameraAccess === "granted"),
   );
 
   useEffect(() => {
@@ -74,8 +77,34 @@ export function CameraSimulationModal({
     setError("");
     setIsApplying(false);
     setIsStopping(false);
+    setCameraAccess(
+      cameraStreamRef.current
+        ?.getVideoTracks()
+        .some((track) => track.readyState === "live")
+        ? "granted"
+        : "idle",
+    );
     void refreshStatus();
   }, [foregroundBundleId, open, udid]);
+
+  useEffect(() => {
+    if (!open || sourceMode !== "camera" || !navigator.mediaDevices) {
+      return;
+    }
+    const refreshCameras = () => {
+      void navigator.mediaDevices
+        .enumerateDevices()
+        .then((devices) => setCameras(videoDevices(devices)))
+        .catch(() => setCameras([]));
+    };
+    refreshCameras();
+    navigator.mediaDevices.addEventListener?.("devicechange", refreshCameras);
+    return () =>
+      navigator.mediaDevices.removeEventListener?.(
+        "devicechange",
+        refreshCameras,
+      );
+  }, [open, sourceMode]);
 
   useEffect(() => {
     if (!open) {
@@ -113,6 +142,9 @@ export function CameraSimulationModal({
     }
     return bundleIds.join(", ");
   }, [status]);
+  const updatesRunningSimulation = Boolean(
+    status?.alive && status.bundleIds?.includes(bundleId.trim()),
+  );
 
   if (!open) {
     return null;
@@ -176,11 +208,20 @@ export function CameraSimulationModal({
 
   async function cameraStream(): Promise<MediaStream> {
     const current = cameraStreamRef.current;
+    const currentTrack = current
+      ?.getVideoTracks()
+      .find((track) => track.readyState === "live");
     if (
-      current?.getVideoTracks().some((track) => track.readyState === "live")
+      current &&
+      currentTrack &&
+      (!cameraId || currentTrack.getSettings().deviceId === cameraId)
     ) {
       return current;
     }
+    for (const track of current?.getTracks() ?? []) {
+      track.stop();
+    }
+    cameraStreamRef.current = null;
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("Camera capture is unavailable in this browser.");
     }
@@ -198,6 +239,21 @@ export function CameraSimulationModal({
     );
     setCameras(devices);
     return stream;
+  }
+
+  async function requestCameraAccess() {
+    setCameraAccess("requesting");
+    setError("");
+    try {
+      await cameraStream();
+      setCameraAccess("granted");
+    } catch (cameraError) {
+      const denied =
+        cameraError instanceof DOMException &&
+        cameraError.name === "NotAllowedError";
+      setCameraAccess(denied ? "denied" : "idle");
+      setError(cameraAccessError(cameraError));
+    }
   }
 
   async function startCurrentCameraFeed(stream: MediaStream) {
@@ -231,11 +287,16 @@ export function CameraSimulationModal({
       if (sourceMode === "camera") {
         stream = await cameraStream();
       }
-      const nextStatus = await startCameraSimulation(udid, {
-        bundleId: bundleId.trim(),
-        mirror,
-        source: requestSource(),
-      });
+      const nextStatus = updatesRunningSimulation
+        ? await switchCameraSimulationSource(udid, {
+            mirror,
+            source: requestSource(),
+          })
+        : await startCameraSimulation(udid, {
+            bundleId: bundleId.trim(),
+            mirror,
+            source: requestSource(),
+          });
       setStatus(nextStatus);
       if (stream) {
         await startCurrentCameraFeed(stream);
@@ -246,45 +307,19 @@ export function CameraSimulationModal({
       if (stream) {
         stopCameraFeed(true);
       }
-      setError(
-        applyError instanceof Error
-          ? applyError.message
-          : "Unable to start camera simulation.",
-      );
-    } finally {
-      setIsApplying(false);
-    }
-  }
-
-  async function switchSourceOnly() {
-    if (!status?.alive) {
-      return;
-    }
-    setIsApplying(true);
-    setError("");
-    let stream: MediaStream | null = null;
-    try {
-      if (sourceMode === "camera") {
-        stream = await cameraStream();
-      }
-      const nextStatus = await switchCameraSimulationSource(udid, {
-        mirror,
-        source: requestSource(),
-      });
-      setStatus(nextStatus);
-      if (stream) {
-        await startCurrentCameraFeed(stream);
-      } else {
-        stopCameraFeed(true);
-      }
-    } catch (switchError) {
-      if (stream) {
-        stopCameraFeed(true);
+      if (
+        sourceMode === "camera" &&
+        applyError instanceof DOMException &&
+        applyError.name === "NotAllowedError"
+      ) {
+        setCameraAccess("denied");
       }
       setError(
-        switchError instanceof Error
-          ? switchError.message
-          : "Unable to switch camera source.",
+        sourceMode === "camera"
+          ? cameraAccessError(applyError)
+          : applyError instanceof Error
+            ? applyError.message
+            : "Unable to start camera simulation.",
       );
     } finally {
       setIsApplying(false);
@@ -389,20 +424,53 @@ export function CameraSimulationModal({
               </label>
             ) : null}
             {sourceMode === "camera" ? (
-              <label className="new-sim-field">
-                <span>Camera:</span>
-                <select
-                  onChange={(event) => setCameraId(event.currentTarget.value)}
-                  value={cameraId}
-                >
-                  <option value="">Default camera</option>
-                  {cameras.map((camera) => (
-                    <option key={camera.id} value={camera.id}>
-                      {camera.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              cameraAccess === "granted" ? (
+                <label className="new-sim-field">
+                  <span>Camera:</span>
+                  <select
+                    onChange={(event) => setCameraId(event.currentTarget.value)}
+                    value={cameraId}
+                  >
+                    <option value="">System default</option>
+                    {cameras.map((camera) => (
+                      <option key={camera.id} value={camera.id}>
+                        {camera.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <div className="camera-access-panel">
+                  <span
+                    className="camera-access-indicator"
+                    aria-hidden="true"
+                  />
+                  <span className="camera-access-copy">
+                    <strong>
+                      {cameraAccess === "denied"
+                        ? "Camera access is blocked"
+                        : "Choose which camera to use"}
+                    </strong>
+                    <span>
+                      {cameraAccess === "denied"
+                        ? "Allow camera access for this site in your browser settings, then try again."
+                        : "Your browser will ask for permission before showing available cameras."}
+                    </span>
+                  </span>
+                  <button
+                    className="new-sim-button camera-access-button"
+                    disabled={cameraAccess === "requesting"}
+                    onClick={requestCameraAccess}
+                    type="button"
+                  >
+                    {cameraAccess === "requesting"
+                      ? "Requesting..."
+                      : cameraAccess === "denied"
+                        ? "Try again"
+                        : "Allow access"}
+                  </button>
+                </div>
+              )
             ) : null}
             <label className="new-sim-field">
               <span>Mirror:</span>
@@ -443,31 +511,31 @@ export function CameraSimulationModal({
             onClick={onClose}
             type="button"
           >
-            Cancel
+            Close
           </button>
-          <button
-            className="new-sim-button"
-            disabled={!status?.alive || isApplying || isStopping}
-            onClick={switchSourceOnly}
-            type="button"
-          >
-            Switch
-          </button>
-          <button
-            className="new-sim-button"
-            disabled={!status?.alive || isApplying || isStopping}
-            onClick={stop}
-            type="button"
-          >
-            {isStopping ? "Stopping..." : "Stop"}
-          </button>
+          {status?.alive ? (
+            <button
+              className="new-sim-button"
+              disabled={isApplying || isStopping}
+              onClick={stop}
+              type="button"
+            >
+              {isStopping ? "Stopping..." : "Stop simulation"}
+            </button>
+          ) : null}
           <span className="new-sim-action-spacer" />
           <button
-            className="new-sim-button"
+            className="new-sim-button primary"
             disabled={!canApply || isApplying || isStopping}
             type="submit"
           >
-            {isApplying ? "Applying..." : "Apply"}
+            {isApplying
+              ? updatesRunningSimulation
+                ? "Updating..."
+                : "Starting..."
+              : updatesRunningSimulation
+                ? "Update source"
+                : "Start simulation"}
           </button>
         </div>
       </form>
@@ -480,4 +548,25 @@ function looksLikeVideo(value: string): boolean {
     return true;
   }
   return /\.(mp4|m4v|mov|qt|avi|mkv|webm|mpg|mpeg|3gp|3g2)$/i.test(value);
+}
+
+function cameraAccessError(error: unknown): string {
+  if (!(error instanceof DOMException)) {
+    return error instanceof Error
+      ? error.message
+      : "Unable to access the camera.";
+  }
+  if (error.name === "NotAllowedError") {
+    return "Camera access is blocked for this site. Change the camera permission in your browser settings, then try again.";
+  }
+  if (error.name === "NotFoundError") {
+    return "No camera was found. Connect a camera, then try again.";
+  }
+  if (error.name === "NotReadableError") {
+    return "The camera is in use by another application. Close it there, then try again.";
+  }
+  if (error.name === "OverconstrainedError") {
+    return "The selected camera is no longer available. Choose another camera.";
+  }
+  return error.message || "Unable to access the camera.";
 }
