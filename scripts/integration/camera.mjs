@@ -29,6 +29,7 @@ const commandTimeoutMs = Number(
 );
 
 let simulatorUDID = "";
+let secondarySimulatorUDID = "";
 let chromeProcess = null;
 
 process.on("SIGINT", () => {
@@ -216,6 +217,13 @@ async function main() {
     `received placeholder frames: frames=${placeholderMarker.frames} rgb=${Math.round(placeholderMarker.avgRed)},${Math.round(placeholderMarker.avgGreen)},${Math.round(placeholderMarker.avgBlue)}`,
   );
 
+  await verifyIndependentCameraContexts(
+    runtime,
+    deviceType,
+    appPath,
+    imagePath,
+  );
+
   step("stop daemon camera feed");
   const stopStatus = simdeckJson(["camera", "stop", simulatorUDID]);
   if (stopStatus.alive !== false) {
@@ -238,6 +246,87 @@ async function main() {
   }
 }
 
+async function verifyIndependentCameraContexts(
+  runtime,
+  deviceType,
+  appPath,
+  imagePath,
+) {
+  step("verify independent simulator camera contexts");
+  secondarySimulatorUDID = runText(
+    "xcrun",
+    [
+      "simctl",
+      "create",
+      `SimDeck Camera Isolation ${Date.now()}`,
+      deviceType.identifier,
+      runtime.identifier,
+    ],
+    { timeoutMs: commandTimeoutMs },
+  ).trim();
+  let verified = false;
+  try {
+    runText("xcrun", ["simctl", "boot", secondarySimulatorUDID], {
+      allowFailure: true,
+      timeoutMs: commandTimeoutMs,
+    });
+    runText("xcrun", ["simctl", "bootstatus", secondarySimulatorUDID, "-b"], {
+      timeoutMs: 600_000,
+    });
+    simdeckJson(["boot", secondarySimulatorUDID], {
+      timeoutMs: commandTimeoutMs,
+    });
+    await retryRunText(
+      "xcrun",
+      ["simctl", "install", secondarySimulatorUDID, appPath],
+      { attempts: 3, delayMs: 2_000, timeoutMs: commandTimeoutMs },
+    );
+    simdeckJson(["launch", secondarySimulatorUDID, bundleId]);
+    await waitForForegroundBundleOn(secondarySimulatorUDID, bundleId);
+
+    const primaryBefore = simdeckJson(["camera", "status", simulatorUDID]);
+    const secondary = simdeckJson([
+      "camera",
+      "start",
+      secondarySimulatorUDID,
+      "--file",
+      imagePath,
+      "--mirror",
+      "off",
+    ]);
+    await sleep(1_000);
+    const primaryDuring = simdeckJson(["camera", "status", simulatorUDID]);
+    if (
+      !secondary.alive ||
+      secondary.udid !== secondarySimulatorUDID ||
+      !primaryDuring.alive ||
+      primaryDuring.source !== "placeholder" ||
+      primaryDuring.frames <= primaryBefore.frames
+    ) {
+      throw new Error(
+        `starting a second camera disturbed the first: ${JSON.stringify({ primaryBefore, primaryDuring, secondary })}`,
+      );
+    }
+    simdeckJson(["camera", "stop", secondarySimulatorUDID]);
+    await sleep(500);
+    const primaryAfter = simdeckJson(["camera", "status", simulatorUDID]);
+    if (
+      !primaryAfter.alive ||
+      primaryAfter.source !== "placeholder" ||
+      primaryAfter.frames <= primaryDuring.frames
+    ) {
+      throw new Error(
+        `stopping a second camera disturbed the first: ${JSON.stringify({ primaryDuring, primaryAfter })}`,
+      );
+    }
+    verified = true;
+  } finally {
+    if (!verified) {
+      cleanupSecondarySimulator();
+    }
+  }
+}
+
 async function runBrowserBenchmark() {
   if (!fs.existsSync(chromePath)) {
     throw new Error(`Missing Chrome at ${chromePath}.`);
@@ -248,6 +337,9 @@ async function runBrowserBenchmark() {
     [
       "--headless=new",
       "--autoplay-policy=no-user-gesture-required",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
       `--remote-debugging-port=${chromeDebugPort}`,
       `--user-data-dir=${chromeProfile}`,
       "about:blank",
@@ -343,6 +435,7 @@ async function runBrowserBenchmark() {
     const cameraStatus = simdeckJson(["camera", "status", simulatorUDID]);
     const viewer = await browserViewerSample(cdp);
     const metricsDurationMs = Date.now() - metricsStartedAt;
+    const isolation = await verifySimultaneousBrowserCameras();
     const recovery = await verifyCameraRecovery(cdp);
     const stopped = await cdp.evaluate(
       "window.__simdeckCameraBenchmark.stop()",
@@ -377,6 +470,7 @@ async function runBrowserBenchmark() {
         ),
       },
       processStats,
+      isolation,
       recovery,
       firstMarker,
       finalMarker,
@@ -386,6 +480,120 @@ async function runBrowserBenchmark() {
   } finally {
     cdp.close();
   }
+}
+
+async function verifySimultaneousBrowserCameras() {
+  if (!secondarySimulatorUDID) {
+    throw new Error("Secondary simulator is unavailable for camera isolation.");
+  }
+  step("verify simultaneous browser cameras");
+  const viewerUrl = new URL(serverUrl);
+  viewerUrl.searchParams.set("device", secondarySimulatorUDID);
+  viewerUrl.searchParams.set("cameraBenchmark", "1");
+  viewerUrl.searchParams.set("cameraBenchmarkWidth", "1280");
+  viewerUrl.searchParams.set("cameraBenchmarkHeight", "720");
+  viewerUrl.searchParams.set("cameraBenchmarkFps", "30");
+  viewerUrl.searchParams.set("stream", "webrtc");
+  const targetResponse = await fetch(
+    `http://127.0.0.1:${chromeDebugPort}/json/new?${encodeURIComponent(viewerUrl)}`,
+    { method: "PUT" },
+  );
+  if (!targetResponse.ok) {
+    throw new Error(
+      `Secondary Chrome target creation failed with ${targetResponse.status}: ${await targetResponse.text()}`,
+    );
+  }
+  const target = await targetResponse.json();
+  const secondaryCdp = await connectCdp(target.webSocketDebuggerUrl);
+  try {
+    await secondaryCdp.send("Runtime.enable");
+    await waitForBrowserValue(
+      secondaryCdp,
+      "window.__simdeckCameraBenchmark?.snapshot() ?? null",
+      (value) => value?.ready && value.udid === secondarySimulatorUDID,
+      60_000,
+    );
+    await secondaryCdp.evaluate(
+      "window.__simdeckCameraBenchmark.start()",
+      true,
+    );
+    const secondaryStarted = await waitForCameraStatus(
+      secondarySimulatorUDID,
+      (status) =>
+        status.alive &&
+        status.source === "camera" &&
+        status.frames >= 10 &&
+        status.webRtcCamera?.connected,
+      30_000,
+    );
+    const primaryStarted = simdeckJson(["camera", "status", simulatorUDID]);
+    const simultaneousStartedAt = Date.now();
+    await sleep(1_500);
+    const simultaneousDurationMs = Date.now() - simultaneousStartedAt;
+    const primaryDuring = simdeckJson(["camera", "status", simulatorUDID]);
+    const secondaryDuring = simdeckJson([
+      "camera",
+      "status",
+      secondarySimulatorUDID,
+    ]);
+    const minimumSimultaneousFrames = Math.floor(
+      (simultaneousDurationMs * 20) / 1_000,
+    );
+    const primaryFrameDelta = primaryDuring.frames - primaryStarted.frames;
+    const secondaryFrameDelta =
+      secondaryDuring.frames - secondaryStarted.frames;
+    if (
+      !primaryDuring.alive ||
+      !secondaryDuring.alive ||
+      primaryFrameDelta < minimumSimultaneousFrames ||
+      secondaryFrameDelta < minimumSimultaneousFrames ||
+      primaryDuring.udid !== simulatorUDID ||
+      secondaryDuring.udid !== secondarySimulatorUDID ||
+      primaryDuring.webRtcCamera?.queueHighWater > 1 ||
+      secondaryDuring.webRtcCamera?.queueHighWater > 1
+    ) {
+      throw new Error(
+        `simultaneous browser cameras were not isolated: ${JSON.stringify({ primaryStarted, primaryDuring, secondaryStarted, secondaryDuring })}`,
+      );
+    }
+    await secondaryCdp.evaluate("window.__simdeckCameraBenchmark.stop()", true);
+    await sleep(500);
+    const primaryAfter = simdeckJson(["camera", "status", simulatorUDID]);
+    if (!primaryAfter.alive || primaryAfter.frames <= primaryDuring.frames) {
+      throw new Error(
+        `stopping the secondary browser camera disturbed the primary: ${JSON.stringify({ primaryDuring, primaryAfter })}`,
+      );
+    }
+    return {
+      simultaneousDurationMs,
+      minimumSimultaneousFrames,
+      primaryFrameDelta,
+      primaryAfterStopDelta: primaryAfter.frames - primaryDuring.frames,
+      secondaryFrameDelta,
+      primaryUdid: primaryDuring.udid,
+      secondaryUdid: secondaryDuring.udid,
+    };
+  } finally {
+    await secondaryCdp
+      .evaluate("window.__simdeckCameraBenchmark.stop()", true)
+      .catch(() => undefined);
+    secondaryCdp.close();
+  }
+}
+
+async function waitForCameraStatus(udid, predicate, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let status = null;
+  while (Date.now() < deadline) {
+    status = simdeckJson(["camera", "status", udid]);
+    if (predicate(status)) {
+      return status;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `Timed out waiting for camera status on ${udid}: ${JSON.stringify(status)}`,
+  );
 }
 
 async function verifyCameraRecovery(cdp) {
@@ -799,11 +1007,15 @@ function percentile(sortedValues, percentileValue) {
 }
 
 async function waitForForegroundBundle(expectedBundleId) {
+  return waitForForegroundBundleOn(simulatorUDID, expectedBundleId);
+}
+
+async function waitForForegroundBundleOn(udid, expectedBundleId) {
   const deadline = Date.now() + 30_000;
   let foregroundApp = null;
   while (Date.now() < deadline) {
     const url = new URL(
-      `/api/simulators/${encodeURIComponent(simulatorUDID)}/state`,
+      `/api/simulators/${encodeURIComponent(udid)}/state`,
       serverUrl,
     );
     const response = await fetch(url);
@@ -1436,11 +1648,38 @@ function cleanup() {
       } catch {}
     }
   }
+  cleanupSecondarySimulator();
   if (!keepSimulator) {
     try {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     } catch {}
   }
+}
+
+function cleanupSecondarySimulator() {
+  if (!secondarySimulatorUDID) {
+    return;
+  }
+  try {
+    simdeckJson(["camera", "stop", secondarySimulatorUDID], {
+      timeoutMs: 30_000,
+    });
+  } catch {}
+  if (!keepSimulator) {
+    try {
+      runText("xcrun", ["simctl", "shutdown", secondarySimulatorUDID], {
+        allowFailure: true,
+        timeoutMs: 120_000,
+      });
+    } catch {}
+    try {
+      runText("xcrun", ["simctl", "delete", secondarySimulatorUDID], {
+        allowFailure: true,
+        timeoutMs: 120_000,
+      });
+    } catch {}
+  }
+  secondarySimulatorUDID = "";
 }
 
 function sleep(ms) {
