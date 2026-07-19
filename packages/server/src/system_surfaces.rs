@@ -16,6 +16,11 @@ const DOCUMENT_PICKER_BUNDLE_IDENTIFIERS: &[&str] = &[
     "com.apple.DocumentManager.DocumentPickerViewService",
     "com.apple.DocumentManager.Service",
 ];
+const PHOTO_PICKER_BUNDLE_IDENTIFIERS: &[&str] = &[
+    "com.apple.Photos.PhotosUIService",
+    "com.apple.mobileslideshow.photo-picker",
+    "com.apple.mobileslideshow.photospicker",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,7 +56,7 @@ impl SystemSurfaceRegistry {
         udid: &str,
         events: &DeviceEventHub,
     ) -> Result<Option<SystemSurface>, String> {
-        let surface = detect_document_picker(udid).await?;
+        let surface = detect_system_surface(udid).await?;
         self.set(udid, surface.clone(), events);
         Ok(surface)
     }
@@ -125,17 +130,24 @@ pub fn is_document_picker_service(details: &UIKitApplicationServiceDetails) -> b
             .is_some()
 }
 
-async fn detect_document_picker(udid: &str) -> Result<Option<SystemSurface>, String> {
+pub fn is_photo_picker_service(details: &UIKitApplicationServiceDetails) -> bool {
+    details.spawn_role.contains("ui focal")
+        && photo_picker_identifier(details.bundle_identifier.as_deref())
+            .or_else(|| photo_picker_identifier(service_bundle_identifier(&details.service_name)))
+            .is_some()
+}
+
+async fn detect_system_surface(udid: &str) -> Result<Option<SystemSurface>, String> {
     let services = application_services(udid).await?;
     let mut best: Option<UIKitApplicationServiceDetails> = None;
     for service in services
         .iter()
-        .filter(|service| service_might_be_document_picker(service))
+        .filter(|service| service_might_be_system_surface(service))
     {
         let Some(details) = application_service_details(udid, service).await? else {
             continue;
         };
-        if !is_document_picker_service(&details) {
+        if !is_document_picker_service(&details) && !is_photo_picker_service(&details) {
             continue;
         }
         if best
@@ -147,14 +159,28 @@ async fn detect_document_picker(udid: &str) -> Result<Option<SystemSurface>, Str
     }
 
     Ok(best.map(|details| SystemSurface {
-        kind: "documentPicker".to_owned(),
+        kind: if is_photo_picker_service(&details) {
+            "photoPicker"
+        } else {
+            "documentPicker"
+        }
+        .to_owned(),
         process_identifier: details.process_identifier,
         session_id: surface_session_id(udid, &details),
     }))
 }
 
-fn service_might_be_document_picker(service: &UIKitApplicationService) -> bool {
-    document_picker_identifier(service_bundle_identifier(&service.service_name)).is_some()
+fn service_might_be_system_surface(service: &UIKitApplicationService) -> bool {
+    let identifier = service_bundle_identifier(&service.service_name);
+    document_picker_identifier(identifier).is_some()
+        || photo_picker_identifier(identifier).is_some()
+}
+
+fn photo_picker_identifier(identifier: Option<&str>) -> Option<&str> {
+    let identifier = identifier?;
+    PHOTO_PICKER_BUNDLE_IDENTIFIERS
+        .contains(&identifier)
+        .then_some(identifier)
 }
 
 fn document_picker_identifier(identifier: Option<&str>) -> Option<&str> {
@@ -175,7 +201,7 @@ fn surface_session_id(udid: &str, details: &UIKitApplicationServiceDetails) -> S
 
 #[cfg(test)]
 mod tests {
-    use super::{is_document_picker_service, surface_session_id};
+    use super::{is_document_picker_service, is_photo_picker_service, surface_session_id};
     use crate::uikit_services::{
         application_service_details_from_output, parse_application_service_line,
     };
@@ -189,6 +215,16 @@ mod tests {
         bundle id = com.apple.DocumentsApp.DocumentsViewService
         spawn role = ui focal (1)
         pid = 54831
+    "#;
+    const IOS_18_PHOTO_PICKER_LIST_TRACE: &str =
+        "  54833 - UIKitApplication:com.apple.Photos.PhotosUIService[cafe][rb-legacy]";
+    const IOS_18_PHOTO_PICKER_DETAIL_TRACE: &str = r#"
+        active count = 1
+        state = running
+        program = /Applications/PhotosUIService.app/PhotosUIService
+        bundle id = com.apple.Photos.PhotosUIService
+        spawn role = ui focal (1)
+        pid = 54833
     "#;
 
     #[test]
@@ -232,5 +268,21 @@ mod tests {
         )
         .unwrap();
         assert!(!is_document_picker_service(&unknown));
+    }
+
+    #[test]
+    fn recognizes_focal_photo_picker_service_trace() {
+        let service = parse_application_service_line(IOS_18_PHOTO_PICKER_LIST_TRACE).unwrap();
+        let details =
+            application_service_details_from_output(&service, IOS_18_PHOTO_PICKER_DETAIL_TRACE)
+                .unwrap();
+        assert!(is_photo_picker_service(&details));
+
+        let background = application_service_details_from_output(
+            &service,
+            &IOS_18_PHOTO_PICKER_DETAIL_TRACE.replace("ui focal (1)", "non-ui (3)"),
+        )
+        .unwrap();
+        assert!(!is_photo_picker_service(&background));
     }
 }

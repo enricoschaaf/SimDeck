@@ -13,6 +13,7 @@ mod files;
 mod inspector;
 mod logging;
 mod logs;
+mod media;
 mod metrics;
 mod native;
 mod performance;

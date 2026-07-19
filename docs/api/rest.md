@@ -379,6 +379,24 @@ positive checks. `assertNot` performs negative checks.
 
 For app-owned `WKWebView` on iOS 16.4 or newer, the app must set `isInspectable = true`.
 
+## Files and media
+
+| Method   | Path                                         | Purpose                                        |
+| -------- | -------------------------------------------- | ---------------------------------------------- |
+| `GET`    | `/api/simulators/{udid}/files`               | List the native On My iPhone storage           |
+| `POST`   | `/api/simulators/{udid}/files/upload`        | Stream a file into native Files                |
+| `POST`   | `/api/simulators/{udid}/files/directories`   | Create a native Files directory                |
+| `GET`    | `/api/simulators/{udid}/files/{id}/download` | Download a native Files item                   |
+| `PATCH`  | `/api/simulators/{udid}/files/{id}`          | Rename or move a native Files item             |
+| `DELETE` | `/api/simulators/{udid}/files/{id}`          | Delete a native Files item                     |
+| `POST`   | `/api/simulators/{udid}/media`               | Stream supported media into the Photos library |
+
+File and media uploads use raw request bodies with percent-encoded
+`x-simdeck-filename` and `x-simdeck-content-type` headers. File uploads may
+also set `x-simdeck-parent-id`. SimDeck keeps staging outside user-visible
+storage, streams progress over the control connection, and removes incomplete
+or imported staging files.
+
 ## Evidence and chrome
 
 | Method | Path                                                         | Purpose                                        |

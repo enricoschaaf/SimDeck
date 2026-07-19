@@ -84,6 +84,22 @@ describe("controlMessages", () => {
     ).toBeNull();
   });
 
+  it("parses photo picker surface events", () => {
+    expect(
+      parseControlServerEvent(
+        JSON.stringify({
+          type: "system-surface.changed",
+          udid: "device-a",
+          systemSurface: {
+            kind: "photoPicker",
+            processIdentifier: 456,
+            sessionId: "surface-photo",
+          },
+        }),
+      )?.systemSurface?.kind,
+    ).toBe("photoPicker");
+  });
+
   it("rejects unknown and malformed server events", () => {
     expect(parseControlServerEvent("not-json")).toBeNull();
     expect(

@@ -285,7 +285,7 @@ export interface SimulatorForegroundApp {
 }
 
 export interface SystemSurface {
-  kind: "documentPicker";
+  kind: "documentPicker" | "photoPicker";
   processIdentifier: number;
   sessionId: string;
 }

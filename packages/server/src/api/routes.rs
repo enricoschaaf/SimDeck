@@ -15,6 +15,7 @@ use crate::files::{
 };
 use crate::inspector::{InspectorHub, PublishedInspector};
 use crate::logs::LogRegistry;
+use crate::media::{MediaError, MediaUpload};
 use crate::metrics::counters::{ClientStreamStats, Metrics};
 use crate::native::bridge::{
     tvos_remote_key_for_touch_motion, tvos_remote_key_for_touch_phase, LogFilters, NativeBridge,
@@ -26,7 +27,9 @@ use crate::performance::{
 use crate::simulators::registry::SessionRegistry;
 use crate::simulators::session::SimulatorSession;
 use crate::static_files;
-use crate::system_surfaces::{is_document_picker_service, SystemSurfaceRegistry};
+use crate::system_surfaces::{
+    is_document_picker_service, is_photo_picker_service, SystemSurfaceRegistry,
+};
 use crate::uikit_services::{
     application_foreground_score as ui_application_foreground_score,
     application_service_details as ui_application_service_details,
@@ -78,6 +81,7 @@ const FILE_UPLOAD_CONTENT_TYPE_HEADER: &str = "x-simdeck-content-type";
 const FILE_UPLOAD_PARENT_ID_HEADER: &str = "x-simdeck-parent-id";
 const MAX_APP_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_FILE_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_MEDIA_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
 const FILE_TRANSFER_CHUNK_BYTES: usize = 64 * 1024;
 const FILE_PROGRESS_INTERVAL_BYTES: u64 = 256 * 1024;
 const MAX_SEMANTIC_TEXT_BYTES: usize = 1024 * 1024;
@@ -903,6 +907,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/simulators/{udid}/files/{id}",
             axum::routing::patch(update_file).delete(delete_file),
+        )
+        .route(
+            "/api/simulators/{udid}/media",
+            post(import_media).layer(DefaultBodyLimit::max(MAX_MEDIA_UPLOAD_BYTES)),
         )
         .route("/api/simulators/{udid}/screenshot.png", get(screenshot_png))
         .route(
@@ -3033,6 +3041,238 @@ async fn download_file(
     );
     headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     Ok(response)
+}
+
+async fn import_media(
+    State(state): State<AppState>,
+    Path(udid): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Json<Value>, AppError> {
+    if android::is_android_id(&udid) {
+        return Err(AppError::bad_request(
+            "Media import is only available for iOS simulators.",
+        ));
+    }
+    let simulator = all_device_values(state.clone(), false)
+        .await?
+        .into_iter()
+        .find(|simulator| simulator.get("udid").and_then(Value::as_str) == Some(&udid))
+        .ok_or_else(|| AppError::not_found(format!("Unknown simulator {udid}")))?;
+    if !simulator
+        .get("isBooted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(AppError::bad_request(
+            "Boot the simulator before importing media.",
+        ));
+    }
+
+    let file_name = required_encoded_header(&headers, APP_UPLOAD_FILE_NAME_HEADER, "file name")?;
+    let content_type = required_encoded_header(
+        &headers,
+        FILE_UPLOAD_CONTENT_TYPE_HEADER,
+        "file content type",
+    )?;
+    let total_bytes = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if total_bytes.is_some_and(|bytes| bytes > MAX_MEDIA_UPLOAD_BYTES as u64) {
+        return Err(AppError::bad_request(format!(
+            "Media exceeds the {} byte upload limit.",
+            MAX_MEDIA_UPLOAD_BYTES
+        )));
+    }
+
+    let transfer_id = new_transfer_id();
+    let mut upload = MediaUpload::begin(&udid, &transfer_id, &file_name, &content_type)
+        .await
+        .map_err(media_app_error)?;
+    publish_media_event(
+        &state,
+        &udid,
+        &transfer_id,
+        &file_name,
+        "media.upload-started",
+        0,
+        total_bytes,
+        None,
+    );
+
+    let mut stream = body.into_data_stream();
+    let mut last_reported = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                publish_media_event(
+                    &state,
+                    &udid,
+                    &transfer_id,
+                    &file_name,
+                    "media.import-failed",
+                    upload.bytes_written(),
+                    total_bytes,
+                    Some(("transfer_interrupted", error.to_string())),
+                );
+                return Err(AppError::bad_request(format!(
+                    "Media upload was interrupted: {error}"
+                )));
+            }
+        };
+        let next_size = upload.bytes_written().saturating_add(chunk.len() as u64);
+        if next_size > MAX_MEDIA_UPLOAD_BYTES as u64 {
+            publish_media_event(
+                &state,
+                &udid,
+                &transfer_id,
+                &file_name,
+                "media.import-failed",
+                upload.bytes_written(),
+                total_bytes,
+                Some((
+                    "upload_too_large",
+                    format!(
+                        "Media exceeds the {} byte upload limit.",
+                        MAX_MEDIA_UPLOAD_BYTES
+                    ),
+                )),
+            );
+            return Err(AppError::bad_request(format!(
+                "Media exceeds the {} byte upload limit.",
+                MAX_MEDIA_UPLOAD_BYTES
+            )));
+        }
+        let bytes_received = upload.write(chunk).await.map_err(media_app_error)?;
+        if bytes_received.saturating_sub(last_reported) >= FILE_PROGRESS_INTERVAL_BYTES {
+            last_reported = bytes_received;
+            publish_media_event(
+                &state,
+                &udid,
+                &transfer_id,
+                &file_name,
+                "media.upload-progress",
+                bytes_received,
+                total_bytes,
+                None,
+            );
+        }
+    }
+    if total_bytes.is_some_and(|total| total != upload.bytes_written()) {
+        let received = upload.bytes_written();
+        publish_media_event(
+            &state,
+            &udid,
+            &transfer_id,
+            &file_name,
+            "media.import-failed",
+            received,
+            total_bytes,
+            Some((
+                "transfer_interrupted",
+                "Media upload ended before the declared content length was received.".to_owned(),
+            )),
+        );
+        return Err(AppError::bad_request(
+            "Media upload ended before the declared content length was received.",
+        ));
+    }
+
+    let bytes = upload.bytes_written();
+    publish_media_event(
+        &state,
+        &udid,
+        &transfer_id,
+        &file_name,
+        "media.import-started",
+        bytes,
+        Some(bytes),
+        None,
+    );
+    let imported = match upload.import().await {
+        Ok(imported) => imported,
+        Err(error) => {
+            let code = media_error_code(&error);
+            let message = error.to_string();
+            publish_media_event(
+                &state,
+                &udid,
+                &transfer_id,
+                &file_name,
+                "media.import-failed",
+                bytes,
+                Some(bytes),
+                Some((code, message)),
+            );
+            return Err(media_app_error(error));
+        }
+    };
+    publish_media_event(
+        &state,
+        &udid,
+        &transfer_id,
+        &file_name,
+        "media.import-completed",
+        imported.bytes,
+        Some(imported.bytes),
+        None,
+    );
+    Ok(json(json_value!({
+        "ok": true,
+        "udid": imported.udid,
+        "transferId": transfer_id,
+        "fileName": imported.file_name,
+        "contentType": imported.content_type,
+        "bytes": imported.bytes,
+    })))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_media_event(
+    state: &AppState,
+    udid: &str,
+    transfer_id: &str,
+    file_name: &str,
+    event_type: &str,
+    bytes_transferred: u64,
+    total_bytes: Option<u64>,
+    error: Option<(&str, String)>,
+) {
+    state.device_events.publish(
+        udid,
+        json_value!({
+            "type": event_type,
+            "udid": udid,
+            "transferId": transfer_id,
+            "fileName": file_name,
+            "bytesTransferred": bytes_transferred,
+            "totalBytes": total_bytes,
+            "error": error.map(|(code, message)| json_value!({
+                "code": code,
+                "message": message,
+            })),
+        }),
+    );
+}
+
+fn media_app_error(error: MediaError) -> AppError {
+    match error {
+        MediaError::InvalidInput(message) => AppError::bad_request(message),
+        MediaError::Io(error) => AppError::internal(error.to_string()),
+        MediaError::Rejected(message) => AppError::bad_request(message),
+        MediaError::Timeout => AppError::unavailable("CoreSimulator media import timed out."),
+    }
+}
+
+fn media_error_code(error: &MediaError) -> &'static str {
+    match error {
+        MediaError::InvalidInput(_) => "unsupported_media",
+        MediaError::Io(_) => "storage_error",
+        MediaError::Rejected(_) => "import_rejected",
+        MediaError::Timeout => "import_timeout",
+    }
 }
 
 async fn files_store_for_request(state: &AppState, udid: &str) -> Result<ProviderStore, AppError> {
@@ -5224,7 +5464,7 @@ async fn foreground_app_from_launchctl(
         }) else {
             continue;
         };
-        if is_document_picker_service(&details) {
+        if is_document_picker_service(&details) || is_photo_picker_service(&details) {
             continue;
         }
         let details_score = ui_application_foreground_score(&details);

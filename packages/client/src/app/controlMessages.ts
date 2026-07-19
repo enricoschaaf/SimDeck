@@ -40,7 +40,7 @@ export function parseControlServerEvent(
   }
   const surface = value.systemSurface;
   if (
-    surface.kind !== "documentPicker" ||
+    (surface.kind !== "documentPicker" && surface.kind !== "photoPicker") ||
     typeof surface.processIdentifier !== "number" ||
     typeof surface.sessionId !== "string"
   ) {
