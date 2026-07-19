@@ -9,6 +9,10 @@ use crate::deep_links;
 use crate::device_events::DeviceEventHub;
 use crate::devtools;
 use crate::error::AppError;
+use crate::files::{
+    new_transfer_id, validate_content_type, validate_file_name, FilesError, ProviderStore,
+    SimulatorFiles, ROOT_ITEM_IDENTIFIER,
+};
 use crate::inspector::{InspectorHub, PublishedInspector};
 use crate::logs::LogRegistry;
 use crate::metrics::counters::{ClientStreamStats, Metrics};
@@ -70,7 +74,12 @@ const INSPECTOR_FOREGROUND_APP_CACHE_TTL: Duration = Duration::from_millis(500);
 const FOREGROUND_APP_STALE_TTL: Duration = Duration::from_secs(30);
 const FOREGROUND_APP_ROUTE_TIMEOUT: Duration = Duration::from_millis(1200);
 const APP_UPLOAD_FILE_NAME_HEADER: &str = "x-simdeck-filename";
+const FILE_UPLOAD_CONTENT_TYPE_HEADER: &str = "x-simdeck-content-type";
+const FILE_UPLOAD_PARENT_ID_HEADER: &str = "x-simdeck-parent-id";
 const MAX_APP_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_FILE_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
+const FILE_TRANSFER_CHUNK_BYTES: usize = 64 * 1024;
+const FILE_PROGRESS_INTERVAL_BYTES: u64 = 256 * 1024;
 const MAX_SEMANTIC_TEXT_BYTES: usize = 1024 * 1024;
 const FOREGROUND_PROCESS_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 const ACCESSIBILITY_SOURCE_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(250);
@@ -96,6 +105,7 @@ pub struct AppState {
     pub android: AndroidBridge,
     pub device_events: DeviceEventHub,
     pub system_surfaces: SystemSurfaceRegistry,
+    pub files: SimulatorFiles,
 }
 
 #[derive(Clone)]
@@ -535,6 +545,31 @@ struct CreatePairedWatchPayload {
     runtime_identifier: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileListQuery {
+    parent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateDirectoryPayload {
+    name: String,
+    #[serde(default = "default_root_item_identifier")]
+    parent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateFilePayload {
+    name: Option<String>,
+    parent_id: Option<String>,
+}
+
+fn default_root_item_identifier() -> String {
+    ROOT_ITEM_IDENTIFIER.to_owned()
+}
+
 #[derive(Deserialize, Clone)]
 struct TouchSequenceEvent {
     x: f64,
@@ -851,6 +886,23 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/simulators/{udid}/pasteboard",
             get(get_pasteboard).post(set_pasteboard),
+        )
+        .route("/api/simulators/{udid}/files", get(list_files))
+        .route(
+            "/api/simulators/{udid}/files/upload",
+            post(upload_file).layer(DefaultBodyLimit::max(MAX_FILE_UPLOAD_BYTES)),
+        )
+        .route(
+            "/api/simulators/{udid}/files/directories",
+            post(create_file_directory),
+        )
+        .route(
+            "/api/simulators/{udid}/files/{id}/download",
+            get(download_file),
+        )
+        .route(
+            "/api/simulators/{udid}/files/{id}",
+            axum::routing::patch(update_file).delete(delete_file),
         )
         .route("/api/simulators/{udid}/screenshot.png", get(screenshot_png))
         .route(
@@ -2588,6 +2640,555 @@ async fn set_pasteboard(
     })
     .await?;
     Ok(json(json_value!({ "ok": true })))
+}
+
+async fn list_files(
+    State(state): State<AppState>,
+    Path(udid): Path<String>,
+    Query(query): Query<FileListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let store = files_store_for_request(&state, &udid).await?;
+    let items = store
+        .list(query.parent_id.as_deref())
+        .await
+        .map_err(files_app_error)?;
+    Ok(json(json_value!({
+        "udid": udid,
+        "rootId": ROOT_ITEM_IDENTIFIER,
+        "items": items,
+    })))
+}
+
+async fn upload_file(
+    State(state): State<AppState>,
+    Path(udid): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Json<Value>, AppError> {
+    let store = files_store_for_request(&state, &udid).await?;
+    let name = required_encoded_header(&headers, APP_UPLOAD_FILE_NAME_HEADER, "file name")?;
+    let content_type = required_encoded_header(
+        &headers,
+        FILE_UPLOAD_CONTENT_TYPE_HEADER,
+        "file content type",
+    )?;
+    let parent_id = optional_encoded_header(&headers, FILE_UPLOAD_PARENT_ID_HEADER)?
+        .unwrap_or_else(|| ROOT_ITEM_IDENTIFIER.to_owned());
+    validate_file_name(&name).map_err(files_app_error)?;
+    validate_content_type(&content_type).map_err(files_app_error)?;
+    let total_bytes = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if total_bytes.is_some_and(|bytes| bytes > MAX_FILE_UPLOAD_BYTES as u64) {
+        return Err(AppError::bad_request(format!(
+            "File exceeds the {} byte upload limit.",
+            MAX_FILE_UPLOAD_BYTES
+        )));
+    }
+
+    let transfer_id = new_transfer_id();
+    let mut upload = store
+        .begin_upload(&transfer_id)
+        .await
+        .map_err(files_app_error)?;
+    publish_file_progress(
+        &state,
+        &udid,
+        &transfer_id,
+        &name,
+        "uploading",
+        0,
+        total_bytes,
+        None,
+    );
+    let mut stream = body.into_data_stream();
+    let mut last_reported = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                publish_file_progress(
+                    &state,
+                    &udid,
+                    &transfer_id,
+                    &name,
+                    "failed",
+                    upload.bytes_written(),
+                    total_bytes,
+                    Some("transfer_interrupted"),
+                );
+                return Err(AppError::bad_request(format!(
+                    "File upload was interrupted: {error}"
+                )));
+            }
+        };
+        let next_size = upload.bytes_written().saturating_add(chunk.len() as u64);
+        if next_size > MAX_FILE_UPLOAD_BYTES as u64 {
+            publish_file_progress(
+                &state,
+                &udid,
+                &transfer_id,
+                &name,
+                "failed",
+                upload.bytes_written(),
+                total_bytes,
+                Some("upload_too_large"),
+            );
+            return Err(AppError::bad_request(format!(
+                "File exceeds the {} byte upload limit.",
+                MAX_FILE_UPLOAD_BYTES
+            )));
+        }
+        let bytes_received = match upload.write(chunk).await {
+            Ok(bytes_received) => bytes_received,
+            Err(error) => {
+                publish_file_progress(
+                    &state,
+                    &udid,
+                    &transfer_id,
+                    &name,
+                    "failed",
+                    upload.bytes_written(),
+                    total_bytes,
+                    Some(files_error_code(&error)),
+                );
+                return Err(files_app_error(error));
+            }
+        };
+        if bytes_received.saturating_sub(last_reported) >= FILE_PROGRESS_INTERVAL_BYTES {
+            last_reported = bytes_received;
+            publish_file_progress(
+                &state,
+                &udid,
+                &transfer_id,
+                &name,
+                "uploading",
+                bytes_received,
+                total_bytes,
+                None,
+            );
+        }
+    }
+    if total_bytes.is_some_and(|total| total != upload.bytes_written()) {
+        publish_file_progress(
+            &state,
+            &udid,
+            &transfer_id,
+            &name,
+            "failed",
+            upload.bytes_written(),
+            total_bytes,
+            Some("transfer_interrupted"),
+        );
+        return Err(AppError::bad_request(
+            "File upload ended before the declared content length was received.",
+        ));
+    }
+    let item = match store
+        .commit_upload(upload, &parent_id, &name, &content_type)
+        .await
+    {
+        Ok(item) => item,
+        Err(error) => {
+            publish_file_progress(
+                &state,
+                &udid,
+                &transfer_id,
+                &name,
+                "failed",
+                last_reported,
+                total_bytes,
+                Some(files_error_code(&error)),
+            );
+            return Err(files_app_error(error));
+        }
+    };
+    publish_file_progress(
+        &state,
+        &udid,
+        &transfer_id,
+        &name,
+        "completed",
+        item.size,
+        Some(item.size),
+        None,
+    );
+    state.device_events.publish(
+        &udid,
+        json_value!({
+            "type": "file.created",
+            "udid": udid,
+            "item": item,
+            "source": "browser",
+        }),
+    );
+    Ok(json(json_value!({
+        "ok": true,
+        "udid": udid,
+        "transferId": transfer_id,
+        "item": item,
+    })))
+}
+
+async fn create_file_directory(
+    State(state): State<AppState>,
+    Path(udid): Path<String>,
+    Json(payload): Json<CreateDirectoryPayload>,
+) -> Result<Json<Value>, AppError> {
+    let store = files_store_for_request(&state, &udid).await?;
+    let item = store
+        .create_directory(&payload.parent_id, &payload.name)
+        .await
+        .map_err(files_app_error)?;
+    state.device_events.publish(
+        &udid,
+        json_value!({
+            "type": "file.created",
+            "udid": udid,
+            "item": item,
+            "source": "browser",
+        }),
+    );
+    Ok(json(
+        json_value!({ "ok": true, "udid": udid, "item": item }),
+    ))
+}
+
+async fn update_file(
+    State(state): State<AppState>,
+    Path((udid, id)): Path<(String, String)>,
+    Json(payload): Json<UpdateFilePayload>,
+) -> Result<Json<Value>, AppError> {
+    if payload.name.is_none() && payload.parent_id.is_none() {
+        return Err(AppError::bad_request(
+            "File update requires `name` or `parentId`.",
+        ));
+    }
+    let store = files_store_for_request(&state, &udid).await?;
+    let item = store
+        .update(&id, payload.name.as_deref(), payload.parent_id.as_deref())
+        .await
+        .map_err(files_app_error)?;
+    state.device_events.publish(
+        &udid,
+        json_value!({
+            "type": "file.changed",
+            "udid": udid,
+            "item": item,
+            "source": "browser",
+        }),
+    );
+    Ok(json(
+        json_value!({ "ok": true, "udid": udid, "item": item }),
+    ))
+}
+
+async fn delete_file(
+    State(state): State<AppState>,
+    Path((udid, id)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    let store = files_store_for_request(&state, &udid).await?;
+    let deleted = store.delete(&id).await.map_err(files_app_error)?;
+    for item in &deleted {
+        state.device_events.publish(
+            &udid,
+            json_value!({
+                "type": "file.deleted",
+                "udid": udid,
+                "item": item,
+                "source": "browser",
+            }),
+        );
+    }
+    Ok(json(json_value!({
+        "ok": true,
+        "udid": udid,
+        "deletedIds": deleted.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+    })))
+}
+
+async fn download_file(
+    State(state): State<AppState>,
+    Path((udid, id)): Path<(String, String)>,
+) -> Result<Response, AppError> {
+    let store = files_store_for_request(&state, &udid).await?;
+    let (item, file) = store.open_content(&id).await.map_err(files_app_error)?;
+    let transfer_id = new_transfer_id();
+    publish_file_progress(
+        &state,
+        &udid,
+        &transfer_id,
+        &item.name,
+        "downloading",
+        0,
+        Some(item.size),
+        None,
+    );
+    let events = state.device_events.clone();
+    let stream_udid = udid.clone();
+    let stream_transfer_id = transfer_id.clone();
+    let stream_name = item.name.clone();
+    let total_bytes = item.size;
+    let stream = futures::stream::try_unfold(
+        (file, 0_u64, 0_u64),
+        move |(mut file, bytes_sent, mut last_reported)| {
+            let events = events.clone();
+            let udid = stream_udid.clone();
+            let transfer_id = stream_transfer_id.clone();
+            let name = stream_name.clone();
+            async move {
+                let mut buffer = vec![0_u8; FILE_TRANSFER_CHUNK_BYTES];
+                let count = match file.read(&mut buffer).await {
+                    Ok(count) => count,
+                    Err(error) => {
+                        events.publish(
+                            &udid,
+                            json_value!({
+                                "type": "file.transfer-progress",
+                                "udid": udid,
+                                "transferId": transfer_id,
+                                "fileName": name,
+                                "direction": "download",
+                                "status": "failed",
+                                "bytesTransferred": bytes_sent,
+                                "totalBytes": total_bytes,
+                                "error": {
+                                    "code": "storage_error",
+                                    "message": error.to_string(),
+                                },
+                            }),
+                        );
+                        return Err(error);
+                    }
+                };
+                if count == 0 {
+                    events.publish(
+                        &udid,
+                        json_value!({
+                            "type": "file.transfer-progress",
+                            "udid": udid,
+                            "transferId": transfer_id,
+                            "fileName": name,
+                            "direction": "download",
+                            "status": "completed",
+                            "bytesTransferred": bytes_sent,
+                            "totalBytes": total_bytes,
+                        }),
+                    );
+                    return Ok::<_, std::io::Error>(None);
+                }
+                buffer.truncate(count);
+                let next_bytes = bytes_sent.saturating_add(count as u64);
+                if next_bytes.saturating_sub(last_reported) >= FILE_PROGRESS_INTERVAL_BYTES {
+                    last_reported = next_bytes;
+                    events.publish(
+                        &udid,
+                        json_value!({
+                            "type": "file.transfer-progress",
+                            "udid": udid,
+                            "transferId": transfer_id,
+                            "fileName": name,
+                            "direction": "download",
+                            "status": "downloading",
+                            "bytesTransferred": next_bytes,
+                            "totalBytes": total_bytes,
+                        }),
+                    );
+                }
+                Ok(Some((
+                    Bytes::from(buffer),
+                    (file, next_bytes, last_reported),
+                )))
+            }
+        },
+    );
+    let mut response = Response::new(Body::from_stream(stream));
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        item.content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream")
+            .parse()
+            .map_err(|_| AppError::internal("Stored file has an invalid content type."))?,
+    );
+    headers.insert(
+        header::CONTENT_LENGTH,
+        item.size
+            .to_string()
+            .parse()
+            .map_err(|_| AppError::internal("Stored file has an invalid size."))?,
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        content_disposition_header(&item.name)
+            .parse()
+            .map_err(|_| AppError::internal("Stored file has an invalid name."))?,
+    );
+    headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    Ok(response)
+}
+
+async fn files_store_for_request(state: &AppState, udid: &str) -> Result<ProviderStore, AppError> {
+    if android::is_android_id(udid) {
+        return Err(AppError::bad_request(
+            "SimDeck Files is only available for iOS simulators.",
+        ));
+    }
+    let simulator = all_device_values(state.clone(), false)
+        .await?
+        .into_iter()
+        .find(|simulator| simulator.get("udid").and_then(Value::as_str) == Some(udid))
+        .ok_or_else(|| AppError::not_found(format!("Unknown simulator {udid}")))?;
+    if !simulator
+        .get("isBooted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(AppError::bad_request(
+            "Boot the simulator before accessing SimDeck Files.",
+        ));
+    }
+    state
+        .files
+        .store_for_device(udid)
+        .await
+        .map_err(files_app_error)
+}
+
+fn files_app_error(error: FilesError) -> AppError {
+    match error {
+        FilesError::InvalidInput(message) => AppError::bad_request(message),
+        FilesError::NotFound(message) => AppError::not_found(message),
+        FilesError::Conflict(message) => AppError::conflict(message),
+        FilesError::ProviderUnavailable(message) => AppError::unavailable(message),
+        FilesError::UnsafeStorage(message) => AppError::internal(message),
+        FilesError::Json(error) => AppError::internal(error.to_string()),
+        FilesError::Io(error) => AppError::internal(error.to_string()),
+    }
+}
+
+fn files_error_code(error: &FilesError) -> &'static str {
+    match error {
+        FilesError::InvalidInput(_) => "invalid_input",
+        FilesError::NotFound(_) => "not_found",
+        FilesError::Conflict(_) => "conflict",
+        FilesError::ProviderUnavailable(_) => "provider_unavailable",
+        FilesError::UnsafeStorage(_) => "unsafe_storage",
+        FilesError::Json(_) => "metadata_error",
+        FilesError::Io(_) => "storage_error",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_file_progress(
+    state: &AppState,
+    udid: &str,
+    transfer_id: &str,
+    name: &str,
+    status: &str,
+    bytes_transferred: u64,
+    total_bytes: Option<u64>,
+    error_code: Option<&str>,
+) {
+    state.device_events.publish(
+        udid,
+        json_value!({
+            "type": "file.transfer-progress",
+            "udid": udid,
+            "transferId": transfer_id,
+            "fileName": name,
+            "direction": "upload",
+            "status": status,
+            "bytesTransferred": bytes_transferred,
+            "totalBytes": total_bytes,
+            "error": error_code.map(|code| json_value!({ "code": code })),
+        }),
+    );
+}
+
+fn required_encoded_header(
+    headers: &HeaderMap,
+    name: &str,
+    description: &str,
+) -> Result<String, AppError> {
+    optional_encoded_header(headers, name)?.ok_or_else(|| {
+        AppError::bad_request(format!(
+            "File upload requires the {description} header `{name}`."
+        ))
+    })
+}
+
+fn optional_encoded_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, AppError> {
+    let Some(value) = headers.get(name) else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| AppError::bad_request(format!("Header `{name}` is not valid text.")))?;
+    decode_percent_encoded_utf8(value)
+        .map(Some)
+        .map_err(AppError::bad_request)
+}
+
+fn decode_percent_encoded_utf8(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err("Upload metadata contains invalid percent encoding.".to_owned());
+            }
+            let high = hex_nibble(bytes[index + 1])
+                .ok_or_else(|| "Upload metadata contains invalid percent encoding.".to_owned())?;
+            let low = hex_nibble(bytes[index + 2])
+                .ok_or_else(|| "Upload metadata contains invalid percent encoding.".to_owned())?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "Upload metadata is not valid UTF-8.".to_owned())
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn content_disposition_header(name: &str) -> String {
+    let fallback = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | ' ') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .replace(['"', '\\'], "_");
+    let encoded = name
+        .as_bytes()
+        .iter()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(byte) {
+                (*byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect::<String>();
+    format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
 }
 
 async fn screenshot_png(
@@ -5778,18 +6379,19 @@ mod tests {
         accessibility_point_snapshot, android_boot_options_from_config, attach_tree_metadata,
         available_sources_for_snapshot, available_sources_with_native_ax, best_inspector_session,
         boot_simulator_payload_from_body, chrome_devtools_source_for_session,
-        client_stats_foreground, compact_accessibility_snapshot, element_matches_selector,
-        first_matching_element, inspector_available_sources, inspector_metadata,
-        inspector_session_from_published, inspector_session_score,
-        is_inspector_agent_transport_path, is_transient_native_ax_snapshot_error,
-        logical_screen_size_from_display_pixels, normalize_inspector_node,
-        normalize_screen_point_from_snapshot, normalized_gesture_coordinates,
-        parse_lsof_tcp_listener, process_identifier_from_accessibility_snapshot,
-        resolved_stream_quality_limits, scroll_input_plan_for_udid, split_filter_values,
-        stream_quality_profile, suppress_native_ax_translation_error, tap_point_from_snapshot,
-        trim_tree_depth, ui_application_foreground_score, AccessibilitySnapshotCache,
-        AccessibilitySnapshotCacheKey, AccessibilitySource, BatchStep, ElementSelectorPayload,
-        InspectorSession, InspectorSessionTransport, ScrollInputBackend, ScrollUntilVisiblePayload,
+        client_stats_foreground, compact_accessibility_snapshot, content_disposition_header,
+        decode_percent_encoded_utf8, element_matches_selector, first_matching_element,
+        inspector_available_sources, inspector_metadata, inspector_session_from_published,
+        inspector_session_score, is_inspector_agent_transport_path,
+        is_transient_native_ax_snapshot_error, logical_screen_size_from_display_pixels,
+        normalize_inspector_node, normalize_screen_point_from_snapshot,
+        normalized_gesture_coordinates, parse_lsof_tcp_listener,
+        process_identifier_from_accessibility_snapshot, resolved_stream_quality_limits,
+        scroll_input_plan_for_udid, split_filter_values, stream_quality_profile,
+        suppress_native_ax_translation_error, tap_point_from_snapshot, trim_tree_depth,
+        ui_application_foreground_score, AccessibilitySnapshotCache, AccessibilitySnapshotCacheKey,
+        AccessibilitySource, BatchStep, ElementSelectorPayload, InspectorSession,
+        InspectorSessionTransport, ScrollInputBackend, ScrollUntilVisiblePayload,
         StreamClientForegroundRegistry, StreamQualityLimits, StreamQualityPayload,
         UIKitApplicationServiceDetails, SOURCE_FLUTTER, SOURCE_NATIVE_AX, SOURCE_NATIVE_SCRIPT,
         SOURCE_REACT_NATIVE, SOURCE_SWIFTUI, SOURCE_UIKIT,
@@ -6404,6 +7006,19 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn file_upload_metadata_preserves_unicode_and_download_names() {
+        assert_eq!(
+            decode_percent_encoded_utf8("D%C3%A9compte%20%F0%9F%8C%B1.pdf").unwrap(),
+            "Décompte 🌱.pdf"
+        );
+        assert_eq!(
+            content_disposition_header("Décompte 🌱.pdf"),
+            "attachment; filename=\"D_compte _.pdf\"; filename*=UTF-8''D%C3%A9compte%20%F0%9F%8C%B1.pdf"
+        );
+        assert!(decode_percent_encoded_utf8("broken%2").is_err());
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod deep_links;
 mod device_events;
 mod devtools;
 mod error;
+mod files;
 mod inspector;
 mod logging;
 mod logs;
@@ -6082,6 +6083,7 @@ async fn serve(
         android: Default::default(),
         device_events: Default::default(),
         system_surfaces: Default::default(),
+        files: Default::default(),
     };
     start_simulator_session_idle_reaper(state.registry.clone());
 

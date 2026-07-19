@@ -11,6 +11,10 @@ pub enum AppError {
     #[error("{0}")]
     NotFound(String),
     #[error("{0}")]
+    Conflict(String),
+    #[error("{0}")]
+    Unavailable(String),
+    #[error("{0}")]
     Native(String),
     #[error("{0}")]
     Internal(String),
@@ -30,6 +34,14 @@ impl AppError {
         Self::NotFound(message.into())
     }
 
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::Conflict(message.into())
+    }
+
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self::Unavailable(message.into())
+    }
+
     pub fn native(message: impl Into<String>) -> Self {
         Self::Native(message.into())
     }
@@ -44,6 +56,8 @@ impl IntoResponse for AppError {
         let status = match &self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Native(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let message = self.to_string();
