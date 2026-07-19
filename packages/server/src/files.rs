@@ -1,21 +1,26 @@
+use crate::device_events::DeviceEventHub;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::io::Cursor;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
-pub const FILES_APP_BUNDLE_IDENTIFIER: &str = "dev.simdeck.files";
-pub const FILES_APP_GROUP_IDENTIFIER: &str = "group.dev.simdeck.files";
 pub const ROOT_ITEM_IDENTIFIER: &str = "root";
-const STORE_RELATIVE_PATH: &str = "Library/Application Support/SimDeck Files";
-const APP_CONTAINER_TIMEOUT: Duration = Duration::from_secs(3);
+const LOCAL_STORAGE_APP_GROUP_IDENTIFIER: &str = "group.com.apple.FileProvider.LocalStorage";
+const FILE_PROVIDER_STORAGE_DIRECTORY: &str = "File Provider Storage";
+const HOST_STATE_RELATIVE_PATH: &str = "Library/Application Support/SimDeck Host Files";
+const SIMULATOR_HOME_TIMEOUT: Duration = Duration::from_secs(3);
+const FILE_MONITOR_INTERVAL: Duration = Duration::from_millis(500);
 const STALE_STAGING_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_FILE_NAME_BYTES: usize = 255;
 const ITEM_ID_HEX_LENGTH: usize = 32;
@@ -42,44 +47,129 @@ pub enum FileItemKind {
     Directory,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredItem {
+    item: FileItem,
+    relative_path: PathBuf,
+}
+
 #[derive(Clone, Default)]
-pub struct SimulatorFiles;
+pub struct SimulatorFiles {
+    monitored: Arc<Mutex<HashSet<String>>>,
+    snapshots: Arc<Mutex<HashMap<String, HashMap<String, FileItem>>>>,
+}
 
 impl SimulatorFiles {
     pub async fn store_for_device(&self, udid: &str) -> Result<ProviderStore, FilesError> {
-        let group_container = resolve_group_container(udid).await?;
+        let group_container = resolve_local_storage_group(udid).await?;
         ProviderStore::open_in_group_container(&group_container).await
+    }
+
+    pub fn ensure_monitor(&self, udid: String, events: DeviceEventHub) {
+        if !self.monitored.lock().unwrap().insert(udid.clone()) {
+            return;
+        }
+        let files = self.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Ok(store) = files.store_for_device(&udid).await {
+                    if let Ok(items) = store.list(None).await {
+                        files.publish_snapshot_changes(&udid, items, &events);
+                    }
+                }
+                sleep(FILE_MONITOR_INTERVAL).await;
+            }
+        });
+    }
+
+    pub async fn refresh_snapshot(&self, udid: &str) -> Result<(), FilesError> {
+        let items = self.store_for_device(udid).await?.list(None).await?;
+        self.snapshots.lock().unwrap().insert(
+            udid.to_owned(),
+            items
+                .into_iter()
+                .map(|item| (item.id.clone(), item))
+                .collect(),
+        );
+        Ok(())
+    }
+
+    fn publish_snapshot_changes(&self, udid: &str, items: Vec<FileItem>, events: &DeviceEventHub) {
+        let next = items
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        let previous = self
+            .snapshots
+            .lock()
+            .unwrap()
+            .insert(udid.to_owned(), next.clone());
+        let Some(previous) = previous else {
+            return;
+        };
+        for (id, item) in &next {
+            let event_type = match previous.get(id) {
+                None => Some("file.created"),
+                Some(before) if before != item => Some("file.changed"),
+                Some(_) => None,
+            };
+            if let Some(event_type) = event_type {
+                events.publish(
+                    udid,
+                    json!({
+                        "type": event_type,
+                        "udid": udid,
+                        "item": item,
+                        "source": "native",
+                    }),
+                );
+            }
+        }
+        for (id, item) in previous {
+            if !next.contains_key(&id) {
+                events.publish(
+                    udid,
+                    json!({
+                        "type": "file.deleted",
+                        "udid": udid,
+                        "item": item,
+                        "source": "native",
+                    }),
+                );
+            }
+        }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ProviderStore {
+    root: PathBuf,
     metadata: PathBuf,
-    contents: PathBuf,
     staging: PathBuf,
 }
 
 impl ProviderStore {
     pub async fn open_in_group_container(group_container: &Path) -> Result<Self, FilesError> {
         let group_container = canonical_directory(group_container).await?;
-        let root = group_container.join(STORE_RELATIVE_PATH);
+        let root = group_container.join(FILE_PROVIDER_STORAGE_DIRECTORY);
         ensure_directory(&root).await?;
         let root = fs::canonicalize(&root).await.map_err(FilesError::Io)?;
         if !root.starts_with(&group_container) {
             return Err(FilesError::UnsafeStorage(
-                "Files storage resolves outside the companion app group.".to_owned(),
+                "The native Files root resolves outside its app group.".to_owned(),
             ));
         }
 
-        let metadata = root.join("metadata");
-        let contents = root.join("contents");
-        let staging = root.join("staging");
-        for directory in [&metadata, &contents, &staging] {
+        let state = group_container.join(HOST_STATE_RELATIVE_PATH);
+        let metadata = state.join("metadata");
+        let staging = state.join("staging");
+        for directory in [&metadata, &staging] {
             ensure_directory(directory).await?;
             let canonical = fs::canonicalize(directory).await.map_err(FilesError::Io)?;
-            if !canonical.starts_with(&root) {
+            if !canonical.starts_with(&group_container) {
                 return Err(FilesError::UnsafeStorage(format!(
-                    "Files storage directory {} resolves outside its root.",
+                    "Files state directory {} resolves outside its app group.",
                     directory.display()
                 )));
             }
@@ -87,34 +177,34 @@ impl ProviderStore {
         cleanup_stale_staging(&staging).await?;
 
         Ok(Self {
+            root,
             metadata,
-            contents,
             staging,
         })
     }
 
     #[cfg(test)]
-    async fn open_test_root(root: &Path) -> Result<Self, FilesError> {
-        ensure_directory(root).await?;
-        Self::open_in_group_container(root).await
+    async fn open_test_root(group_container: &Path) -> Result<Self, FilesError> {
+        ensure_directory(group_container).await?;
+        Self::open_in_group_container(group_container).await
     }
 
     pub async fn list(&self, parent_id: Option<&str>) -> Result<Vec<FileItem>, FilesError> {
+        let mut items = self.reconcile().await?;
         if let Some(parent_id) = parent_id {
             validate_parent_identifier(parent_id)?;
-            if parent_id != ROOT_ITEM_IDENTIFIER {
-                let parent = self.item(parent_id).await?;
-                if parent.kind != FileItemKind::Directory {
-                    return Err(FilesError::InvalidInput(
-                        "The selected parent is not a directory.".to_owned(),
-                    ));
-                }
+            if parent_id != ROOT_ITEM_IDENTIFIER
+                && !items.iter().any(|item| {
+                    item.item.id == parent_id && item.item.kind == FileItemKind::Directory
+                })
+            {
+                return Err(FilesError::NotFound(format!(
+                    "Unknown Files directory {parent_id}."
+                )));
             }
+            items.retain(|item| item.item.parent_id == parent_id);
         }
-        let mut items = self.read_items().await?;
-        if let Some(parent_id) = parent_id {
-            items.retain(|item| item.parent_id == parent_id);
-        }
+        let mut items = items.into_iter().map(|item| item.item).collect::<Vec<_>>();
         items.sort_by(|left, right| {
             let left_directory = left.kind == FileItemKind::Directory;
             let right_directory = right.kind == FileItemKind::Directory;
@@ -126,32 +216,38 @@ impl ProviderStore {
         Ok(items)
     }
 
-    pub async fn item(&self, id: &str) -> Result<FileItem, FilesError> {
-        validate_item_identifier(id)?;
-        self.read_item(id).await
-    }
-
     pub async fn create_directory(
         &self,
         parent_id: &str,
         name: &str,
     ) -> Result<FileItem, FilesError> {
         validate_file_name(name)?;
-        self.validate_destination(parent_id, name, None).await?;
-        let timestamp = now_ms();
-        let item = FileItem {
-            id: new_opaque_id(parent_id, name),
-            parent_id: parent_id.to_owned(),
-            name: name.to_owned(),
-            kind: FileItemKind::Directory,
-            content_type: None,
-            size: 0,
-            created_at: timestamp,
-            modified_at: timestamp,
-            version: 1,
+        self.reconcile().await?;
+        let relative_path = self.destination_relative_path(parent_id, name).await?;
+        let path = self.safe_path(&relative_path, false).await?;
+        if fs::symlink_metadata(&path).await.is_ok() {
+            return Err(FilesError::Conflict(format!(
+                "An item named {name:?} already exists in this directory."
+            )));
+        }
+        fs::create_dir(&path).await.map_err(FilesError::Io)?;
+        let metadata = fs::metadata(&path).await.map_err(FilesError::Io)?;
+        let stored = StoredItem {
+            item: FileItem {
+                id: new_opaque_id(parent_id, name),
+                parent_id: parent_id.to_owned(),
+                name: name.to_owned(),
+                kind: FileItemKind::Directory,
+                content_type: None,
+                size: 0,
+                created_at: system_time_ms(metadata.created().unwrap_or(SystemTime::UNIX_EPOCH)),
+                modified_at: system_time_ms(metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
+                version: 1,
+            },
+            relative_path,
         };
-        self.write_item(&item).await?;
-        Ok(item)
+        self.write_stored_item(&stored).await?;
+        Ok(stored.item)
     }
 
     pub async fn begin_upload(&self, transfer_id: &str) -> Result<StagedUpload, FilesError> {
@@ -181,33 +277,39 @@ impl ProviderStore {
     ) -> Result<FileItem, FilesError> {
         validate_file_name(name)?;
         validate_content_type(content_type)?;
-        self.validate_destination(parent_id, name, None).await?;
+        self.reconcile().await?;
+        let relative_path = self.destination_relative_path(parent_id, name).await?;
+        let path = self.safe_path(&relative_path, false).await?;
+        if fs::symlink_metadata(&path).await.is_ok() {
+            return Err(FilesError::Conflict(format!(
+                "An item named {name:?} already exists in this directory."
+            )));
+        }
         upload.finish_writing().await?;
-
-        let timestamp = now_ms();
-        let id = new_opaque_id(parent_id, name);
-        let content_path = self.content_path(&id)?;
-        reject_symlink_if_present(&content_path).await?;
-        fs::rename(&upload.path, &content_path)
+        fs::rename(&upload.path, &path)
             .await
             .map_err(FilesError::Io)?;
         upload.committed = true;
-        let item = FileItem {
-            id,
-            parent_id: parent_id.to_owned(),
-            name: name.to_owned(),
-            kind: FileItemKind::File,
-            content_type: Some(content_type.to_owned()),
-            size: upload.bytes_written,
-            created_at: timestamp,
-            modified_at: timestamp,
-            version: 1,
+        let metadata = fs::metadata(&path).await.map_err(FilesError::Io)?;
+        let stored = StoredItem {
+            item: FileItem {
+                id: new_opaque_id(parent_id, name),
+                parent_id: parent_id.to_owned(),
+                name: name.to_owned(),
+                kind: FileItemKind::File,
+                content_type: Some(content_type.to_owned()),
+                size: upload.bytes_written,
+                created_at: system_time_ms(metadata.created().unwrap_or(SystemTime::UNIX_EPOCH)),
+                modified_at: system_time_ms(metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
+                version: 1,
+            },
+            relative_path,
         };
-        if let Err(error) = self.write_item(&item).await {
-            let _ = fs::remove_file(&content_path).await;
+        if let Err(error) = self.write_stored_item(&stored).await {
+            let _ = fs::remove_file(&path).await;
             return Err(error);
         }
-        Ok(item)
+        Ok(stored.item)
     }
 
     pub async fn update(
@@ -216,146 +318,293 @@ impl ProviderStore {
         name: Option<&str>,
         parent_id: Option<&str>,
     ) -> Result<FileItem, FilesError> {
-        let mut item = self.item(id).await?;
-        let next_name = name.unwrap_or(&item.name);
-        let next_parent = parent_id.unwrap_or(&item.parent_id);
+        let all_items = self.reconcile().await?;
+        let mut stored = all_items
+            .iter()
+            .find(|item| item.item.id == id)
+            .cloned()
+            .ok_or_else(|| FilesError::NotFound(format!("Unknown Files item {id}.")))?;
+        let next_name = name.unwrap_or(&stored.item.name);
+        let next_parent = parent_id.unwrap_or(&stored.item.parent_id);
         validate_file_name(next_name)?;
-        self.validate_destination(next_parent, next_name, Some(id))
-            .await?;
-        if item.kind == FileItemKind::Directory && self.is_descendant(next_parent, id).await? {
-            return Err(FilesError::InvalidInput(
-                "A directory cannot be moved inside itself.".to_owned(),
-            ));
+        if stored.item.kind == FileItemKind::Directory {
+            let descendant_ids = self.descendant_ids(&all_items, id);
+            if descendant_ids.contains(next_parent) {
+                return Err(FilesError::InvalidInput(
+                    "A directory cannot be moved inside itself.".to_owned(),
+                ));
+            }
         }
-        item.name = next_name.to_owned();
-        item.parent_id = next_parent.to_owned();
-        item.modified_at = now_ms();
-        item.version = item.version.saturating_add(1);
-        self.write_item(&item).await?;
-        Ok(item)
+
+        let next_relative_path = self
+            .destination_relative_path(next_parent, next_name)
+            .await?;
+        if next_relative_path != stored.relative_path {
+            let source = self.safe_path(&stored.relative_path, true).await?;
+            let destination = self.safe_path(&next_relative_path, false).await?;
+            if fs::symlink_metadata(&destination).await.is_ok() {
+                return Err(FilesError::Conflict(format!(
+                    "An item named {next_name:?} already exists in this directory."
+                )));
+            }
+            fs::rename(&source, &destination)
+                .await
+                .map_err(FilesError::Io)?;
+
+            let old_relative_path = stored.relative_path.clone();
+            for mut descendant in all_items.into_iter().filter(|candidate| {
+                candidate.item.id != id && candidate.relative_path.starts_with(&old_relative_path)
+            }) {
+                let suffix = descendant
+                    .relative_path
+                    .strip_prefix(&old_relative_path)
+                    .map_err(|_| {
+                        FilesError::UnsafeStorage(
+                            "Unable to update a moved directory descendant.".to_owned(),
+                        )
+                    })?;
+                descendant.relative_path = next_relative_path.join(suffix);
+                self.write_stored_item(&descendant).await?;
+            }
+        }
+        stored.relative_path = next_relative_path;
+        stored.item.name = next_name.to_owned();
+        stored.item.parent_id = next_parent.to_owned();
+        stored.item.modified_at = now_ms();
+        stored.item.version = stored.item.version.saturating_add(1);
+        self.write_stored_item(&stored).await?;
+        Ok(stored.item)
     }
 
     pub async fn delete(&self, id: &str) -> Result<Vec<FileItem>, FilesError> {
-        let item = self.item(id).await?;
-        let all_items = self.read_items().await?;
-        let mut delete_ids = HashSet::from([id.to_owned()]);
-        loop {
-            let before = delete_ids.len();
-            for candidate in &all_items {
-                if delete_ids.contains(&candidate.parent_id) {
-                    delete_ids.insert(candidate.id.clone());
-                }
-            }
-            if delete_ids.len() == before {
-                break;
-            }
-        }
+        let all_items = self.reconcile().await?;
+        let stored = all_items
+            .iter()
+            .find(|item| item.item.id == id)
+            .cloned()
+            .ok_or_else(|| FilesError::NotFound(format!("Unknown Files item {id}.")))?;
         let mut deleted = all_items
             .into_iter()
-            .filter(|candidate| delete_ids.contains(&candidate.id))
+            .filter(|candidate| {
+                candidate.item.id == id
+                    || candidate.relative_path.starts_with(&stored.relative_path)
+            })
             .collect::<Vec<_>>();
-        if !deleted.iter().any(|candidate| candidate.id == item.id) {
-            deleted.push(item);
+        deleted.sort_by_key(|item| std::cmp::Reverse(item.relative_path.components().count()));
+
+        let path = self.safe_path(&stored.relative_path, true).await?;
+        match stored.item.kind {
+            FileItemKind::File => fs::remove_file(path).await.map_err(FilesError::Io)?,
+            FileItemKind::Directory => fs::remove_dir_all(path).await.map_err(FilesError::Io)?,
         }
-        for candidate in &deleted {
-            if candidate.kind == FileItemKind::File {
-                remove_regular_file_if_present(&self.content_path(&candidate.id)?).await?;
-            }
-            remove_regular_file_if_present(&self.metadata_path(&candidate.id)?).await?;
+        for item in &deleted {
+            remove_regular_file_if_present(&self.metadata_path(&item.item.id)?).await?;
         }
-        Ok(deleted)
+        Ok(deleted.into_iter().map(|item| item.item).collect())
     }
 
     pub async fn open_content(&self, id: &str) -> Result<(FileItem, File), FilesError> {
-        let item = self.item(id).await?;
-        if item.kind != FileItemKind::File {
+        let stored = self.stored_item(id).await?;
+        if stored.item.kind != FileItemKind::File {
             return Err(FilesError::InvalidInput(
                 "Directories cannot be downloaded.".to_owned(),
             ));
         }
-        let path = self.content_path(id)?;
-        let metadata = fs::symlink_metadata(&path).await.map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                FilesError::NotFound(format!("File {id} has no stored content."))
-            } else {
-                FilesError::Io(error)
-            }
-        })?;
+        let path = self.safe_path(&stored.relative_path, true).await?;
+        let metadata = fs::symlink_metadata(&path).await.map_err(FilesError::Io)?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(FilesError::UnsafeStorage(
                 "Stored file content is not a regular file.".to_owned(),
             ));
         }
-        let canonical = fs::canonicalize(&path).await.map_err(FilesError::Io)?;
-        let content_root = fs::canonicalize(&self.contents)
-            .await
-            .map_err(FilesError::Io)?;
-        if !canonical.starts_with(content_root) {
-            return Err(FilesError::UnsafeStorage(
-                "Stored file content resolves outside the provider store.".to_owned(),
-            ));
-        }
-        let file = File::open(canonical).await.map_err(FilesError::Io)?;
-        Ok((item, file))
+        Ok((stored.item, File::open(path).await.map_err(FilesError::Io)?))
     }
 
-    async fn validate_destination(
+    async fn stored_item(&self, id: &str) -> Result<StoredItem, FilesError> {
+        validate_item_identifier(id)?;
+        self.reconcile()
+            .await?
+            .into_iter()
+            .find(|item| item.item.id == id)
+            .ok_or_else(|| FilesError::NotFound(format!("Unknown Files item {id}.")))
+    }
+
+    async fn destination_relative_path(
         &self,
         parent_id: &str,
         name: &str,
-        excluding_id: Option<&str>,
-    ) -> Result<(), FilesError> {
+    ) -> Result<PathBuf, FilesError> {
         validate_parent_identifier(parent_id)?;
-        if parent_id != ROOT_ITEM_IDENTIFIER {
-            let parent = self.item(parent_id).await?;
-            if parent.kind != FileItemKind::Directory {
-                return Err(FilesError::InvalidInput(
-                    "The selected parent is not a directory.".to_owned(),
-                ));
-            }
+        validate_file_name(name)?;
+        if parent_id == ROOT_ITEM_IDENTIFIER {
+            return Ok(PathBuf::from(name));
         }
-        let folded_name = name.to_lowercase();
-        let collision = self.list(Some(parent_id)).await?.into_iter().any(|item| {
-            Some(item.id.as_str()) != excluding_id && item.name.to_lowercase() == folded_name
-        });
-        if collision {
-            return Err(FilesError::Conflict(format!(
-                "An item named {name:?} already exists in this directory."
-            )));
-        }
-        Ok(())
-    }
-
-    async fn is_descendant(&self, candidate_parent: &str, id: &str) -> Result<bool, FilesError> {
-        if candidate_parent == ROOT_ITEM_IDENTIFIER {
-            return Ok(false);
-        }
-        let items = self
-            .read_items()
+        let parent = self
+            .read_stored_items()
             .await?
             .into_iter()
-            .map(|item| (item.id, item.parent_id))
-            .collect::<HashMap<_, _>>();
-        let mut current = candidate_parent;
-        let mut visited = HashSet::new();
-        while current != ROOT_ITEM_IDENTIFIER {
-            if current == id {
-                return Ok(true);
-            }
-            if !visited.insert(current.to_owned()) {
-                return Err(FilesError::UnsafeStorage(
-                    "Files metadata contains a parent cycle.".to_owned(),
-                ));
-            }
-            let Some(parent) = items.get(current) else {
-                break;
-            };
-            current = parent;
+            .find(|item| item.item.id == parent_id)
+            .ok_or_else(|| FilesError::NotFound(format!("Unknown Files directory {parent_id}.")))?;
+        if parent.item.kind != FileItemKind::Directory {
+            return Err(FilesError::InvalidInput(
+                "The selected parent is not a directory.".to_owned(),
+            ));
         }
-        Ok(false)
+        Ok(parent.relative_path.join(name))
     }
 
-    async fn read_items(&self) -> Result<Vec<FileItem>, FilesError> {
+    fn descendant_ids(&self, items: &[StoredItem], id: &str) -> HashSet<String> {
+        let mut descendants = HashSet::from([id.to_owned()]);
+        loop {
+            let before = descendants.len();
+            for item in items {
+                if descendants.contains(&item.item.parent_id) {
+                    descendants.insert(item.item.id.clone());
+                }
+            }
+            if descendants.len() == before {
+                return descendants;
+            }
+        }
+    }
+
+    async fn reconcile(&self) -> Result<Vec<StoredItem>, FilesError> {
+        let stored = self.read_stored_items().await?;
+        let mut by_relative_path = stored
+            .into_iter()
+            .map(|item| (item.relative_path.clone(), item))
+            .collect::<HashMap<_, _>>();
+        let mut scanned = self.scan_visible_root().await?;
+        scanned.sort_by_key(|item| item.relative_path.components().count());
+
+        let mut id_by_relative_path =
+            HashMap::from([(PathBuf::new(), ROOT_ITEM_IDENTIFIER.to_owned())]);
+        let mut reconciled = Vec::with_capacity(scanned.len());
+        for scanned in scanned {
+            let parent_relative_path = scanned
+                .relative_path
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_path_buf();
+            let parent_id = id_by_relative_path
+                .get(&parent_relative_path)
+                .cloned()
+                .ok_or_else(|| {
+                    FilesError::UnsafeStorage(format!(
+                        "Files item {} has no visible parent.",
+                        scanned.relative_path.display()
+                    ))
+                })?;
+            let name = scanned
+                .relative_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| {
+                    FilesError::UnsafeStorage("Files contains a non-Unicode name.".to_owned())
+                })?
+                .to_owned();
+            let previous = by_relative_path.remove(&scanned.relative_path);
+            let id = previous
+                .as_ref()
+                .map(|item| item.item.id.clone())
+                .unwrap_or_else(|| new_opaque_id(&parent_id, &name));
+            let content_type = match scanned.kind {
+                FileItemKind::Directory => None,
+                FileItemKind::File => previous
+                    .as_ref()
+                    .and_then(|item| item.item.content_type.clone())
+                    .or_else(|| content_type_for_name(&name).map(str::to_owned)),
+            };
+            let changed = previous.as_ref().is_some_and(|item| {
+                item.item.name != name
+                    || item.item.parent_id != parent_id
+                    || item.item.kind != scanned.kind
+                    || item.item.size != scanned.size
+                    || item.item.modified_at != scanned.modified_at
+                    || item.item.content_type != content_type
+            });
+            let item = StoredItem {
+                item: FileItem {
+                    id: id.clone(),
+                    parent_id,
+                    name,
+                    kind: scanned.kind,
+                    content_type,
+                    size: scanned.size,
+                    created_at: previous
+                        .as_ref()
+                        .map(|item| item.item.created_at)
+                        .unwrap_or(scanned.created_at),
+                    modified_at: scanned.modified_at,
+                    version: previous
+                        .as_ref()
+                        .map(|item| item.item.version.saturating_add(u64::from(changed)))
+                        .unwrap_or(1),
+                },
+                relative_path: scanned.relative_path.clone(),
+            };
+            if previous.as_ref() != Some(&item) {
+                self.write_stored_item(&item).await?;
+            }
+            id_by_relative_path.insert(scanned.relative_path, id);
+            reconciled.push(item);
+        }
+        for removed in by_relative_path.into_values() {
+            remove_regular_file_if_present(&self.metadata_path(&removed.item.id)?).await?;
+        }
+        Ok(reconciled)
+    }
+
+    async fn scan_visible_root(&self) -> Result<Vec<ScannedItem>, FilesError> {
+        let mut directories = vec![self.root.clone()];
+        let mut items = Vec::new();
+        while let Some(directory) = directories.pop() {
+            let mut entries = fs::read_dir(&directory).await.map_err(FilesError::Io)?;
+            while let Some(entry) = entries.next_entry().await.map_err(FilesError::Io)? {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                let file_type = entry.file_type().await.map_err(FilesError::Io)?;
+                if file_type.is_symlink() || (!file_type.is_file() && !file_type.is_dir()) {
+                    continue;
+                }
+                let path = entry.path();
+                let relative_path = path
+                    .strip_prefix(&self.root)
+                    .map_err(|_| {
+                        FilesError::UnsafeStorage("Files entry escaped its root.".to_owned())
+                    })?
+                    .to_path_buf();
+                validate_relative_path(&relative_path)?;
+                let metadata = entry.metadata().await.map_err(FilesError::Io)?;
+                let kind = if file_type.is_dir() {
+                    directories.push(path);
+                    FileItemKind::Directory
+                } else {
+                    FileItemKind::File
+                };
+                items.push(ScannedItem {
+                    relative_path,
+                    kind,
+                    size: if kind == FileItemKind::File {
+                        metadata.len()
+                    } else {
+                        0
+                    },
+                    created_at: system_time_ms(
+                        metadata.created().unwrap_or(SystemTime::UNIX_EPOCH),
+                    ),
+                    modified_at: system_time_ms(
+                        metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                    ),
+                });
+            }
+        }
+        Ok(items)
+    }
+
+    async fn read_stored_items(&self) -> Result<Vec<StoredItem>, FilesError> {
         let mut entries = fs::read_dir(&self.metadata).await.map_err(FilesError::Io)?;
         let mut items = Vec::new();
         while let Some(entry) = entries.next_entry().await.map_err(FilesError::Io)? {
@@ -367,65 +616,33 @@ impl ProviderStore {
             {
                 continue;
             }
-            let metadata = entry.metadata().await.map_err(FilesError::Io)?;
-            if !metadata.is_file() || metadata.file_type().is_symlink() {
-                continue;
-            }
             let path = entry.path();
             if path.extension().and_then(|value| value.to_str()) != Some("json") {
                 continue;
             }
-            let bytes = fs::read(&path).await.map_err(FilesError::Io)?;
-            let item = serde_json::from_slice::<FileItem>(&bytes).map_err(|error| {
-                FilesError::UnsafeStorage(format!(
-                    "Invalid Files metadata at {}: {error}",
-                    path.display()
-                ))
-            })?;
-            validate_item(&item)?;
+            let metadata = entry.metadata().await.map_err(FilesError::Io)?;
+            if !metadata.is_file() {
+                continue;
+            }
+            let item = serde_json::from_slice::<StoredItem>(
+                &fs::read(&path).await.map_err(FilesError::Io)?,
+            )
+            .map_err(FilesError::Json)?;
+            validate_item(&item.item)?;
+            validate_relative_path(&item.relative_path)?;
             items.push(item);
         }
         Ok(items)
     }
 
-    async fn read_item(&self, id: &str) -> Result<FileItem, FilesError> {
-        let path = self.metadata_path(id)?;
-        let metadata = fs::symlink_metadata(&path).await.map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                FilesError::NotFound(format!("Unknown Files item {id}."))
-            } else {
-                FilesError::Io(error)
-            }
-        })?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(FilesError::UnsafeStorage(
-                "Files metadata is not a regular file.".to_owned(),
-            ));
-        }
-        let item =
-            serde_json::from_slice::<FileItem>(&fs::read(&path).await.map_err(FilesError::Io)?)
-                .map_err(|error| {
-                    FilesError::UnsafeStorage(format!(
-                        "Invalid Files metadata at {}: {error}",
-                        path.display()
-                    ))
-                })?;
-        validate_item(&item)?;
-        if item.id != id {
-            return Err(FilesError::UnsafeStorage(
-                "Files metadata identifier does not match its storage key.".to_owned(),
-            ));
-        }
-        Ok(item)
-    }
-
-    async fn write_item(&self, item: &FileItem) -> Result<(), FilesError> {
-        validate_item(item)?;
-        let path = self.metadata_path(&item.id)?;
+    async fn write_stored_item(&self, item: &StoredItem) -> Result<(), FilesError> {
+        validate_item(&item.item)?;
+        validate_relative_path(&item.relative_path)?;
+        let path = self.metadata_path(&item.item.id)?;
         reject_symlink_if_present(&path).await?;
         let temporary = self.metadata.join(format!(
             ".{}.{}.tmp",
-            item.id,
+            item.item.id,
             ITEM_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         let mut guard = TemporaryPath::new(temporary.clone());
@@ -452,10 +669,42 @@ impl ProviderStore {
         Ok(self.metadata.join(format!("{id}.json")))
     }
 
-    fn content_path(&self, id: &str) -> Result<PathBuf, FilesError> {
-        validate_item_identifier(id)?;
-        Ok(self.contents.join(id))
+    async fn safe_path(
+        &self,
+        relative_path: &Path,
+        must_exist: bool,
+    ) -> Result<PathBuf, FilesError> {
+        validate_relative_path(relative_path)?;
+        let path = self.root.join(relative_path);
+        let parent = path.parent().ok_or_else(|| {
+            FilesError::UnsafeStorage("Files item has no parent directory.".to_owned())
+        })?;
+        let canonical_parent = fs::canonicalize(parent).await.map_err(FilesError::Io)?;
+        if !canonical_parent.starts_with(&self.root) {
+            return Err(FilesError::UnsafeStorage(
+                "Files item resolves outside the native Files root.".to_owned(),
+            ));
+        }
+        if must_exist {
+            let canonical = fs::canonicalize(&path).await.map_err(FilesError::Io)?;
+            if !canonical.starts_with(&self.root) {
+                return Err(FilesError::UnsafeStorage(
+                    "Files item resolves outside the native Files root.".to_owned(),
+                ));
+            }
+            return Ok(canonical);
+        }
+        Ok(path)
     }
+}
+
+#[derive(Debug)]
+struct ScannedItem {
+    relative_path: PathBuf,
+    kind: FileItemKind,
+    size: u64,
+    created_at: u64,
+    modified_at: u64,
 }
 
 pub struct StagedUpload {
@@ -582,11 +831,12 @@ fn validate_item(item: &FileItem) -> Result<(), FilesError> {
     validate_parent_identifier(&item.parent_id)?;
     validate_file_name(&item.name)?;
     match item.kind {
-        FileItemKind::File => validate_content_type(
-            item.content_type
-                .as_deref()
-                .ok_or_else(|| FilesError::UnsafeStorage("File has no content type.".to_owned()))?,
-        ),
+        FileItemKind::File => {
+            if let Some(content_type) = item.content_type.as_deref() {
+                validate_content_type(content_type)?;
+            }
+            Ok(())
+        }
         FileItemKind::Directory if item.content_type.is_some() || item.size != 0 => {
             Err(FilesError::UnsafeStorage(
                 "Directory metadata contains file content fields.".to_owned(),
@@ -617,62 +867,79 @@ fn validate_transfer_identifier(id: &str) -> Result<(), FilesError> {
     validate_item_identifier(id)
 }
 
-async fn resolve_group_container(udid: &str) -> Result<PathBuf, FilesError> {
+fn validate_relative_path(path: &Path) -> Result<(), FilesError> {
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(FilesError::UnsafeStorage(
+            "Files metadata contains an unsafe relative path.".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+async fn resolve_local_storage_group(udid: &str) -> Result<PathBuf, FilesError> {
     if udid.is_empty() || udid.contains('\0') {
         return Err(FilesError::InvalidInput(
             "Simulator UDID is invalid.".to_owned(),
         ));
     }
     let output = timeout(
-        APP_CONTAINER_TIMEOUT,
+        SIMULATOR_HOME_TIMEOUT,
         Command::new("xcrun")
-            .args([
-                "simctl",
-                "get_app_container",
-                udid,
-                FILES_APP_BUNDLE_IDENTIFIER,
-                "groups",
-            ])
+            .args(["simctl", "getenv", udid, "HOME"])
             .output(),
     )
     .await
     .map_err(|_| {
         FilesError::ProviderUnavailable(
-            "Timed out locating the SimDeck Files companion storage.".to_owned(),
+            "Timed out locating the simulator Files storage.".to_owned(),
         )
     })?
     .map_err(FilesError::Io)?;
     if !output.status.success() {
         return Err(FilesError::ProviderUnavailable(
-            "SimDeck Files is not installed for this simulator.".to_owned(),
+            "The simulator Files storage is unavailable until the device is booted.".to_owned(),
         ));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let path = parse_group_container_output(&stdout).ok_or_else(|| {
-        FilesError::ProviderUnavailable(
-            "The SimDeck Files app group is not registered for this simulator.".to_owned(),
-        )
-    })?;
-    canonical_directory(&path).await
+    let home = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    find_local_storage_group(&home).await
 }
 
-fn parse_group_container_output(output: &str) -> Option<PathBuf> {
-    output.lines().find_map(|line| {
-        let line = line.trim().trim_matches('"');
-        let candidate = if line.starts_with('/') {
-            line
-        } else {
-            let (identifier, path) = line.split_once(['=', ':'])?;
-            if identifier.trim().trim_matches('"') != FILES_APP_GROUP_IDENTIFIER {
-                return None;
-            }
-            path.trim()
-                .trim_end_matches([',', ';'])
-                .trim()
-                .trim_matches('"')
+async fn find_local_storage_group(simulator_home: &Path) -> Result<PathBuf, FilesError> {
+    let app_groups = simulator_home.join("Containers/Shared/AppGroup");
+    let mut entries = fs::read_dir(&app_groups).await.map_err(|error| {
+        FilesError::ProviderUnavailable(format!(
+            "Unable to inspect native Files app groups at {}: {error}",
+            app_groups.display()
+        ))
+    })?;
+    while let Some(entry) = entries.next_entry().await.map_err(FilesError::Io)? {
+        if !entry.file_type().await.map_err(FilesError::Io)?.is_dir() {
+            continue;
+        }
+        let container = entry.path();
+        let metadata_path = container.join(".com.apple.mobile_container_manager.metadata.plist");
+        let Ok(bytes) = fs::read(metadata_path).await else {
+            continue;
         };
-        candidate.starts_with('/').then(|| PathBuf::from(candidate))
-    })
+        let Ok(plist) = plist::Value::from_reader(Cursor::new(bytes)) else {
+            continue;
+        };
+        let identifier = plist
+            .as_dictionary()
+            .and_then(|dictionary| dictionary.get("MCMMetadataIdentifier"))
+            .and_then(plist::Value::as_string);
+        if identifier == Some(LOCAL_STORAGE_APP_GROUP_IDENTIFIER) {
+            return canonical_directory(&container).await;
+        }
+    }
+    Err(FilesError::ProviderUnavailable(
+        "The native On My iPhone storage has not been initialized for this simulator.".to_owned(),
+    ))
 }
 
 async fn canonical_directory(path: &Path) -> Result<PathBuf, FilesError> {
@@ -763,6 +1030,27 @@ async fn cleanup_stale_staging(staging: &Path) -> Result<(), FilesError> {
     Ok(())
 }
 
+fn content_type_for_name(name: &str) -> Option<&'static str> {
+    match Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "pdf" => Some("application/pdf"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "heic" | "heif" => Some("image/heic"),
+        "gif" => Some("image/gif"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "txt" => Some("text/plain"),
+        "json" => Some("application/json"),
+        "csv" => Some("text/csv"),
+        _ => Some("application/octet-stream"),
+    }
+}
+
 fn new_opaque_id(parent_id: &str, name: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(parent_id.as_bytes());
@@ -779,11 +1067,14 @@ pub fn new_transfer_id() -> String {
     new_opaque_id("transfer", "upload")
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+fn system_time_ms(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_millis() as u64
+}
+
+fn now_ms() -> u64 {
+    system_time_ms(SystemTime::now())
 }
 
 fn now_nanos() -> u128 {
@@ -796,8 +1087,8 @@ fn now_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_group_container_output, validate_content_type, validate_file_name, FileItemKind,
-        ProviderStore, FILES_APP_GROUP_IDENTIFIER, ROOT_ITEM_IDENTIFIER,
+        find_local_storage_group, validate_content_type, validate_file_name, FileItemKind,
+        ProviderStore, ROOT_ITEM_IDENTIFIER,
     };
     use bytes::Bytes;
     use std::path::PathBuf;
@@ -829,21 +1120,28 @@ mod tests {
         assert!(validate_content_type("not a mime type").is_err());
     }
 
-    #[test]
-    fn parses_app_group_container_output_variants() {
-        let path = "/tmp/CoreSimulator/Shared/AppGroup/example";
+    #[tokio::test]
+    async fn resolves_the_native_local_storage_app_group() {
+        let home = test_root("resolve");
+        let group = home.join("Containers/Shared/AppGroup/LOCAL");
+        tokio::fs::create_dir_all(&group).await.unwrap();
+        tokio::fs::write(
+            group.join(".com.apple.mobile_container_manager.metadata.plist"),
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+            <plist version="1.0"><dict><key>MCMMetadataIdentifier</key>
+            <string>group.com.apple.FileProvider.LocalStorage</string></dict></plist>"#,
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            parse_group_container_output(path),
-            Some(PathBuf::from(path))
+            find_local_storage_group(&home).await.unwrap(),
+            tokio::fs::canonicalize(&group).await.unwrap()
         );
-        assert_eq!(
-            parse_group_container_output(&format!("{FILES_APP_GROUP_IDENTIFIER} = {path}")),
-            Some(PathBuf::from(path))
-        );
+        tokio::fs::remove_dir_all(home).await.unwrap();
     }
 
     #[tokio::test]
-    async fn creates_uploads_renames_moves_and_deletes_trees() {
+    async fn creates_visible_uploads_renames_moves_and_deletes_trees() {
         let (root, store) = store("crud").await;
         let folder = store
             .create_directory(ROOT_ITEM_IDENTIFIER, "Statements")
@@ -860,6 +1158,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(file.size, 8);
+        assert!(store.root.join("Statements/Décompte.pdf").is_file());
         assert_eq!(
             store.list(Some(&folder.id)).await.unwrap(),
             vec![file.clone()]
@@ -884,47 +1183,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn isolates_provider_roots_and_cleans_interrupted_staging() {
+    async fn discovers_files_created_by_ios_and_keeps_roots_isolated() {
         let (first_root, first) = store("first").await;
         let (second_root, second) = store("second").await;
-        let transfer_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let mut upload = first.begin_upload(transfer_id).await.unwrap();
+        tokio::fs::write(first.root.join("Native save.pdf"), b"native")
+            .await
+            .unwrap();
+        let native = first.list(None).await.unwrap();
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0].name, "Native save.pdf");
+        assert_eq!(native[0].content_type.as_deref(), Some("application/pdf"));
+        assert!(second.list(None).await.unwrap().is_empty());
+        tokio::fs::remove_dir_all(first_root).await.unwrap();
+        tokio::fs::remove_dir_all(second_root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cleans_interrupted_staging() {
+        let (root, store) = store("staging").await;
+        let mut upload = store
+            .begin_upload("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            .await
+            .unwrap();
         upload.write(Bytes::from_static(b"partial")).await.unwrap();
         drop(upload);
-
-        assert!(first.list(None).await.unwrap().is_empty());
-        assert!(second.list(None).await.unwrap().is_empty());
-        assert!(tokio::fs::read_dir(&first.staging)
+        assert!(tokio::fs::read_dir(&store.staging)
             .await
             .unwrap()
             .next_entry()
             .await
             .unwrap()
             .is_none());
-        tokio::fs::remove_dir_all(first_root).await.unwrap();
-        tokio::fs::remove_dir_all(second_root).await.unwrap();
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn rejects_symlinked_content() {
+    async fn ignores_symlinks_in_native_storage() {
         use std::os::unix::fs::symlink;
 
         let (root, store) = store("symlink").await;
-        let mut upload = store
-            .begin_upload("cccccccccccccccccccccccccccccccc")
-            .await
-            .unwrap();
-        upload.write(Bytes::from_static(b"safe")).await.unwrap();
-        let file = store
-            .commit_upload(upload, ROOT_ITEM_IDENTIFIER, "safe.pdf", "application/pdf")
-            .await
-            .unwrap();
-        let content = store.contents.join(&file.id);
-        tokio::fs::remove_file(&content).await.unwrap();
-        symlink("/etc/passwd", &content).unwrap();
-
-        assert!(store.open_content(&file.id).await.is_err());
+        symlink("/etc/passwd", store.root.join("unsafe.txt")).unwrap();
+        assert!(store.list(None).await.unwrap().is_empty());
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 

@@ -2804,6 +2804,7 @@ async fn upload_file(
             return Err(files_app_error(error));
         }
     };
+    let _ = state.files.refresh_snapshot(&udid).await;
     publish_file_progress(
         &state,
         &udid,
@@ -2841,6 +2842,7 @@ async fn create_file_directory(
         .create_directory(&payload.parent_id, &payload.name)
         .await
         .map_err(files_app_error)?;
+    let _ = state.files.refresh_snapshot(&udid).await;
     state.device_events.publish(
         &udid,
         json_value!({
@@ -2870,6 +2872,7 @@ async fn update_file(
         .update(&id, payload.name.as_deref(), payload.parent_id.as_deref())
         .await
         .map_err(files_app_error)?;
+    let _ = state.files.refresh_snapshot(&udid).await;
     state.device_events.publish(
         &udid,
         json_value!({
@@ -2890,6 +2893,7 @@ async fn delete_file(
 ) -> Result<Json<Value>, AppError> {
     let store = files_store_for_request(&state, &udid).await?;
     let deleted = store.delete(&id).await.map_err(files_app_error)?;
+    let _ = state.files.refresh_snapshot(&udid).await;
     for item in &deleted {
         state.device_events.publish(
             &udid,
@@ -3611,6 +3615,9 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
     let mut device_events = state.device_events.subscribe(&udid);
     state
         .system_surfaces
+        .ensure_monitor(udid.clone(), state.device_events.clone());
+    state
+        .files
         .ensure_monitor(udid.clone(), state.device_events.clone());
     let _ = sender
         .send(Message::Text(
