@@ -143,15 +143,15 @@ async function main() {
     "--mirror",
     "off",
   ]);
-  assertCameraStatus(startStatus, "image");
+  assertCameraStatus(startStatus, "image", 32, 24);
 
   const imageMarker = await waitForMarker(
     "solid red image frames",
     (marker) => {
       return (
         marker.frames > 0 &&
-        marker.width === 1280 &&
-        marker.height === 720 &&
+        marker.width === 32 &&
+        marker.height === 24 &&
         marker.avgRed > 180 &&
         marker.avgGreen < 90 &&
         marker.avgBlue < 90
@@ -161,6 +161,7 @@ async function main() {
   console.log(
     `received image frames: frames=${imageMarker.frames} rgb=${Math.round(imageMarker.avgRed)},${Math.round(imageMarker.avgGreen)},${Math.round(imageMarker.avgBlue)}`,
   );
+  assertSurfaceProbe(simdeckJson(["camera", "status", simulatorUDID]));
 
   step("switch to static video source");
   const videoStatus = simdeckJson([
@@ -293,6 +294,8 @@ async function runBrowserBenchmark() {
       (value) => value?.readyState >= 2 && value.width > 0 && value.height > 0,
       90_000,
     );
+    await verifyBgraCameraOutput(cdp);
+    removeMarker();
     const started = await cdp.evaluate(
       "window.__simdeckCameraBenchmark.start()",
       true,
@@ -344,6 +347,7 @@ async function runBrowserBenchmark() {
       "window.__simdeckCameraBenchmark.stop()",
       true,
     );
+    assertOptimizedCameraStatus(cameraStatus);
     return {
       transport: "webrtc-h264",
       source: { width: 1280, height: 720, framesPerSecond: 30 },
@@ -379,6 +383,56 @@ async function runBrowserBenchmark() {
     };
   } finally {
     cdp.close();
+  }
+}
+
+async function verifyBgraCameraOutput(cdp) {
+  runText("xcrun", [
+    "simctl",
+    "spawn",
+    simulatorUDID,
+    "defaults",
+    "write",
+    bundleId,
+    "SimDeckCameraBGRA",
+    "-bool",
+    "YES",
+  ]);
+  removeMarker();
+  try {
+    await cdp.evaluate("window.__simdeckCameraBenchmark.start()", true);
+    await waitForMarker(
+      "explicit BGRA camera frames",
+      (marker) => marker.status === "frame" && marker.frames >= 5,
+    );
+    const status = simdeckJson(["camera", "status", simulatorUDID]);
+    if (
+      status.pixelConversions <= 0 ||
+      status.geometryConversions !== 0 ||
+      status.fullFrameCopies !== 0 ||
+      status.surfaceLookupFailures !== 0
+    ) {
+      throw new Error(
+        `explicit BGRA camera output was not isolated to pixel conversion: ${JSON.stringify(status)}`,
+      );
+    }
+  } finally {
+    await cdp
+      .evaluate("window.__simdeckCameraBenchmark.stop()", true)
+      .catch(() => undefined);
+    runText(
+      "xcrun",
+      [
+        "simctl",
+        "spawn",
+        simulatorUDID,
+        "defaults",
+        "delete",
+        bundleId,
+        "SimDeckCameraBGRA",
+      ],
+      { allowFailure: true },
+    );
   }
 }
 
@@ -652,7 +706,10 @@ async function collectGlassToGlassSamples(cdp, durationMs) {
   const latencies = result.samples
     .map((sample) => sample.latencyMs)
     .sort((a, b) => a - b);
-  if (latencies.length < 30) {
+  const minimumLatencySamples = Number(
+    process.env.SIMDECK_CAMERA_MINIMUM_LATENCY_SAMPLES ?? "30",
+  );
+  if (latencies.length < minimumLatencySamples) {
     throw new Error(
       `Camera latency marker produced only ${latencies.length} samples (${result.decodeFailures} decode failures).`,
     );
@@ -941,6 +998,11 @@ function fixtureSource() {
   }
   [self writeMarkerWithStatus:@"input" width:0 height:0 red:0 green:0 blue:0];
   AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
+  if ([[NSUserDefaults standardUserDefaults] boolForKey:@"SimDeckCameraBGRA"]) {
+    output.videoSettings = @{
+      (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+    };
+  }
   NSString *outputStatus = [NSString stringWithFormat:@"output-%@", NSStringFromClass(object_getClass(output))];
   [self writeMarkerWithStatus:outputStatus width:0 height:0 red:0 green:0 blue:0];
   dispatch_queue_t sampleQueue = dispatch_queue_create("dev.nativescript.simdeck.camera.fixture", DISPATCH_QUEUE_SERIAL);
@@ -968,7 +1030,9 @@ function fixtureSource() {
   });
   [self writeMarkerWithStatus:@"starting" width:0 height:0 red:0 green:0 blue:0];
   [self.session startRunning];
-  [self writeMarkerWithStatus:@"started" width:0 height:0 red:0 green:0 blue:0];
+  if (self.frames == 0) {
+    [self writeMarkerWithStatus:@"started" width:0 height:0 red:0 green:0 blue:0];
+  }
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output
@@ -1134,14 +1198,59 @@ function readMarker() {
   }
 }
 
-function assertCameraStatus(status, source) {
+function removeMarker() {
+  try {
+    const container = runText(
+      "xcrun",
+      ["simctl", "get_app_container", simulatorUDID, bundleId, "data"],
+      { timeoutMs: 30_000 },
+    ).trim();
+    fs.rmSync(path.join(container, "Documents", "camera-frame.json"), {
+      force: true,
+    });
+  } catch {
+    return;
+  }
+}
+
+function assertCameraStatus(status, source, width, height) {
   if (status.ok !== true || status.alive !== true || status.source !== source) {
     throw new Error(
       `unexpected camera status for ${source}: ${JSON.stringify(status)}`,
     );
   }
-  if (status.width !== 1280 || status.height !== 720) {
+  if (width && height && (status.width !== width || status.height !== height)) {
     throw new Error(`unexpected camera dimensions: ${JSON.stringify(status)}`);
+  }
+}
+
+function assertSurfaceProbe(status) {
+  if (
+    status.consumedSequence <= 0 ||
+    status.surfaceId <= 0 ||
+    status.surfaceLookupFailures !== 0 ||
+    status.sampleBufferFailures !== 0
+  ) {
+    throw new Error(
+      `IOSurface cross-process probe failed: ${JSON.stringify(status)}`,
+    );
+  }
+}
+
+function assertOptimizedCameraStatus(status) {
+  if (
+    status.width !== 1280 ||
+    status.height !== 720 ||
+    status.pixelFormat !== "420v" ||
+    status.surfaceLookupFailures !== 0 ||
+    status.surfacePublicationFailures !== 0 ||
+    status.geometryConversions !== 0 ||
+    status.pixelConversions !== 0 ||
+    status.fullFrameCopies !== 0
+  ) {
+    throw new Error(
+      `optimized camera path performed unexpected work: ${JSON.stringify(status)}`,
+    );
   }
 }
 

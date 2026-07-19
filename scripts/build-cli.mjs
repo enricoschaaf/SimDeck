@@ -22,6 +22,20 @@ const hostPlatformBin = target ? null : hostPlatformBinaryPath();
 
 fs.mkdirSync(buildDir, { recursive: true });
 
+if (process.platform === "darwin" && !target) {
+  run("bash", [
+    path.join(
+      rootDir,
+      "packages",
+      "server",
+      "native",
+      "camera",
+      "build-injector.sh",
+    ),
+    path.join(buildDir, "camera"),
+  ]);
+}
+
 if (target) {
   const installedTargets = run("rustup", ["target", "list", "--installed"], {
     encoding: "utf8",

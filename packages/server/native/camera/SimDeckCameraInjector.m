@@ -1,10 +1,13 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <CoreImage/CoreImage.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
+#import <IOSurface/IOSurfaceRef.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
+#import <VideoToolbox/VideoToolbox.h>
 
 #import "SimDeckCameraShared.h"
 
@@ -21,13 +24,17 @@
 #import <unistd.h>
 
 static SimDeckCameraHeader *gHeader;
-static uint8_t *gFrameBytes;
 static size_t gFrameMapSize;
+static uint64_t gLastDeliveredSequence;
+static CVPixelBufferPoolRef gBGRAPool;
+static size_t gBGRAPoolWidth;
+static size_t gBGRAPoolHeight;
+static CIContext *gImageContext;
 static dispatch_source_t gFrameTimer;
 static dispatch_queue_t gFrameQueue;
 static NSMutableArray<NSValue *> *gSessions;
 static NSMutableArray<NSValue *> *gVideoOutputs;
-static NSHashTable<CALayer *> *gPreviewLayers;
+static NSHashTable<AVSampleBufferDisplayLayer *> *gPreviewLayers;
 static NSMutableSet<NSString *> *gHookedVideoOutputClasses;
 
 static char kSessionInputsKey;
@@ -39,6 +46,7 @@ static char kOutputDelegateKey;
 static char kOutputQueueKey;
 static char kOutputVideoSettingsKey;
 static char kOutputDiscardsLateFramesKey;
+static char kOutputDeliveryPendingKey;
 static char kPreviewOverlayKey;
 static char kPreviewHostKey;
 static char kPickerOverlayViewKey;
@@ -70,7 +78,6 @@ static void SimDeckSetSampleBufferDelegate(AVCaptureVideoDataOutput *output,
     @synchronized(gVideoOutputs) {
         TrackPointer(gVideoOutputs, output);
     }
-    StartFrameTimer();
 }
 
 static void TrackPointer(NSMutableArray<NSValue *> *pointers, id object) {
@@ -82,30 +89,27 @@ static void TrackPointer(NSMutableArray<NSValue *> *pointers, id object) {
     [pointers addObject:[NSValue valueWithPointer:pointer]];
 }
 
-static void RegisterOutputLayer(CALayer *layer) {
-    if (!layer) return;
+static void RegisterOutputLayer(CALayer *host) {
+    if (!host) return;
+    AVSampleBufferDisplayLayer *layer = objc_getAssociatedObject(host, &kPreviewOverlayKey);
+    if (!layer) {
+        layer = [AVSampleBufferDisplayLayer layer];
+        layer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+        layer.masksToBounds = YES;
+        layer.frame = host.bounds;
+        objc_setAssociatedObject(layer, &kPreviewHostKey, host, OBJC_ASSOCIATION_ASSIGN);
+        objc_setAssociatedObject(host, &kPreviewOverlayKey, layer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [host addSublayer:layer];
+    }
     @synchronized(gPreviewLayers) {
         [gPreviewLayers addObject:layer];
     }
-    layer.contentsGravity = kCAGravityResizeAspectFill;
-    layer.masksToBounds = YES;
-    StartFrameTimer();
 }
 
 static void RegisterPreviewLayer(CALayer *layer) {
     if (!layer) return;
-    CALayer *overlay = objc_getAssociatedObject(layer, &kPreviewOverlayKey);
-    if (!overlay) {
-        overlay = [CALayer layer];
-        overlay.contentsGravity = kCAGravityResizeAspectFill;
-        overlay.masksToBounds = YES;
-        overlay.frame = layer.bounds;
-        objc_setAssociatedObject(overlay, &kPreviewHostKey, layer, OBJC_ASSOCIATION_ASSIGN);
-        objc_setAssociatedObject(layer, &kPreviewOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [layer addSublayer:overlay];
-        DebugLog(@"installed preview frame layer on %@", NSStringFromClass(object_getClass(layer)));
-    }
-    RegisterOutputLayer(overlay);
+    RegisterOutputLayer(layer);
+    DebugLog(@"installed sample-buffer preview layer on %@", NSStringFromClass(object_getClass(layer)));
 }
 
 static void SimDeckSetVideoSettings(AVCaptureVideoDataOutput *output,
@@ -158,6 +162,55 @@ static void DebugLog(NSString *format, ...) {
     fprintf(stderr, "[simdeck-camera] %s\n", message.UTF8String ?: "");
 }
 
+@interface SimDeckSurfaceLease : NSObject {
+    IOSurfaceRef _surface;
+    volatile uint32_t *_useCount;
+}
+- (instancetype)initWithSurface:(IOSurfaceRef)surface useCount:(volatile uint32_t *)useCount;
+@end
+
+@implementation SimDeckSurfaceLease
+
+- (instancetype)initWithSurface:(IOSurfaceRef)surface useCount:(volatile uint32_t *)useCount {
+    self = [super init];
+    if (self) {
+        _surface = surface ? (IOSurfaceRef)CFRetain(surface) : NULL;
+        _useCount = useCount;
+        if (_surface) IOSurfaceIncrementUseCount(_surface);
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (_surface) {
+        IOSurfaceDecrementUseCount(_surface);
+        CFRelease(_surface);
+    }
+    if (_useCount) __sync_fetch_and_sub(_useCount, 1);
+    [super dealloc];
+}
+
+@end
+
+typedef struct {
+    uint64_t generation;
+    uint64_t sequence;
+    uint64_t timestampNs;
+    uint32_t mirrorMode;
+    uint32_t ringSlot;
+    uint32_t surfaceID;
+} SimDeckFrameDescriptor;
+
+typedef struct {
+    uint64_t generation;
+    size_t width;
+    size_t height;
+    OSType pixelFormat;
+    CMVideoFormatDescriptionRef format;
+} SimDeckFormatCache;
+
+static SimDeckFormatCache gFormatCaches[2];
+
 static BOOL OpenSharedCamera(void) {
     if (gHeader) return YES;
     const char *name = getenv("SIMDECK_CAMERA_SHM_NAME");
@@ -167,7 +220,7 @@ static BOOL OpenSharedCamera(void) {
     if (!name || name[0] == '\0') {
         return NO;
     }
-    int fd = shm_open(name, O_RDONLY, 0);
+    int fd = shm_open(name, O_RDWR, 0);
     if (fd < 0) {
         Log(@"unable to open shared memory %s", name);
         return NO;
@@ -177,7 +230,7 @@ static BOOL OpenSharedCamera(void) {
         close(fd);
         return NO;
     }
-    void *mapped = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    void *mapped = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
     if (mapped == MAP_FAILED) {
         return NO;
@@ -189,184 +242,298 @@ static BOOL OpenSharedCamera(void) {
     }
     gHeader = header;
     gFrameMapSize = (size_t)st.st_size;
-    gFrameBytes = ((uint8_t *)mapped) + header->headerSize;
-    DebugLog(@"attached shared feed %ux%u", header->width, header->height);
+    uint32_t previousConsumer = __sync_lock_test_and_set(&gHeader->consumerPid, (uint32_t)getpid());
+    if (previousConsumer != (uint32_t)getpid()) {
+        for (uint32_t slot = 0; slot < SIMDECK_CAMERA_SURFACE_RING_SIZE; slot += 1) {
+            gHeader->surfaceUseCounts[slot] = 0;
+        }
+    }
+    DebugLog(@"attached surface feed %ux%u", header->width, header->height);
     return YES;
 }
 
-static BOOL CopyCurrentFrame(NSMutableData **outData, uint32_t *outWidth, uint32_t *outHeight, uint32_t *outBytesPerRow, uint64_t *outTimestampNs) {
-    if (!OpenSharedCamera()) return NO;
-    uint32_t width = gHeader->width;
-    uint32_t height = gHeader->height;
-    uint32_t bytesPerRow = gHeader->bytesPerRow;
-    if (width == 0 || height == 0 || bytesPerRow < width * 4) return NO;
-    size_t length = (size_t)bytesPerRow * height;
-    if ((size_t)gHeader->headerSize + length > gFrameMapSize) return NO;
-
-    NSMutableData *copy = [NSMutableData dataWithLength:length];
-    uint64_t before = 0;
-    uint64_t after = 0;
+static CVPixelBufferRef CurrentPixelBuffer(BOOL requireNewFrame,
+                                           SimDeckFrameDescriptor *outDescriptor) {
+    if (!OpenSharedCamera()) return NULL;
+    if (gFrameMapSize < SIMDECK_CAMERA_HEADER_SIZE) return NULL;
+    SimDeckFrameDescriptor descriptor = {0};
     for (int attempt = 0; attempt < 4; attempt += 1) {
-        before = gHeader->sequence;
+        uint64_t before = gHeader->sequence;
         if ((before & 1u) != 0) {
-            usleep(1000);
             continue;
         }
-        memcpy(copy.mutableBytes, gFrameBytes, length);
-        after = gHeader->sequence;
+        uint32_t slot = gHeader->ringSlot;
+        if (slot >= SIMDECK_CAMERA_SURFACE_RING_SIZE) return NULL;
+        descriptor.generation = gHeader->generation;
+        descriptor.sequence = before;
+        descriptor.timestampNs = gHeader->timestampNs;
+        descriptor.mirrorMode = gHeader->mirrorMode;
+        descriptor.ringSlot = slot;
+        descriptor.surfaceID = gHeader->surfaceIds[slot];
+        uint64_t after = gHeader->sequence;
         if (before == after && (after & 1u) == 0) {
-            *outData = copy;
-            *outWidth = width;
-            *outHeight = height;
-            *outBytesPerRow = bytesPerRow;
-            *outTimestampNs = gHeader->timestampNs;
-            return YES;
+            if (requireNewFrame && before == gLastDeliveredSequence) return NULL;
+            __sync_fetch_and_add(&gHeader->surfaceUseCounts[slot], 1);
+            if (gHeader->sequence != before || gHeader->surfaceIds[slot] != descriptor.surfaceID) {
+                __sync_fetch_and_sub(&gHeader->surfaceUseCounts[slot], 1);
+                descriptor.surfaceID = 0;
+                continue;
+            }
+            break;
         }
     }
-    return NO;
-}
-
-static CMSampleBufferRef CreateSampleBuffer(NSData *frameData, uint32_t width, uint32_t height, uint32_t bytesPerRow, uint64_t timestampNs) {
-    CVPixelBufferRef pixelBuffer = NULL;
-    NSDictionary *attrs = @{
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-        (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
-        (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
-    };
-    CVReturn cv = CVPixelBufferCreate(kCFAllocatorDefault,
-                                      width,
-                                      height,
-                                      kCVPixelFormatType_32BGRA,
-                                      (__bridge CFDictionaryRef)attrs,
-                                      &pixelBuffer);
-    if (cv != kCVReturnSuccess || !pixelBuffer) return NULL;
-    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-    uint8_t *dest = CVPixelBufferGetBaseAddress(pixelBuffer);
-    size_t destBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    const uint8_t *source = frameData.bytes;
-    for (uint32_t y = 0; y < height; y += 1) {
-        memcpy(dest + (size_t)y * destBytesPerRow,
-               source + (size_t)y * bytesPerRow,
-               MIN(destBytesPerRow, bytesPerRow));
-    }
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-
-    CMVideoFormatDescriptionRef format = NULL;
-    OSStatus status = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, &format);
-    if (status != noErr || !format) {
-        CVPixelBufferRelease(pixelBuffer);
+    if (descriptor.surfaceID == 0 || descriptor.sequence == 0) return NULL;
+    IOSurfaceRef surface = IOSurfaceLookup(descriptor.surfaceID);
+    if (!surface) {
+        __sync_fetch_and_sub(&gHeader->surfaceUseCounts[descriptor.ringSlot], 1);
+        __sync_fetch_and_add(&gHeader->surfaceLookupFailures, 1);
         return NULL;
     }
-    CMTime pts = CMTimeMake((int64_t)(timestampNs ?: (uint64_t)(CACurrentMediaTime() * 1000000000.0)), 1000000000);
+    CVPixelBufferRef pixelBuffer = NULL;
+    CVReturn result = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault,
+                                                       surface,
+                                                       NULL,
+                                                       &pixelBuffer);
+    if (result == kCVReturnSuccess && pixelBuffer) {
+        SimDeckSurfaceLease *lease = [[SimDeckSurfaceLease alloc]
+            initWithSurface:surface
+                   useCount:&gHeader->surfaceUseCounts[descriptor.ringSlot]];
+        CVBufferSetAttachment(pixelBuffer,
+                              CFSTR("dev.nativescript.simdeck.camera.surface-lease"),
+                              (CFTypeRef)lease,
+                              kCVAttachmentMode_ShouldNotPropagate);
+        [lease release];
+    }
+    CFRelease(surface);
+    if (!pixelBuffer) {
+        __sync_fetch_and_sub(&gHeader->surfaceUseCounts[descriptor.ringSlot], 1);
+        __sync_fetch_and_add(&gHeader->surfaceLookupFailures, 1);
+        return NULL;
+    }
+    if (requireNewFrame) gLastDeliveredSequence = descriptor.sequence;
+    gHeader->consumedSequence = descriptor.sequence;
+    if (outDescriptor) *outDescriptor = descriptor;
+    return pixelBuffer;
+}
+
+static CMVideoFormatDescriptionRef FormatForPixelBuffer(CVPixelBufferRef pixelBuffer,
+                                                        uint64_t generation,
+                                                        NSUInteger cacheIndex) {
+    if (!pixelBuffer || cacheIndex >= 2) return NULL;
+    SimDeckFormatCache *cache = &gFormatCaches[cacheIndex];
+    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    if (cache->format && cache->generation == generation &&
+        cache->width == width && cache->height == height &&
+        cache->pixelFormat == pixelFormat) {
+        return cache->format;
+    }
+    if (cache->format) CFRelease(cache->format);
+    cache->format = NULL;
+    OSStatus status = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault,
+                                                                    pixelBuffer,
+                                                                    &cache->format);
+    if (status != noErr || !cache->format) {
+        return NULL;
+    }
+    cache->generation = generation;
+    cache->width = width;
+    cache->height = height;
+    cache->pixelFormat = pixelFormat;
+    return cache->format;
+}
+
+static CMSampleBufferRef CreateSampleBuffer(CVPixelBufferRef pixelBuffer,
+                                            uint64_t generation,
+                                            uint64_t timestampNs,
+                                            NSUInteger cacheIndex) {
+    CMVideoFormatDescriptionRef format = FormatForPixelBuffer(pixelBuffer, generation, cacheIndex);
+    if (!format) {
+        if (gHeader) __sync_fetch_and_add(&gHeader->sampleBufferFailures, 1);
+        return NULL;
+    }
+    CMTime pts = CMTimeMake((int64_t)timestampNs, 1000000000);
     CMSampleTimingInfo timing = {
         .duration = CMTimeMake(1, 30),
         .presentationTimeStamp = pts,
         .decodeTimeStamp = kCMTimeInvalid,
     };
     CMSampleBufferRef sample = NULL;
-    status = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault,
-                                                      pixelBuffer,
-                                                      format,
-                                                      &timing,
-                                                      &sample);
-    CFRelease(format);
-    CVPixelBufferRelease(pixelBuffer);
+    OSStatus status = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault,
+                                                               pixelBuffer,
+                                                               format,
+                                                               &timing,
+                                                               &sample);
+    if (sample) {
+        CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, YES);
+        if (attachments && CFArrayGetCount(attachments) > 0) {
+            CFMutableDictionaryRef attachment = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+            CFDictionarySetValue(attachment, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
+        }
+    }
+    if (status != noErr && gHeader) __sync_fetch_and_add(&gHeader->sampleBufferFailures, 1);
     return status == noErr ? sample : NULL;
 }
 
-static CGImageRef CreateImage(NSData *frameData, uint32_t width, uint32_t height, uint32_t bytesPerRow) {
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)frameData);
-    CGImageRef image = CGImageCreate(width,
-                                     height,
-                                     8,
-                                     32,
-                                     bytesPerRow,
-                                     colorSpace,
-                                     kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst,
-                                     provider,
-                                     NULL,
-                                     false,
-                                     kCGRenderingIntentDefault);
-    CGDataProviderRelease(provider);
-    CGColorSpaceRelease(colorSpace);
-    return image;
+static CVPixelBufferRef ConvertToBGRA(CVPixelBufferRef source) {
+    size_t width = CVPixelBufferGetWidth(source);
+    size_t height = CVPixelBufferGetHeight(source);
+    if (!gBGRAPool || gBGRAPoolWidth != width || gBGRAPoolHeight != height) {
+        if (gBGRAPool) CVPixelBufferPoolRelease(gBGRAPool);
+        gBGRAPool = NULL;
+        NSDictionary *attributes = @{
+            (id)kCVPixelBufferWidthKey: @(width),
+            (id)kCVPixelBufferHeightKey: @(height),
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        };
+        CVPixelBufferPoolCreate(kCFAllocatorDefault,
+                                NULL,
+                                (__bridge CFDictionaryRef)attributes,
+                                &gBGRAPool);
+        gBGRAPoolWidth = width;
+        gBGRAPoolHeight = height;
+    }
+    if (!gBGRAPool) return NULL;
+    CVPixelBufferRef output = NULL;
+    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, gBGRAPool, &output) != kCVReturnSuccess) {
+        return NULL;
+    }
+    if (!gImageContext) {
+        gImageContext = [[CIContext contextWithOptions:@{ kCIContextWorkingColorSpace: [NSNull null] }] retain];
+    }
+    CIImage *image = [CIImage imageWithCVPixelBuffer:source];
+    if (!image) {
+        CVPixelBufferRelease(output);
+        return NULL;
+    }
+    [gImageContext render:image toCVPixelBuffer:output];
+    if (gHeader) __sync_fetch_and_add(&gHeader->pixelConversions, 1);
+    return output;
 }
 
 static UIImage *CurrentFrameImage(void) {
-    NSMutableData *data = nil;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t bytesPerRow = 0;
-    uint64_t timestampNs = 0;
-    if (!CopyCurrentFrame(&data, &width, &height, &bytesPerRow, &timestampNs)) return nil;
-    CGImageRef image = CreateImage(data, width, height, bytesPerRow);
+    SimDeckFrameDescriptor descriptor = {0};
+    CVPixelBufferRef pixelBuffer = CurrentPixelBuffer(NO, &descriptor);
+    if (!pixelBuffer) return nil;
+    if (!gImageContext) {
+        gImageContext = [[CIContext contextWithOptions:@{ kCIContextWorkingColorSpace: [NSNull null] }] retain];
+    }
+    CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+    CGImageRef image = ciImage
+        ? [gImageContext createCGImage:ciImage fromRect:CGRectMake(0, 0,
+                                                                  CVPixelBufferGetWidth(pixelBuffer),
+                                                                  CVPixelBufferGetHeight(pixelBuffer))]
+        : NULL;
+    CVPixelBufferRelease(pixelBuffer);
     if (!image) return nil;
     UIImage *uiImage = [UIImage imageWithCGImage:image scale:UIScreen.mainScreen.scale orientation:UIImageOrientationUp];
     CGImageRelease(image);
+    if (gHeader) {
+        __sync_fetch_and_add(&gHeader->pixelConversions, 1);
+        __sync_fetch_and_add(&gHeader->fullFrameCopies, 1);
+    }
     return uiImage;
 }
 
-static void DeliverFrame(void) {
-    NSMutableData *data = nil;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t bytesPerRow = 0;
-    uint64_t timestampNs = 0;
-    if (!CopyCurrentFrame(&data, &width, &height, &bytesPerRow, &timestampNs)) return;
-    timestampNs = (uint64_t)(CACurrentMediaTime() * 1000000000.0);
+static OSType RequestedPixelFormat(AVCaptureVideoDataOutput *output, OSType sourceFormat) {
+    NSDictionary *settings = objc_getAssociatedObject(output, &kOutputVideoSettingsKey);
+    NSNumber *value = settings[(id)kCVPixelBufferPixelFormatTypeKey];
+    return value ? (OSType)value.unsignedIntValue : sourceFormat;
+}
 
-    CMSampleBufferRef sample = CreateSampleBuffer(data, width, height, bytesPerRow, timestampNs);
-    if (sample) {
-        NSArray *outputs = nil;
-        @synchronized(gVideoOutputs) {
-            outputs = [gVideoOutputs copy];
-        }
-        for (NSValue *value in outputs) {
-            AVCaptureVideoDataOutput *output = (__bridge AVCaptureVideoDataOutput *)value.pointerValue;
-            id delegate = objc_getAssociatedObject(output, &kOutputDelegateKey);
-            dispatch_queue_t queue = objc_getAssociatedObject(output, &kOutputQueueKey);
-            if (!delegate || ![delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                continue;
-            }
-            CFRetain(sample);
-            dispatch_async(queue ?: dispatch_get_main_queue(), ^{
-                ((void (*)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *))objc_msgSend)(
-                    delegate,
-                    @selector(captureOutput:didOutputSampleBuffer:fromConnection:),
-                    output,
-                    sample,
-                    nil);
-                CFRelease(sample);
-            });
-        }
-        [outputs release];
-        CFRelease(sample);
+static void DeliverSample(CMSampleBufferRef sample, AVCaptureVideoDataOutput *output) {
+    if (!sample || !output) return;
+    id delegate = objc_getAssociatedObject(output, &kOutputDelegateKey);
+    dispatch_queue_t queue = objc_getAssociatedObject(output, &kOutputQueueKey);
+    if (!delegate || ![delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+        return;
     }
+    @synchronized(output) {
+        if ([objc_getAssociatedObject(output, &kOutputDeliveryPendingKey) boolValue]) {
+            if (gHeader) __sync_fetch_and_add(&gHeader->consumerDroppedFrames, 1);
+            return;
+        }
+        objc_setAssociatedObject(output, &kOutputDeliveryPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    CFRetain(sample);
+    dispatch_async(queue ?: dispatch_get_main_queue(), ^{
+        ((void (*)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *))objc_msgSend)(
+            delegate,
+            @selector(captureOutput:didOutputSampleBuffer:fromConnection:),
+            output,
+            sample,
+            nil);
+        @synchronized(output) {
+            objc_setAssociatedObject(output, &kOutputDeliveryPendingKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        CFRelease(sample);
+    });
+}
 
-    CGImageRef image = CreateImage(data, width, height, bytesPerRow);
-    if (image) {
-        NSArray<CALayer *> *layers = nil;
+static void DeliverFrame(void) {
+    SimDeckFrameDescriptor descriptor = {0};
+    CVPixelBufferRef pixelBuffer = CurrentPixelBuffer(YES, &descriptor);
+    if (!pixelBuffer) return;
+    OSType sourceFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    uint64_t presentationTimestampNs = (uint64_t)(CACurrentMediaTime() * 1000000000.0);
+    CMSampleBufferRef sourceSample = CreateSampleBuffer(pixelBuffer,
+                                                        descriptor.generation,
+                                                        presentationTimestampNs,
+                                                        0);
+    CVPixelBufferRef bgraBuffer = NULL;
+    CMSampleBufferRef bgraSample = NULL;
+    NSArray *outputs = nil;
+    @synchronized(gVideoOutputs) {
+        outputs = [gVideoOutputs copy];
+    }
+    for (NSValue *value in outputs) {
+        AVCaptureVideoDataOutput *output = (__bridge AVCaptureVideoDataOutput *)value.pointerValue;
+        OSType requested = RequestedPixelFormat(output, sourceFormat);
+        if (requested == kCVPixelFormatType_32BGRA && sourceFormat != kCVPixelFormatType_32BGRA) {
+            if (!bgraBuffer) {
+                bgraBuffer = ConvertToBGRA(pixelBuffer);
+                if (bgraBuffer) {
+                    bgraSample = CreateSampleBuffer(bgraBuffer,
+                                                    descriptor.generation,
+                                                    presentationTimestampNs,
+                                                    1);
+                }
+            }
+            DeliverSample(bgraSample, output);
+        } else {
+            DeliverSample(sourceSample, output);
+        }
+    }
+    [outputs release];
+
+    if (sourceSample) {
+        NSArray<AVSampleBufferDisplayLayer *> *layers = nil;
         @synchronized(gPreviewLayers) {
             layers = gPreviewLayers.allObjects;
         }
+        CFRetain(sourceSample);
         dispatch_async(dispatch_get_main_queue(), ^{
-            for (CALayer *layer in layers) {
+            for (AVSampleBufferDisplayLayer *layer in layers) {
                 CALayer *host = objc_getAssociatedObject(layer, &kPreviewHostKey);
-                if (host) {
-                    layer.frame = host.bounds;
+                if (host) layer.frame = host.bounds;
+                if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
+                    [layer flush];
                 }
-                layer.contents = (__bridge id)image;
-                layer.contentsGravity = kCAGravityResizeAspectFill;
-                if (gHeader && gHeader->mirrorMode == SIMDECK_CAMERA_MIRROR_ON) {
-                    layer.transform = CATransform3DMakeScale(-1, 1, 1);
-                } else {
-                    layer.transform = CATransform3DIdentity;
-                }
+                layer.transform = descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON
+                    ? CATransform3DMakeScale(-1, 1, 1)
+                    : CATransform3DIdentity;
+                [layer enqueueSampleBuffer:sourceSample];
             }
-            CGImageRelease(image);
+            CFRelease(sourceSample);
         });
     }
+    if (bgraSample) CFRelease(bgraSample);
+    if (sourceSample) CFRelease(sourceSample);
+    if (bgraBuffer) CVPixelBufferRelease(bgraBuffer);
+    CVPixelBufferRelease(pixelBuffer);
+    if (gHeader) __sync_fetch_and_add(&gHeader->deliveredFrames, 1);
 }
 
 static void StartFrameTimer(void) {
@@ -377,8 +544,8 @@ static void StartFrameTimer(void) {
     gFrameTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, gFrameQueue);
     dispatch_source_set_timer(gFrameTimer,
                               dispatch_time(DISPATCH_TIME_NOW, 0),
-                              (uint64_t)(NSEC_PER_SEC / 30),
-                              (uint64_t)(NSEC_PER_MSEC * 4));
+                              (uint64_t)(NSEC_PER_SEC / 60),
+                              (uint64_t)(NSEC_PER_MSEC));
     dispatch_source_set_event_handler(gFrameTimer, ^{
         DeliverFrame();
     });
@@ -669,18 +836,12 @@ static void InstallVideoOutputAllocationHook(void) {
 
 - (void)sd_capturePhotoWithSettings:(AVCapturePhotoSettings *)settings delegate:(id<AVCapturePhotoCaptureDelegate>)delegate {
     (void)settings;
-    NSMutableData *data = nil;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t bytesPerRow = 0;
-    uint64_t ts = 0;
-    if (!delegate || !CopyCurrentFrame(&data, &width, &height, &bytesPerRow, &ts)) {
+    UIImage *image = delegate ? CurrentFrameImage() : nil;
+    if (!image) {
         [self sd_capturePhotoWithSettings:settings delegate:delegate];
         return;
     }
-    CGImageRef image = CreateImage(data, width, height, bytesPerRow);
-    NSData *jpeg = image ? UIImageJPEGRepresentation([UIImage imageWithCGImage:image], 0.92) : nil;
-    if (image) CGImageRelease(image);
+    NSData *jpeg = UIImageJPEGRepresentation(image, 0.92);
     SimDeckCameraPhoto *photo = NSAllocateObject(SimDeckCameraPhoto.class, 0, nil);
     photo.jpegData = jpeg ?: [NSData data];
     dispatch_async(dispatch_get_main_queue(), ^{

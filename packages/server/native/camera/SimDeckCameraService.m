@@ -3,6 +3,7 @@
 #import <CoreImage/CoreImage.h>
 #import <CoreMedia/CoreMedia.h>
 #import <Foundation/Foundation.h>
+#import <IOSurface/IOSurfaceRef.h>
 #import <VideoToolbox/VideoToolbox.h>
 
 #import "SimDeckCameraShared.h"
@@ -21,11 +22,13 @@
 #import <sys/stat.h>
 #import <unistd.h>
 
-static uint32_t gWidth = 1280;
-static uint32_t gHeight = 720;
+#define SIMDECK_CAMERA_DEFAULT_WIDTH 1280u
+#define SIMDECK_CAMERA_DEFAULT_HEIGHT 720u
+
+static uint32_t gWidth = SIMDECK_CAMERA_DEFAULT_WIDTH;
+static uint32_t gHeight = SIMDECK_CAMERA_DEFAULT_HEIGHT;
 static char *gShmName = NULL;
 static SimDeckCameraHeader *gHeader = NULL;
-static uint8_t *gPixels = NULL;
 static size_t gMappedSize = 0;
 static dispatch_queue_t gWriteQueue;
 static dispatch_source_t gPlaceholderTimer;
@@ -49,9 +52,12 @@ static pthread_mutex_t gBrowserFrameLock = PTHREAD_MUTEX_INITIALIZER;
 static dispatch_queue_t gBrowserPublishQueue;
 static CVPixelBufferRef gLatestBrowserPixelBuffer = NULL;
 static BOOL gBrowserPublishScheduled = NO;
-static CIContext *gBrowserRenderContext;
 static atomic_ullong gBrowserDecodeErrors;
 static atomic_uint gLastCameraSequence;
+static CVPixelBufferRef gSurfaceRing[SIMDECK_CAMERA_SURFACE_RING_SIZE];
+static uint32_t gNextSurfaceSlot;
+static uint64_t gSurfaceGeneration;
+static atomic_ullong gSurfacePublicationFailures;
 
 static void StopBrowserSource(void);
 
@@ -147,56 +153,111 @@ static void SetSourceState(uint32_t sourceKind, NSString *name, NSString *argume
     gSourceArgument = [argument copy];
 }
 
-static void PublishBGRA(const uint8_t *source,
-                        uint32_t sourceWidth,
-                        uint32_t sourceHeight,
-                        size_t sourceBytesPerRow,
-                        uint32_t sourceKind,
-                        NSString *label) {
-    if (!gHeader || !gPixels || !source || sourceWidth == 0 || sourceHeight == 0) return;
+static uint32_t ColorRangeForPixelFormat(OSType format) {
+    if (format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
+        return SIMDECK_CAMERA_COLOR_RANGE_VIDEO;
+    }
+    if (format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
+        format == kCVPixelFormatType_32BGRA) {
+        return SIMDECK_CAMERA_COLOR_RANGE_FULL;
+    }
+    return SIMDECK_CAMERA_COLOR_RANGE_UNKNOWN;
+}
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static NSDictionary *GlobalSurfacePropertiesForSimulatorLookup(void) {
+    return @{ (id)kIOSurfaceIsGlobal: @YES };
+}
+#pragma clang diagnostic pop
+
+static CVPixelBufferRef CreateGlobalPixelBuffer(size_t width, size_t height, OSType format) {
+    CVPixelBufferRef pixelBuffer = NULL;
+    NSDictionary *attributes = @{
+        (id)kCVPixelBufferIOSurfacePropertiesKey: GlobalSurfacePropertiesForSimulatorLookup(),
+    };
+    CVReturn result = CVPixelBufferCreate(kCFAllocatorDefault,
+                                          width,
+                                          height,
+                                          format,
+                                          (__bridge CFDictionaryRef)attributes,
+                                          &pixelBuffer);
+    return result == kCVReturnSuccess ? pixelBuffer : NULL;
+}
+
+static BOOL PublishSurface(CVPixelBufferRef pixelBuffer, uint32_t sourceKind, NSString *label) {
+    if (!pixelBuffer || !gHeader) return NO;
+    IOSurfaceRef surface = CVPixelBufferGetIOSurface(pixelBuffer);
+    IOSurfaceID surfaceID = surface ? IOSurfaceGetID(surface) : 0;
+    if (!surface || surfaceID == 0) {
+        atomic_fetch_add(&gSurfacePublicationFailures, 1);
+        atomic_fetch_add(&gDroppedFrames, 1);
+        return NO;
+    }
+
+    __block BOOL published = NO;
     dispatch_sync(gWriteQueue, ^{
-        if (!gHeader || !gPixels) return;
-        gHeader->sequence += 1;
-        for (uint32_t y = 0; y < gHeight; y += 1) {
-            uint32_t sy = (uint32_t)(((uint64_t)y * sourceHeight) / MAX(gHeight, 1));
-            const uint8_t *sourceRow = source + ((size_t)sy * sourceBytesPerRow);
-            uint8_t *destRow = gPixels + ((size_t)y * gHeader->bytesPerRow);
-            for (uint32_t x = 0; x < gWidth; x += 1) {
-                uint32_t sx = (uint32_t)(((uint64_t)x * sourceWidth) / MAX(gWidth, 1));
-                const uint8_t *pixel = sourceRow + ((size_t)sx * 4);
-                uint8_t *out = destRow + ((size_t)x * 4);
-                out[0] = pixel[0];
-                out[1] = pixel[1];
-                out[2] = pixel[2];
-                out[3] = 0xff;
+        if (!gHeader) return;
+        uint32_t slot = UINT32_MAX;
+        for (uint32_t offset = 0; offset < SIMDECK_CAMERA_SURFACE_RING_SIZE; offset += 1) {
+            uint32_t candidate = (gNextSurfaceSlot + offset) % SIMDECK_CAMERA_SURFACE_RING_SIZE;
+            if (!gSurfaceRing[candidate] || gHeader->surfaceUseCounts[candidate] == 0) {
+                slot = candidate;
+                break;
             }
         }
-        gHeader->timestampNs = NowNs();
+        if (slot == UINT32_MAX) {
+            atomic_fetch_add(&gDroppedFrames, 1);
+            return;
+        }
+
+        size_t width = CVPixelBufferGetWidth(pixelBuffer);
+        size_t height = CVPixelBufferGetHeight(pixelBuffer);
+        OSType format = CVPixelBufferGetPixelFormatType(pixelBuffer);
+        BOOL formatChanged = gHeader->width != width ||
+            gHeader->height != height ||
+            gHeader->pixelFormat != format;
+        gHeader->sequence += 1;
+        CVPixelBufferRetain(pixelBuffer);
+        if (gSurfaceRing[slot]) CVPixelBufferRelease(gSurfaceRing[slot]);
+        gSurfaceRing[slot] = pixelBuffer;
+        gNextSurfaceSlot = (slot + 1) % SIMDECK_CAMERA_SURFACE_RING_SIZE;
+
+        if (formatChanged) gSurfaceGeneration += 1;
+        gHeader->generation = gSurfaceGeneration;
+        gHeader->width = (uint32_t)width;
+        gHeader->height = (uint32_t)height;
+        gHeader->pixelFormat = format;
+        gHeader->colorRange = ColorRangeForPixelFormat(format);
+        gHeader->orientation = SIMDECK_CAMERA_ORIENTATION_UP;
         gHeader->sourceKind = sourceKind;
+        gHeader->ringSlot = slot;
+        gHeader->surfaceIds[slot] = surfaceID;
+        gHeader->timestampNs = NowNs();
         SetSourceMetadata(sourceKind, label);
         gHeader->sequence += 1;
+        gWidth = (uint32_t)width;
+        gHeight = (uint32_t)height;
+        gLastPixelFormat = format;
         atomic_fetch_add(&gPublishedFrames, 1);
+        published = YES;
     });
+    return published;
 }
 
 static void PublishPixelBuffer(CVPixelBufferRef pixelBuffer, uint32_t sourceKind, NSString *label) {
     if (!pixelBuffer) return;
-    OSType format = CVPixelBufferGetPixelFormatType(pixelBuffer);
-    gLastPixelFormat = format;
-    if (format == kCVPixelFormatType_32BGRA) {
-        CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-        PublishBGRA((const uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer),
-                    (uint32_t)CVPixelBufferGetWidth(pixelBuffer),
-                    (uint32_t)CVPixelBufferGetHeight(pixelBuffer),
-                    CVPixelBufferGetBytesPerRow(pixelBuffer),
-                    sourceKind,
-                    label);
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    if (CVPixelBufferGetIOSurface(pixelBuffer)) {
+        PublishSurface(pixelBuffer, sourceKind, label);
         return;
     }
 
+    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    CVPixelBufferRef output = CreateGlobalPixelBuffer(width, height, kCVPixelFormatType_32BGRA);
     CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
-    if (!image) {
+    if (!output || !image) {
+        if (output) CVPixelBufferRelease(output);
         atomic_fetch_add(&gDroppedFrames, 1);
         return;
     }
@@ -205,47 +266,37 @@ static void PublishPixelBuffer(CVPixelBufferRef pixelBuffer, uint32_t sourceKind
     dispatch_once(&once, ^{
         context = [CIContext contextWithOptions:@{ kCIContextWorkingColorSpace: [NSNull null] }];
     });
-    size_t width = CVPixelBufferGetWidth(pixelBuffer);
-    size_t height = CVPixelBufferGetHeight(pixelBuffer);
-    size_t bytesPerRow = width * 4;
-    NSMutableData *data = [NSMutableData dataWithLength:bytesPerRow * height];
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    [context render:image
-           toBitmap:data.mutableBytes
-           rowBytes:bytesPerRow
-             bounds:CGRectMake(0, 0, width, height)
-             format:kCIFormatBGRA8
-         colorSpace:colorSpace];
-    CGColorSpaceRelease(colorSpace);
-    PublishBGRA(data.bytes,
-                (uint32_t)width,
-                (uint32_t)height,
-                bytesPerRow,
-                sourceKind,
-                label);
+    [context render:image toCVPixelBuffer:output];
+    if (gHeader) {
+        gHeader->pixelConversions += 1;
+        gHeader->fullFrameCopies += 1;
+    }
+    PublishSurface(output, sourceKind, label);
+    CVPixelBufferRelease(output);
 }
 
 static void DrawPlaceholderFrame(uint32_t frameIndex) {
-    if (!gHeader || !gPixels) return;
-    dispatch_sync(gWriteQueue, ^{
-        if (!gHeader || !gPixels) return;
-        gHeader->sequence += 1;
-        for (uint32_t y = 0; y < gHeight; y += 1) {
-            uint8_t *row = gPixels + ((size_t)y * gHeader->bytesPerRow);
-            for (uint32_t x = 0; x < gWidth; x += 1) {
-                uint8_t *p = row + ((size_t)x * 4);
-                uint8_t stripe = (uint8_t)(((x / 80) + (frameIndex / 6)) % 2 ? 56 : 24);
-                p[0] = (uint8_t)((x + frameIndex * 7) % 256);
-                p[1] = (uint8_t)((y + frameIndex * 3) % 256);
-                p[2] = (uint8_t)(180 + stripe);
-                p[3] = 0xff;
-            }
+    const uint32_t width = SIMDECK_CAMERA_DEFAULT_WIDTH;
+    const uint32_t height = SIMDECK_CAMERA_DEFAULT_HEIGHT;
+    CVPixelBufferRef pixelBuffer = CreateGlobalPixelBuffer(width, height, kCVPixelFormatType_32BGRA);
+    if (!pixelBuffer) return;
+    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+    uint8_t *base = CVPixelBufferGetBaseAddress(pixelBuffer);
+    size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    for (uint32_t y = 0; y < height; y += 1) {
+        uint8_t *row = base + ((size_t)y * bytesPerRow);
+        for (uint32_t x = 0; x < width; x += 1) {
+            uint8_t *p = row + ((size_t)x * 4);
+            uint8_t stripe = (uint8_t)(((x / 80) + (frameIndex / 6)) % 2 ? 56 : 24);
+            p[0] = (uint8_t)((x + frameIndex * 7) % 256);
+            p[1] = (uint8_t)((y + frameIndex * 3) % 256);
+            p[2] = (uint8_t)(180 + stripe);
+            p[3] = 0xff;
         }
-        gHeader->timestampNs = NowNs();
-        SetSourceMetadata(SIMDECK_CAMERA_SOURCE_PLACEHOLDER, @"placeholder");
-        gHeader->sequence += 1;
-        atomic_fetch_add(&gPublishedFrames, 1);
-    });
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    PublishSurface(pixelBuffer, SIMDECK_CAMERA_SOURCE_PLACEHOLDER, @"placeholder");
+    CVPixelBufferRelease(pixelBuffer);
 }
 
 static BOOL PublishImageAtPath(NSString *path, NSString **error) {
@@ -257,30 +308,33 @@ static BOOL PublishImageAtPath(NSString *path, NSString **error) {
     }
     size_t sourceWidth = CGImageGetWidth(cgImage);
     size_t sourceHeight = CGImageGetHeight(cgImage);
-    size_t bytesPerRow = sourceWidth * 4;
-    NSMutableData *data = [NSMutableData dataWithLength:bytesPerRow * sourceHeight];
+    CVPixelBufferRef pixelBuffer = CreateGlobalPixelBuffer(sourceWidth, sourceHeight, kCVPixelFormatType_32BGRA);
+    if (!pixelBuffer) {
+        if (error) *error = @"Unable to allocate image surface.";
+        return NO;
+    }
+    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGContextRef context = CGBitmapContextCreate(data.mutableBytes,
+    CGContextRef context = CGBitmapContextCreate(CVPixelBufferGetBaseAddress(pixelBuffer),
                                                  sourceWidth,
                                                  sourceHeight,
                                                  8,
-                                                 bytesPerRow,
+                                                 CVPixelBufferGetBytesPerRow(pixelBuffer),
                                                  colorSpace,
                                                  kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
     CGColorSpaceRelease(colorSpace);
     if (!context) {
         if (error) *error = @"Unable to allocate image conversion buffer.";
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+        CVPixelBufferRelease(pixelBuffer);
         return NO;
     }
     CGContextDrawImage(context, CGRectMake(0, 0, sourceWidth, sourceHeight), cgImage);
     CGContextRelease(context);
-    PublishBGRA(data.bytes,
-                (uint32_t)sourceWidth,
-                (uint32_t)sourceHeight,
-                bytesPerRow,
-                SIMDECK_CAMERA_SOURCE_IMAGE,
-                path);
-    return YES;
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    BOOL published = PublishSurface(pixelBuffer, SIMDECK_CAMERA_SOURCE_IMAGE, path);
+    CVPixelBufferRelease(pixelBuffer);
+    return published;
 }
 
 static BOOL CanDecodeImageAtPath(NSString *path, NSString **error) {
@@ -293,40 +347,8 @@ static BOOL CanDecodeImageAtPath(NSString *path, NSString **error) {
 }
 
 static void PublishBrowserPixelBuffer(CVPixelBufferRef pixelBuffer) {
-    if (!pixelBuffer || !gHeader || !gPixels || gSourceKind != SIMDECK_CAMERA_SOURCE_CAMERA) return;
-    gLastPixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
-    CIImage *source = [CIImage imageWithCVPixelBuffer:pixelBuffer];
-    if (!source) {
-        atomic_fetch_add(&gDroppedFrames, 1);
-        return;
-    }
-    size_t sourceWidth = CVPixelBufferGetWidth(pixelBuffer);
-    size_t sourceHeight = CVPixelBufferGetHeight(pixelBuffer);
-    if (sourceWidth == 0 || sourceHeight == 0) return;
-    CGFloat scale = MIN((CGFloat)gWidth / sourceWidth, (CGFloat)gHeight / sourceHeight);
-    CIImage *scaled = [source imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
-    CGRect scaledExtent = scaled.extent;
-    CGFloat targetX = ((CGFloat)gWidth - scaledExtent.size.width) / 2.0 - scaledExtent.origin.x;
-    CGFloat targetY = ((CGFloat)gHeight - scaledExtent.size.height) / 2.0 - scaledExtent.origin.y;
-    CIImage *positioned = [scaled imageByApplyingTransform:CGAffineTransformMakeTranslation(targetX, targetY)];
-    CGRect outputBounds = CGRectMake(0, 0, gWidth, gHeight);
-    CIImage *background = [[CIImage imageWithColor:[CIColor colorWithRed:0 green:0 blue:0 alpha:1]]
-        imageByCroppingToRect:outputBounds];
-    CIImage *composed = [positioned imageByCompositingOverImage:background];
-    dispatch_sync(gWriteQueue, ^{
-        if (!gHeader || !gPixels) return;
-        gHeader->sequence += 1;
-        [gBrowserRenderContext render:composed
-                             toBitmap:gPixels
-                             rowBytes:gHeader->bytesPerRow
-                               bounds:outputBounds
-                               format:kCIFormatBGRA8
-                           colorSpace:nil];
-        gHeader->timestampNs = NowNs();
-        SetSourceMetadata(SIMDECK_CAMERA_SOURCE_CAMERA, @"camera");
-        gHeader->sequence += 1;
-        atomic_fetch_add(&gPublishedFrames, 1);
-    });
+    if (!pixelBuffer || !gHeader || gSourceKind != SIMDECK_CAMERA_SOURCE_CAMERA) return;
+    PublishSurface(pixelBuffer, SIMDECK_CAMERA_SOURCE_CAMERA, @"camera");
 }
 
 static void DrainLatestBrowserFrame(void) {
@@ -460,7 +482,7 @@ static BOOL ConfigureBrowserH264Decoder(NSData *configuration, NSString **error)
     }
     NSDictionary *pixelAttributes = @{
         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        (id)kCVPixelBufferIOSurfacePropertiesKey: GlobalSurfacePropertiesForSimulatorLookup(),
     };
     VTDecompressionOutputCallbackRecord callback = {
         .decompressionOutputCallback = BrowserH264Output,
@@ -577,14 +599,8 @@ static BOOL StartBrowserSource(NSString **error) {
     if (!gBrowserPublishQueue) {
         gBrowserPublishQueue = dispatch_queue_create("dev.nativescript.simdeck.camera.stream", DISPATCH_QUEUE_SERIAL);
     }
-    if (!gBrowserRenderContext) {
-        gBrowserRenderContext = [CIContext contextWithOptions:@{
-            kCIContextUseSoftwareRenderer: @NO,
-            kCIContextCacheIntermediates: @NO,
-            kCIContextWorkingColorSpace: [NSNull null],
-        }];
-    }
     atomic_store(&gBrowserDecodeErrors, 0);
+    atomic_store(&gLastCameraSequence, 0);
     SetSourceState(SIMDECK_CAMERA_SOURCE_CAMERA, @"camera", nil);
     SetSourceMetadata(SIMDECK_CAMERA_SOURCE_CAMERA, @"camera");
     return YES;
@@ -672,6 +688,7 @@ static BOOL StartVideo(NSString *path, NSString **error) {
                 }
                 NSDictionary *settings = @{
                     (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+                    (id)kCVPixelBufferIOSurfacePropertiesKey: GlobalSurfacePropertiesForSimulatorLookup(),
                 };
                 AVAssetReaderTrackOutput *output = [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:settings];
                 output.alwaysCopiesSampleData = NO;
@@ -723,9 +740,28 @@ static NSDictionary *StatusPayload(BOOL ok, NSString *error) {
         @"sequence": gHeader ? @(gHeader->sequence) : @0,
         @"frames": @(atomic_load(&gPublishedFrames)),
         @"droppedFrames": @(atomic_load(&gDroppedFrames)),
+        @"surfacePublicationFailures": @(atomic_load(&gSurfacePublicationFailures)),
     } mutableCopy];
     if (gSourceArgument.length > 0) payload[@"arg"] = gSourceArgument;
     if (gHeader) payload[@"sourceLabel"] = StringFromCString(gHeader->sourceLabel);
+    if (gHeader) {
+        payload[@"surfaceGeneration"] = @(gHeader->generation);
+        payload[@"surfaceSlot"] = @(gHeader->ringSlot);
+        payload[@"surfaceId"] = @(gHeader->surfaceIds[gHeader->ringSlot]);
+        payload[@"consumedSequence"] = @(gHeader->consumedSequence);
+        payload[@"surfaceLookupFailures"] = @(gHeader->surfaceLookupFailures);
+        payload[@"geometryConversions"] = @(gHeader->geometryConversions);
+        payload[@"pixelConversions"] = @(gHeader->pixelConversions);
+        payload[@"fullFrameCopies"] = @(gHeader->fullFrameCopies);
+        payload[@"sampleBufferFailures"] = @(gHeader->sampleBufferFailures);
+        payload[@"deliveredFrames"] = @(gHeader->deliveredFrames);
+        payload[@"consumerDroppedFrames"] = @(gHeader->consumerDroppedFrames);
+        NSMutableArray *surfaceUseCounts = [NSMutableArray arrayWithCapacity:SIMDECK_CAMERA_SURFACE_RING_SIZE];
+        for (uint32_t slot = 0; slot < SIMDECK_CAMERA_SURFACE_RING_SIZE; slot += 1) {
+            [surfaceUseCounts addObject:@(gHeader->surfaceUseCounts[slot])];
+        }
+        payload[@"surfaceUseCounts"] = surfaceUseCounts;
+    }
     if (gLastPixelFormat != 0) payload[@"pixelFormat"] = FourCCString(gLastPixelFormat);
     if (gSourceKind == SIMDECK_CAMERA_SOURCE_CAMERA) {
         payload[@"decodeErrors"] = @(atomic_load(&gBrowserDecodeErrors));
@@ -738,7 +774,7 @@ static NSDictionary *StatusPayload(BOOL ok, NSString *error) {
 static int OpenSharedMemory(void) {
     if (!gShmName) return -1;
     shm_unlink(gShmName);
-    gMappedSize = (size_t)SimDeckCameraBufferSize(gWidth, gHeight);
+    gMappedSize = (size_t)SimDeckCameraBufferSize();
     int fd = shm_open(gShmName, O_CREAT | O_RDWR, 0644);
     if (fd < 0) {
         perror("shm_open");
@@ -760,12 +796,17 @@ static int OpenSharedMemory(void) {
     gHeader->magic = SIMDECK_CAMERA_MAGIC;
     gHeader->version = SIMDECK_CAMERA_VERSION;
     gHeader->headerSize = SIMDECK_CAMERA_HEADER_SIZE;
+    gHeader->descriptorSize = sizeof(SimDeckCameraHeader);
+    gHeader->generation = 1;
     gHeader->width = gWidth;
     gHeader->height = gHeight;
-    gHeader->bytesPerRow = gWidth * 4;
     gHeader->pixelFormat = kCVPixelFormatType_32BGRA;
+    gHeader->colorRange = SIMDECK_CAMERA_COLOR_RANGE_FULL;
+    gHeader->orientation = SIMDECK_CAMERA_ORIENTATION_UP;
     gHeader->mirrorMode = SIMDECK_CAMERA_MIRROR_AUTO;
-    gPixels = ((uint8_t *)mapped) + SIMDECK_CAMERA_HEADER_SIZE;
+    gHeader->ringSize = SIMDECK_CAMERA_SURFACE_RING_SIZE;
+    gSurfaceGeneration = 1;
+    gNextSurfaceSlot = 0;
     return 0;
 }
 
@@ -778,18 +819,22 @@ static void Cleanup(void) {
             mappedHeader = gHeader;
             mappedSize = gMappedSize;
             gHeader = NULL;
-            gPixels = NULL;
             gMappedSize = 0;
         });
     } else {
         mappedHeader = gHeader;
         mappedSize = gMappedSize;
         gHeader = NULL;
-        gPixels = NULL;
         gMappedSize = 0;
     }
     if (mappedHeader) {
         munmap(mappedHeader, mappedSize);
+    }
+    for (uint32_t slot = 0; slot < SIMDECK_CAMERA_SURFACE_RING_SIZE; slot += 1) {
+        if (gSurfaceRing[slot]) {
+            CVPixelBufferRelease(gSurfaceRing[slot]);
+            gSurfaceRing[slot] = NULL;
+        }
     }
     if (gShmName) {
         shm_unlink(gShmName);
@@ -845,6 +890,7 @@ bool simdeck_camera_start(const char *udid,
                 gWriteQueue = dispatch_queue_create("dev.nativescript.simdeck.camera.writer", DISPATCH_QUEUE_SERIAL);
                 atomic_store(&gPublishedFrames, 0);
                 atomic_store(&gDroppedFrames, 0);
+                atomic_store(&gSurfacePublicationFailures, 0);
                 gLastPixelFormat = 0;
                 [NSApplication sharedApplication];
                 [NSApp finishLaunching];

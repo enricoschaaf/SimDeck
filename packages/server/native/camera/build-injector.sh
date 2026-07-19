@@ -26,8 +26,10 @@ xcrun --sdk iphonesimulator clang \
   -framework Foundation \
   -framework AVFoundation \
   -framework CoreGraphics \
+  -framework CoreImage \
   -framework CoreMedia \
   -framework CoreVideo \
+  -framework IOSurface \
   -framework QuartzCore \
   -framework UIKit \
   -install_name "@rpath/libSimDeckCameraInjector.dylib" \
