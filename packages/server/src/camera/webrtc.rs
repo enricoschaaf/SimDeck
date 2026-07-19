@@ -174,8 +174,6 @@ pub async fn create_answer(
         ));
     }
 
-    stop(&udid).await;
-
     let mut media_engine = MediaEngine::default();
     media_engine
         .register_codec(

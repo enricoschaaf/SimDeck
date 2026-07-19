@@ -583,14 +583,17 @@ static void DeliverFrame(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             for (AVSampleBufferDisplayLayer *layer in layers) {
                 CALayer *host = objc_getAssociatedObject(layer, &kPreviewHostKey);
+                [CATransaction begin];
+                [CATransaction setDisableActions:YES];
                 if (host) layer.frame = host.bounds;
                 if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
                     [layer flush];
                 }
-                layer.transform = descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON
-                    ? CATransform3DMakeScale(-1, 1, 1)
-                    : CATransform3DIdentity;
+                [layer setAffineTransform:descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON
+                    ? CGAffineTransformMakeScale(-1, 1)
+                    : CGAffineTransformIdentity];
                 [layer enqueueSampleBuffer:sourceSample];
+                [CATransaction commit];
             }
             CFRelease(sourceSample);
         });

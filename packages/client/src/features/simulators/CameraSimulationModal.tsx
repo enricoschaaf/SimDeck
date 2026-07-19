@@ -38,9 +38,9 @@ interface CameraSimulationModalProps {
 }
 
 type SourceMode = "placeholder" | "camera" | "media";
-type MirrorMode = "auto" | "on" | "off";
 type CameraAccess = "idle" | "requesting" | "granted" | "denied";
 const CAMERA_DEVICE_STORAGE_KEY = "simdeck.camera.deviceId";
+const CAMERA_MIRROR = "on" as const;
 
 declare global {
   interface Window {
@@ -71,7 +71,6 @@ export function CameraSimulationModal({
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [cameraAccess, setCameraAccess] = useState<CameraAccess>("idle");
   const [cameraStats, setCameraStats] = useState<CameraStats | null>(null);
-  const [mirror, setMirror] = useState<MirrorMode>("auto");
   const [status, setStatus] = useState<CameraStatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
@@ -126,8 +125,6 @@ export function CameraSimulationModal({
       }),
       pause: () => benchmarkSourceRef.current?.pause(),
       restart: async () => {
-        cameraFeedRef.current?.stop();
-        cameraFeedRef.current = null;
         cameraStatsRef.current = null;
         setCameraStats(null);
         await startCurrentCameraFeed(await cameraStream());
@@ -172,7 +169,7 @@ export function CameraSimulationModal({
     let cancelled = false;
     const resume = async () => {
       try {
-        const nextStatus = await fetchCameraStatus(udid);
+        let nextStatus = await fetchCameraStatus(udid);
         if (cancelled) {
           return;
         }
@@ -181,6 +178,16 @@ export function CameraSimulationModal({
           return;
         }
         setSourceMode("camera");
+        if (nextStatus.mirror !== CAMERA_MIRROR) {
+          nextStatus = await switchCameraSimulationSource(udid, {
+            mirror: CAMERA_MIRROR,
+            source: { kind: "camera" },
+          });
+          if (cancelled) {
+            return;
+          }
+          setStatus(nextStatus);
+        }
         if (
           cameraFeedRef.current ||
           !(await cameraPermissionWasGranted()) ||
@@ -353,13 +360,6 @@ export function CameraSimulationModal({
       const nextStatus = await fetchCameraStatus(udid);
       setStatus(nextStatus);
       if (
-        nextStatus.mirror === "auto" ||
-        nextStatus.mirror === "on" ||
-        nextStatus.mirror === "off"
-      ) {
-        setMirror(nextStatus.mirror);
-      }
-      if (
         nextStatus.source === "camera" ||
         nextStatus.source === "placeholder"
       ) {
@@ -459,13 +459,15 @@ export function CameraSimulationModal({
   }
 
   async function startCurrentCameraFeed(stream: MediaStream) {
-    cameraFeedRef.current?.stop();
-    cameraFeedRef.current = await startCameraFeed({
+    const previousFeed = cameraFeedRef.current;
+    const nextFeed = await startCameraFeed({
       stream,
       udid,
       onError: setError,
       onStats: setCameraStats,
     });
+    cameraFeedRef.current = nextFeed;
+    previousFeed?.stop();
   }
 
   async function apply(event: FormEvent<HTMLFormElement>) {
@@ -483,11 +485,11 @@ export function CameraSimulationModal({
       }
       const nextStatus = updatesRunningCamera
         ? await switchCameraSimulationSource(udid, {
-            mirror,
+            mirror: CAMERA_MIRROR,
             source: requestSource(),
           })
         : await startCameraSimulation(udid, {
-            mirror,
+            mirror: CAMERA_MIRROR,
             source: requestSource(),
           });
       setStatus(nextStatus);
@@ -669,19 +671,6 @@ export function CameraSimulationModal({
                 </div>
               )
             ) : null}
-            <label className="new-sim-field">
-              <span>Mirror:</span>
-              <select
-                onChange={(event) =>
-                  setMirror(event.currentTarget.value as MirrorMode)
-                }
-                value={mirror}
-              >
-                <option value="auto">Auto</option>
-                <option value="off">Off</option>
-                <option value="on">On</option>
-              </select>
-            </label>
             <p className="new-sim-status camera-sim-status">
               {isLoading ? "Loading camera status..." : `Status: ${statusText}`}
             </p>
