@@ -6,6 +6,7 @@ use crate::camera::{self, CameraStartRequest, CameraSwitchRequest};
 use crate::config::Config;
 use crate::config::UserConfig;
 use crate::deep_links;
+use crate::device_events::DeviceEventHub;
 use crate::devtools;
 use crate::error::AppError;
 use crate::inspector::{InspectorHub, PublishedInspector};
@@ -21,6 +22,12 @@ use crate::performance::{
 use crate::simulators::registry::SessionRegistry;
 use crate::simulators::session::SimulatorSession;
 use crate::static_files;
+use crate::system_surfaces::{is_document_picker_service, SystemSurfaceRegistry};
+use crate::uikit_services::{
+    application_foreground_score as ui_application_foreground_score,
+    application_service_details as ui_application_service_details,
+    application_services as simulator_ui_application_services, UIKitApplicationServiceDetails,
+};
 use crate::webkit;
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -87,6 +94,8 @@ pub struct AppState {
     pub simulator_inventory: SimulatorInventoryCache,
     pub accessibility_cache: AccessibilitySnapshotCache,
     pub android: AndroidBridge,
+    pub device_events: DeviceEventHub,
+    pub system_surfaces: SystemSurfaceRegistry,
 }
 
 #[derive(Clone)]
@@ -1975,13 +1984,20 @@ async fn simulator_state(
         .get("isBooted")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let foreground_app = if is_booted && !android::is_android_id(&udid) {
-        foreground_app_for_simulator(&state, &udid)
-            .await
-            .ok()
-            .flatten()
+    let (foreground_app, system_surface) = if is_booted && !android::is_android_id(&udid) {
+        let (foreground_app, system_surface) = tokio::join!(
+            foreground_app_for_simulator(&state, &udid),
+            state.system_surfaces.probe(&udid, &state.device_events),
+        );
+        (
+            foreground_app.ok().flatten(),
+            system_surface.unwrap_or_else(|error| {
+                tracing::debug!("Unable to inspect UIKit system surface for {udid}: {error}");
+                state.system_surfaces.current(&udid)
+            }),
+        )
     } else {
-        None
+        (None, None)
     };
 
     Ok(json(json_value!({
@@ -1999,6 +2015,7 @@ async fn simulator_state(
         "lastFrameAt": last_frame_at,
         "lastFrameAgeMs": last_frame_age_ms,
         "foregroundApp": foreground_app,
+        "systemSurface": system_surface,
         "simulator": simulator,
     })))
 }
@@ -2338,6 +2355,7 @@ fn forget_lifecycle_session(state: &AppState, udid: &str) {
     // down, or erasing the same device. Detach it from the registry without
     // running Objective-C teardown on the lifecycle response path.
     state.accessibility_cache.invalidate(udid);
+    state.system_surfaces.clear(udid, &state.device_events);
     state.registry.forget(udid);
 }
 
@@ -3007,6 +3025,10 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
     }
 
     let (mut sender, mut receiver) = socket.split();
+    let mut device_events = state.device_events.subscribe(&udid);
+    state
+        .system_surfaces
+        .ensure_monitor(udid.clone(), state.device_events.clone());
     let _ = sender
         .send(Message::Text(
             json_value!({ "type": "ready", "udid": udid })
@@ -3020,37 +3042,59 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
         crate::semantic_text::prewarm(udid.clone());
     }
     let control_task = task::spawn(run_control_queue(
-        state,
+        state.clone(),
         session,
         bridge,
         udid.clone(),
         control_rx,
     ));
 
-    while let Some(message) = receiver.next().await {
-        let text = match message {
-            Ok(Message::Text(text)) => text,
-            Ok(Message::Binary(bytes)) => match String::from_utf8(bytes.to_vec()) {
-                Ok(text) => text.into(),
-                Err(_) => continue,
-            },
-            Ok(Message::Close(_)) => break,
-            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
-            Err(error) => {
-                tracing::debug!("Control WebSocket closed for {udid}: {error}");
-                break;
-            }
-        };
+    loop {
+        tokio::select! {
+            message = receiver.next() => {
+                let Some(message) = message else {
+                    break;
+                };
+                let text = match message {
+                    Ok(Message::Text(text)) => text,
+                    Ok(Message::Binary(bytes)) => match String::from_utf8(bytes.to_vec()) {
+                        Ok(text) => text.into(),
+                        Err(_) => continue,
+                    },
+                    Ok(Message::Close(_)) => break,
+                    Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
+                    Err(error) => {
+                        tracing::debug!("Control WebSocket closed for {udid}: {error}");
+                        break;
+                    }
+                };
 
-        let control_message = match serde_json::from_str::<ControlMessage>(&text) {
-            Ok(message) => message,
-            Err(error) => {
-                tracing::debug!("Invalid control message for {udid}: {error}");
-                continue;
+                let control_message = match serde_json::from_str::<ControlMessage>(&text) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        tracing::debug!("Invalid control message for {udid}: {error}");
+                        continue;
+                    }
+                };
+                if control_tx.send(control_message).is_err() {
+                    break;
+                }
             }
-        };
-        if control_tx.send(control_message).is_err() {
-            break;
+            event = device_events.recv() => match event {
+                Ok(event) => {
+                    if sender
+                        .send(Message::Text(event.to_string().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::debug!("Control WebSocket for {udid} skipped {skipped} device events");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
         }
     }
     drop(control_tx);
@@ -4561,21 +4605,6 @@ fn cached_foreground_app_with_ttl(udid: &str, ttl: Duration) -> Option<devtools:
     (cached.cached_at.elapsed() <= ttl).then(|| cached.foreground_app.clone())
 }
 
-#[derive(Clone, Debug)]
-struct UIKitApplicationService {
-    pid: i64,
-    service_name: String,
-}
-
-#[derive(Clone, Debug)]
-struct UIKitApplicationServiceDetails {
-    active_count: u64,
-    app_name: Option<String>,
-    bundle_identifier: Option<String>,
-    process_identifier: i64,
-    spawn_role: String,
-}
-
 async fn foreground_app_from_launchctl(
     udid: &str,
 ) -> Result<Option<devtools::ForegroundApp>, String> {
@@ -4605,6 +4634,9 @@ async fn foreground_app_from_launchctl(
         }) else {
             continue;
         };
+        if is_document_picker_service(&details) {
+            continue;
+        }
         let details_score = ui_application_foreground_score(&details);
         let best_score = best
             .as_ref()
@@ -4641,123 +4673,6 @@ fn is_decisive_foreground_app(details: &UIKitApplicationServiceDetails) -> bool 
     !bundle_identifier.contains("ViewService")
         && !bundle_identifier.contains("WidgetRenderer")
         && !bundle_identifier.contains(".appex")
-}
-
-async fn simulator_ui_application_services(
-    udid: &str,
-) -> Result<Vec<UIKitApplicationService>, String> {
-    let output = timeout(
-        Duration::from_secs(1),
-        Command::new("xcrun")
-            .args(["simctl", "spawn", udid, "launchctl", "print", "user/501"])
-            .output(),
-    )
-    .await
-    .map_err(|_| "Timed out listing simulator UIKit applications.".to_owned())?
-    .map_err(|error| format!("Unable to list simulator UIKit applications: {error}"))?;
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(parse_ui_application_service_line)
-        .collect())
-}
-
-fn parse_ui_application_service_line(line: &str) -> Option<UIKitApplicationService> {
-    let trimmed = line.trim();
-    if !trimmed.contains("UIKitApplication:") {
-        return None;
-    }
-    let mut parts = trimmed.split_whitespace();
-    let pid = parts.next()?.parse::<i64>().ok()?;
-    let separator = parts.next()?;
-    let service_name = parts.next()?.to_owned();
-    if separator != "-" || pid <= 0 || !service_name.starts_with("UIKitApplication:") {
-        return None;
-    }
-    Some(UIKitApplicationService { pid, service_name })
-}
-
-async fn ui_application_service_details(
-    udid: &str,
-    service: &UIKitApplicationService,
-) -> Result<Option<UIKitApplicationServiceDetails>, String> {
-    let output = timeout(
-        Duration::from_secs(1),
-        Command::new("xcrun")
-            .args([
-                "simctl",
-                "spawn",
-                udid,
-                "launchctl",
-                "print",
-                &format!("user/501/{}", service.service_name),
-            ])
-            .output(),
-    )
-    .await
-    .map_err(|_| "Timed out reading simulator UIKit application state.".to_owned())?
-    .map_err(|error| format!("Unable to read simulator UIKit application state: {error}"))?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    let active_count = launchctl_numeric_value(&text, "active count").unwrap_or(0);
-    let process_identifier = launchctl_numeric_value(&text, "pid")
-        .map(|pid| pid as i64)
-        .unwrap_or(service.pid);
-    if process_identifier <= 0
-        || launchctl_value(&text, "state").is_none_or(|value| value != "running")
-    {
-        return Ok(None);
-    }
-    let spawn_role = launchctl_value(&text, "spawn role").unwrap_or_default();
-    let program = launchctl_value(&text, "program");
-    let bundle_identifier = launchctl_value(&text, "bundle id");
-    let app_name = program
-        .as_deref()
-        .and_then(app_bundle_path_from_command)
-        .and_then(|path| {
-            std::path::Path::new(&path)
-                .file_stem()
-                .and_then(|name| name.to_str())
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| bundle_identifier.clone());
-
-    Ok(Some(UIKitApplicationServiceDetails {
-        active_count,
-        app_name,
-        bundle_identifier,
-        process_identifier,
-        spawn_role,
-    }))
-}
-
-fn ui_application_foreground_score(details: &UIKitApplicationServiceDetails) -> (u8, u64) {
-    let role_score = if details.spawn_role.contains("ui focal") {
-        2
-    } else if details.spawn_role.contains("ui") {
-        1
-    } else {
-        0
-    };
-    (role_score, details.active_count)
-}
-
-fn launchctl_value(output: &str, key: &str) -> Option<String> {
-    let prefix = format!("{key} = ");
-    output.lines().find_map(|line| {
-        let value = line.trim().strip_prefix(&prefix)?.trim();
-        (!value.is_empty()).then_some(value.to_owned())
-    })
-}
-
-fn launchctl_numeric_value(output: &str, key: &str) -> Option<u64> {
-    launchctl_value(output, key)?.parse::<u64>().ok()
 }
 
 async fn process_command(pid: i64) -> Result<String, String> {
@@ -5869,13 +5784,12 @@ mod tests {
         is_inspector_agent_transport_path, is_transient_native_ax_snapshot_error,
         logical_screen_size_from_display_pixels, normalize_inspector_node,
         normalize_screen_point_from_snapshot, normalized_gesture_coordinates,
-        parse_lsof_tcp_listener, parse_ui_application_service_line,
-        process_identifier_from_accessibility_snapshot, resolved_stream_quality_limits,
-        scroll_input_plan_for_udid, split_filter_values, stream_quality_profile,
-        suppress_native_ax_translation_error, tap_point_from_snapshot, trim_tree_depth,
-        ui_application_foreground_score, AccessibilitySnapshotCache, AccessibilitySnapshotCacheKey,
-        AccessibilitySource, BatchStep, ElementSelectorPayload, InspectorSession,
-        InspectorSessionTransport, ScrollInputBackend, ScrollUntilVisiblePayload,
+        parse_lsof_tcp_listener, process_identifier_from_accessibility_snapshot,
+        resolved_stream_quality_limits, scroll_input_plan_for_udid, split_filter_values,
+        stream_quality_profile, suppress_native_ax_translation_error, tap_point_from_snapshot,
+        trim_tree_depth, ui_application_foreground_score, AccessibilitySnapshotCache,
+        AccessibilitySnapshotCacheKey, AccessibilitySource, BatchStep, ElementSelectorPayload,
+        InspectorSession, InspectorSessionTransport, ScrollInputBackend, ScrollUntilVisiblePayload,
         StreamClientForegroundRegistry, StreamQualityLimits, StreamQualityPayload,
         UIKitApplicationServiceDetails, SOURCE_FLUTTER, SOURCE_NATIVE_AX, SOURCE_NATIVE_SCRIPT,
         SOURCE_REACT_NATIVE, SOURCE_SWIFTUI, SOURCE_UIKIT,
@@ -5883,6 +5797,7 @@ mod tests {
     use crate::config::{UserAndroidConfig, UserConfig};
     use crate::inspector::PublishedInspector;
     use crate::metrics::counters::ClientStreamStats;
+    use crate::uikit_services::parse_application_service_line as parse_ui_application_service_line;
     use axum::body::Bytes;
     use serde_json::{json, Value};
 
@@ -6511,6 +6426,7 @@ mod tests {
             app_name: None,
             bundle_identifier: None,
             process_identifier: 1,
+            service_name: "UIKitApplication:com.example.Foreground".to_owned(),
             spawn_role: "ui focal (1)".to_owned(),
         };
         let background = UIKitApplicationServiceDetails {
@@ -6518,6 +6434,7 @@ mod tests {
             app_name: None,
             bundle_identifier: None,
             process_identifier: 2,
+            service_name: "UIKitApplication:com.example.Background".to_owned(),
             spawn_role: "non-ui (3)".to_owned(),
         };
         assert!(

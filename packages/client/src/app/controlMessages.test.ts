@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { isMoveControlMessage } from "./controlMessages";
+import {
+  isMoveControlMessage,
+  parseControlServerEvent,
+} from "./controlMessages";
 
 describe("controlMessages", () => {
   it("marks single-touch moves as coalescible", () => {
@@ -46,5 +49,56 @@ describe("controlMessages", () => {
       isMoveControlMessage({ type: "scroll", deltaX: 0, deltaY: 42 }),
     ).toBe(false);
     expect(isMoveControlMessage({ type: "home" })).toBe(false);
+  });
+
+  it("parses document surface opening and closing events", () => {
+    expect(
+      parseControlServerEvent(
+        JSON.stringify({
+          type: "system-surface.changed",
+          udid: "device-a",
+          systemSurface: {
+            kind: "documentPicker",
+            processIdentifier: 123,
+            sessionId: "surface-a",
+          },
+        }),
+      ),
+    ).toEqual({
+      type: "system-surface.changed",
+      udid: "device-a",
+      systemSurface: {
+        kind: "documentPicker",
+        processIdentifier: 123,
+        sessionId: "surface-a",
+      },
+    });
+    expect(
+      parseControlServerEvent(
+        JSON.stringify({
+          type: "system-surface.changed",
+          udid: "device-a",
+          systemSurface: null,
+        }),
+      )?.systemSurface,
+    ).toBeNull();
+  });
+
+  it("rejects unknown and malformed server events", () => {
+    expect(parseControlServerEvent("not-json")).toBeNull();
+    expect(
+      parseControlServerEvent(
+        JSON.stringify({ type: "ready", udid: "device-a" }),
+      ),
+    ).toBeNull();
+    expect(
+      parseControlServerEvent(
+        JSON.stringify({
+          type: "system-surface.changed",
+          udid: "device-a",
+          systemSurface: { kind: "documentPicker" },
+        }),
+      ),
+    ).toBeNull();
   });
 });

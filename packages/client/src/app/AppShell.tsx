@@ -119,7 +119,10 @@ import {
   writeStoredAccessibilitySkeletonMode,
   writeStoredFlag,
 } from "./uiState";
-import { isMoveControlMessage } from "./controlMessages";
+import {
+  isMoveControlMessage,
+  parseControlServerEvent,
+} from "./controlMessages";
 
 const ACCESSIBILITY_REFRESH_MS = 1500;
 const ACCESSIBILITY_SKELETON_REFRESH_MS = 500;
@@ -2540,9 +2543,33 @@ export function AppShell({
     socket.addEventListener("error", () => {
       setLocalError("Simulator control stream disconnected.");
     });
+    socket.addEventListener("message", (event) => {
+      const message = parseControlServerEvent(event.data);
+      if (!message || message.udid !== udid) {
+        return;
+      }
+      setSelectedSimulatorState((current) =>
+        current?.udid === udid
+          ? { ...current, systemSurface: message.systemSurface }
+          : current,
+      );
+    });
 
     return state;
   }, []);
+
+  useEffect(() => {
+    if (selectedSimulator?.isBooted) {
+      ensureControlSocket(selectedSimulator.udid);
+    } else {
+      closeControlSocket();
+    }
+  }, [
+    closeControlSocket,
+    ensureControlSocket,
+    selectedSimulator?.isBooted,
+    selectedSimulator?.udid,
+  ]);
 
   function sendControl(udid: string, message: ControlMessage): boolean {
     if (isMoveControlMessage(message)) {

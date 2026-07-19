@@ -285,6 +285,12 @@ export interface SimulatorForegroundApp {
   processIdentifier: number;
 }
 
+export interface SystemSurface {
+  kind: "documentPicker";
+  processIdentifier: number;
+  sessionId: string;
+}
+
 export interface SimulatorStateResponse {
   booted: boolean;
   displayReady: boolean;
@@ -294,6 +300,7 @@ export interface SimulatorStateResponse {
   lastFrameAgeMs?: number | null;
   lastFrameAt: number;
   simulator: SimulatorMetadata;
+  systemSurface?: SystemSurface | null;
   udid: string;
 }
 

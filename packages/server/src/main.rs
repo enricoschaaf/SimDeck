@@ -6,6 +6,7 @@ mod camera;
 mod config;
 mod core_simulator;
 mod deep_links;
+mod device_events;
 mod devtools;
 mod error;
 mod inspector;
@@ -18,7 +19,9 @@ mod semantic_text;
 mod service;
 mod simulators;
 mod static_files;
+mod system_surfaces;
 mod transport;
+mod uikit_services;
 #[cfg(target_os = "macos")]
 mod webkit;
 
@@ -6077,6 +6080,8 @@ async fn serve(
         simulator_inventory: Default::default(),
         accessibility_cache: Default::default(),
         android: Default::default(),
+        device_events: Default::default(),
+        system_surfaces: Default::default(),
     };
     start_simulator_session_idle_reaper(state.registry.clone());
 
