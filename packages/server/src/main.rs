@@ -123,6 +123,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use tower_http::compression::CompressionLayer;
 use tracing::{info, warn};
 
 const RECOVERABLE_RESTART_EXIT_CODE: i32 = 75;
@@ -6233,14 +6234,16 @@ fn bonjour_service_name(advertise_host: &str) -> String {
 }
 
 fn app_router(state: AppState, client_root: PathBuf, access_token: String) -> Router {
-    router(state).fallback(
-        move |axum::extract::ConnectInfo(address): axum::extract::ConnectInfo<SocketAddr>,
-              method,
-              uri| {
-            let access_token = address.ip().is_loopback().then(|| access_token.clone());
-            static_files::serve_static(client_root.clone(), method, uri, access_token)
-        },
-    )
+    router(state)
+        .fallback(
+            move |axum::extract::ConnectInfo(address): axum::extract::ConnectInfo<SocketAddr>,
+                  method,
+                  uri| {
+                let access_token = address.ip().is_loopback().then(|| access_token.clone());
+                static_files::serve_static(client_root.clone(), method, uri, access_token)
+            },
+        )
+        .layer(CompressionLayer::new())
 }
 
 #[cfg(unix)]

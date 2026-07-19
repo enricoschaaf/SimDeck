@@ -27,7 +27,7 @@ thiserror = "2.0"
 tokio = { version = "1.42", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = "0.29"
 tonic = { version = "0.12", default-features = false, features = ["transport", "codegen", "prost"] }
-tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "cors", "fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 webrtc = "0.12"

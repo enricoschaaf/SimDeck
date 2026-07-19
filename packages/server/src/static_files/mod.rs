@@ -1,6 +1,6 @@
 use crate::auth;
 use axum::body::Body;
-use axum::http::{header, HeaderName, HeaderValue, Method, Response, StatusCode, Uri};
+use axum::http::{header, HeaderValue, Method, Response, StatusCode, Uri};
 use std::path::{Component, Path, PathBuf};
 
 pub async fn serve_static(
@@ -46,9 +46,12 @@ async fn serve_static_inner(
     };
 
     let requested_path = root.join(&relative_path);
-    let file_path = match tokio::fs::metadata(&requested_path).await {
-        Ok(metadata) if metadata.is_file() => requested_path,
-        _ if fallback_to_index => root.join("index.html"),
+    let (file_path, immutable_asset) = match tokio::fs::metadata(&requested_path).await {
+        Ok(metadata) if metadata.is_file() => (
+            requested_path,
+            fallback_to_index && relative_path.starts_with("assets"),
+        ),
+        _ if fallback_to_index => (root.join("index.html"), false),
         _ => return Err(StatusCode::NOT_FOUND),
     };
 
@@ -56,6 +59,12 @@ async fn serve_static_inner(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let content_type = content_type_for_path(&file_path);
+    let cache_control = if immutable_asset {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    let content_length = bytes.len();
     let body = if method == Method::HEAD {
         Body::empty()
     } else {
@@ -65,27 +74,15 @@ async fn serve_static_inner(
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
-        .header(
-            header::CACHE_CONTROL,
-            "no-store, no-cache, must-revalidate, max-age=0",
-        )
-        .header(header::PRAGMA, "no-cache")
-        .header(header::EXPIRES, "0")
+        .header(header::CACHE_CONTROL, cache_control)
+        .header(header::CONTENT_LENGTH, content_length)
         .body(body)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     response.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
         "*".parse().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     );
-    if content_type.starts_with("text/html") {
-        response.headers_mut().insert(
-            HeaderName::from_static("clear-site-data"),
-            "\"cache\""
-                .parse()
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-        );
-    }
-    if let Some(access_token) = access_token {
+    if let Some(access_token) = access_token.filter(|_| content_type.starts_with("text/html")) {
         let cookie = HeaderValue::from_str(&auth::access_cookie_value(&access_token))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         response.headers_mut().insert(header::SET_COOKIE, cookie);
@@ -124,5 +121,58 @@ fn content_type_for_path(path: &Path) -> &'static str {
         Some("wasm") => "application/wasm",
         Some("webp") => "image/webp",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn client_assets_are_cacheable_without_clearing_the_browser_cache() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "simdeck-static-files-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("index.html"), "<main>SimDeck</main>").unwrap();
+        std::fs::write(root.join("assets/index-hash.js"), "export default 1;").unwrap();
+
+        let asset = serve_static(
+            root.clone(),
+            Method::GET,
+            Uri::from_static("/assets/index-hash.js"),
+            Some("secret-token".to_owned()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            asset.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=31536000, immutable"
+        );
+        assert!(!asset.headers().contains_key("clear-site-data"));
+        assert!(!asset.headers().contains_key(header::SET_COOKIE));
+
+        let document = serve_static(
+            root.clone(),
+            Method::GET,
+            Uri::from_static("/"),
+            Some("secret-token".to_owned()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            document.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache"
+        );
+        assert!(!document.headers().contains_key("clear-site-data"));
+        assert!(document.headers().contains_key(header::SET_COOKIE));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
