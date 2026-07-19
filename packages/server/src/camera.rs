@@ -1,10 +1,11 @@
 use crate::error::AppError;
 use crate::native::ffi;
 use anyhow::{anyhow, Context};
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -128,20 +129,20 @@ pub fn stop_camera(udid: &str) -> Result<Value, AppError> {
     Ok(json!({ "ok": true, "udid": udid, "alive": false }))
 }
 
-pub fn publish_camera_packet(udid: &str, packet: &[u8]) -> Result<(), AppError> {
+pub fn configure_camera_decoder(udid: &str, configuration: &[u8]) -> Result<(), AppError> {
     validate_udid(udid)?;
-    if packet.len() < 2 || packet.len() > 2 * 1024 * 1024 {
+    if configuration.is_empty() || configuration.len() > 2 * 1024 * 1024 {
         return Err(AppError::bad_request(
-            "Camera H.264 packet must contain between 2 bytes and 2 MiB.",
+            "Camera H.264 configuration must contain between 1 byte and 2 MiB.",
         ));
     }
     let udid = cstring("simulator UDID", udid)?;
     let mut error_message = std::ptr::null_mut();
     let ok = unsafe {
-        ffi::simdeck_camera_publish_packet(
+        ffi::simdeck_camera_configure_h264(
             udid.as_ptr(),
-            packet.as_ptr(),
-            packet.len(),
+            configuration.as_ptr(),
+            configuration.len(),
             &mut error_message,
         )
     };
@@ -150,8 +151,54 @@ pub fn publish_camera_packet(udid: &str, packet: &[u8]) -> Result<(), AppError> 
     } else {
         Err(native_error(
             error_message,
-            "Unable to publish camera packet.",
+            "Unable to configure the camera H.264 decoder.",
         ))
+    }
+}
+
+pub fn decode_camera_frame(
+    udid: &str,
+    frame: Bytes,
+    key_frame: bool,
+    sequence: u32,
+) -> Result<(), AppError> {
+    validate_udid(udid)?;
+    if frame.is_empty() || frame.len() > 2 * 1024 * 1024 {
+        return Err(AppError::bad_request(
+            "Camera H.264 frame must contain between 1 byte and 2 MiB.",
+        ));
+    }
+    let udid = cstring("simulator UDID", udid)?;
+    let frame = Box::new(frame);
+    let frame_data = frame.as_ptr();
+    let frame_length = frame.len();
+    let owner = Box::into_raw(frame).cast::<c_void>();
+    let mut error_message = std::ptr::null_mut();
+    let ok = unsafe {
+        ffi::simdeck_camera_decode_h264_frame(
+            udid.as_ptr(),
+            frame_data,
+            frame_length,
+            key_frame,
+            sequence,
+            owner,
+            Some(release_camera_frame),
+            &mut error_message,
+        )
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(native_error(
+            error_message,
+            "Unable to decode the camera H.264 frame.",
+        ))
+    }
+}
+
+unsafe extern "C" fn release_camera_frame(owner: *mut c_void) {
+    if !owner.is_null() {
+        drop(unsafe { Box::from_raw(owner.cast::<Bytes>()) });
     }
 }
 

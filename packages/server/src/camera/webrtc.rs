@@ -1,4 +1,4 @@
-use super::publish_camera_packet;
+use super::{configure_camera_decoder, decode_camera_frame};
 use crate::error::AppError;
 use bytes::{BufMut, Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
@@ -338,22 +338,13 @@ fn decode_latest_frames(
     let mut sequence = 0u32;
     while let Some(frame) = queue.pop() {
         if let Some(config) = frame.decoder_config {
-            let mut packet = Vec::with_capacity(config.len() + 1);
-            packet.push(1);
-            packet.extend_from_slice(&config);
-            if let Err(err) = publish_camera_packet(&udid, &packet) {
+            if let Err(err) = configure_camera_decoder(&udid, &config) {
                 metrics.native_errors.fetch_add(1, Ordering::Relaxed);
                 warn!("Unable to configure camera H.264 decoder for {udid}: {err}");
                 continue;
             }
         }
-        let mut packet = Vec::with_capacity(frame.data.len() + 6);
-        packet.push(2);
-        packet.push(u8::from(frame.key_frame));
-        packet.extend_from_slice(&sequence.to_be_bytes());
-        packet.extend_from_slice(&frame.data);
-        sequence = sequence.wrapping_add(1);
-        match publish_camera_packet(&udid, &packet) {
+        match decode_camera_frame(&udid, frame.data, frame.key_frame, sequence) {
             Ok(()) => {
                 metrics.published_frames.fetch_add(1, Ordering::Relaxed);
             }
@@ -362,6 +353,7 @@ fn decode_latest_frames(
                 warn!("Unable to publish camera H.264 frame for {udid}: {err}");
             }
         }
+        sequence = sequence.wrapping_add(1);
     }
 }
 

@@ -116,12 +116,30 @@ bool simdeck_camera_stop(const char *udid, char **error_message) {
   return true;
 }
 
-bool simdeck_camera_publish_packet(const char *udid, const uint8_t *packet,
-                                   size_t packet_length,
+typedef void (*simdeck_camera_release_callback)(void *owner);
+
+bool simdeck_camera_configure_h264(const char *udid,
+                                   const uint8_t *configuration,
+                                   size_t configuration_length,
                                    char **error_message) {
   (void)udid;
-  (void)packet;
-  (void)packet_length;
+  (void)configuration;
+  (void)configuration_length;
+  return xcw_unsupported(error_message);
+}
+
+bool simdeck_camera_decode_h264_frame(
+    const char *udid, const uint8_t *frame, size_t frame_length,
+    bool key_frame, uint32_t sequence, void *owner,
+    simdeck_camera_release_callback release_owner, char **error_message) {
+  (void)udid;
+  (void)frame;
+  (void)frame_length;
+  (void)key_frame;
+  (void)sequence;
+  if (release_owner) {
+    release_owner(owner);
+  }
   return xcw_unsupported(error_message);
 }
 

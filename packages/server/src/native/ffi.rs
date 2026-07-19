@@ -30,6 +30,9 @@ pub struct xcw_native_frame {
 pub type xcw_native_frame_callback =
     unsafe extern "C" fn(frame: *const xcw_native_frame, user_data: *mut c_void);
 
+#[allow(non_camel_case_types)]
+pub type simdeck_camera_release_callback = unsafe extern "C" fn(owner: *mut c_void);
+
 unsafe extern "C" {
     pub fn simdeck_camera_start(
         udid: *const c_char,
@@ -51,10 +54,20 @@ unsafe extern "C" {
         error_message: *mut *mut c_char,
     ) -> *mut c_char;
     pub fn simdeck_camera_stop(udid: *const c_char, error_message: *mut *mut c_char) -> bool;
-    pub fn simdeck_camera_publish_packet(
+    pub fn simdeck_camera_configure_h264(
         udid: *const c_char,
-        packet: *const u8,
-        packet_length: usize,
+        configuration: *const u8,
+        configuration_length: usize,
+        error_message: *mut *mut c_char,
+    ) -> bool;
+    pub fn simdeck_camera_decode_h264_frame(
+        udid: *const c_char,
+        frame: *const u8,
+        frame_length: usize,
+        key_frame: bool,
+        sequence: u32,
+        owner: *mut c_void,
+        release_owner: Option<simdeck_camera_release_callback>,
         error_message: *mut *mut c_char,
     ) -> bool;
 

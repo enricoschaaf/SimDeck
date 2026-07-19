@@ -507,41 +507,75 @@ static BOOL ConfigureBrowserH264Decoder(NSData *configuration, NSString **error)
     return YES;
 }
 
-static BOOL DecodeBrowserH264Frame(NSData *frame, BOOL keyFrame, NSString **error) {
+typedef void (*SimDeckCameraReleaseCallback)(void *owner);
+
+typedef struct {
+    void *owner;
+    SimDeckCameraReleaseCallback releaseOwner;
+} SimDeckCameraFrameOwner;
+
+static void ReleaseCameraFrameBlock(void *refCon, void *memoryBlock, size_t sizeInBytes) {
+    (void)memoryBlock;
+    (void)sizeInBytes;
+    SimDeckCameraFrameOwner *frameOwner = refCon;
+    frameOwner->releaseOwner(frameOwner->owner);
+    free(frameOwner);
+}
+
+static BOOL DecodeBrowserH264Frame(const uint8_t *frame,
+                                   size_t frameLength,
+                                   BOOL keyFrame,
+                                   void *owner,
+                                   SimDeckCameraReleaseCallback releaseOwner,
+                                   NSString **error) {
     if (!gBrowserDecoder.session || !gBrowserDecoder.format) {
         if (error) *error = @"Camera H.264 decoder is not configured.";
+        releaseOwner(owner);
         return NO;
     }
+    SimDeckCameraFrameOwner *frameOwner = malloc(sizeof(SimDeckCameraFrameOwner));
+    if (!frameOwner) {
+        if (error) *error = @"Unable to allocate camera H.264 frame ownership.";
+        releaseOwner(owner);
+        return NO;
+    }
+    frameOwner->owner = owner;
+    frameOwner->releaseOwner = releaseOwner;
+    CMBlockBufferCustomBlockSource blockSource = {0};
+    blockSource.version = kCMBlockBufferCustomBlockSourceVersion;
+    blockSource.FreeBlock = ReleaseCameraFrameBlock;
+    blockSource.refCon = frameOwner;
     CMBlockBufferRef block = NULL;
     OSStatus status = CMBlockBufferCreateWithMemoryBlock(
         kCFAllocatorDefault,
-        NULL,
-        frame.length,
-        kCFAllocatorDefault,
-        NULL,
+        (void *)frame,
+        frameLength,
+        kCFAllocatorNull,
+        &blockSource,
         0,
-        frame.length,
+        frameLength,
         0,
         &block
     );
-    if (status == noErr) {
-        status = CMBlockBufferReplaceDataBytes(frame.bytes, block, 0, frame.length);
+    if (status != noErr || !block) {
+        releaseOwner(owner);
+        free(frameOwner);
+        if (error) *error = [NSString stringWithFormat:@"Camera H.264 block creation failed (%d).", status];
+        return NO;
     }
     CMSampleBufferRef sample = NULL;
-    if (status == noErr) {
-        size_t sampleSize = frame.length;
-        status = CMSampleBufferCreateReady(
-            kCFAllocatorDefault,
-            block,
-            gBrowserDecoder.format,
-            1,
-            0,
-            NULL,
-            1,
-            &sampleSize,
-            &sample
-        );
-    }
+    size_t sampleSize = frameLength;
+    status = CMSampleBufferCreateReady(
+        kCFAllocatorDefault,
+        block,
+        gBrowserDecoder.format,
+        1,
+        0,
+        NULL,
+        1,
+        &sampleSize,
+        &sample
+    );
     if (block) CFRelease(block);
     if (status != noErr || !sample) {
         if (error) *error = [NSString stringWithFormat:@"Camera H.264 sample creation failed (%d).", status];
@@ -988,9 +1022,9 @@ bool simdeck_camera_stop(const char *udid, char **errorMessage) {
     return stopped;
 }
 
-bool simdeck_camera_publish_packet(const char *udid,
-                                   const uint8_t *packet,
-                                   size_t packetLength,
+bool simdeck_camera_configure_h264(const char *udid,
+                                   const uint8_t *configuration,
+                                   size_t configurationLength,
                                    char **errorMessage) {
     __block BOOL ok = NO;
     __block NSString *nativeError = nil;
@@ -1001,32 +1035,62 @@ bool simdeck_camera_publish_packet(const char *udid,
                 nativeError = @"Camera simulation is not running for this simulator.";
             } else if (gSourceKind != SIMDECK_CAMERA_SOURCE_CAMERA) {
                 nativeError = @"Camera source is not active.";
-            } else if (!packet || packetLength < 2 || packetLength > 2 * 1024 * 1024) {
-                nativeError = @"Invalid camera H.264 packet size.";
-            } else if (packet[0] == 1) {
+            } else if (!configuration || configurationLength == 0 || configurationLength > 2 * 1024 * 1024) {
+                nativeError = @"Invalid camera H.264 configuration size.";
+            } else {
                 ok = ConfigureBrowserH264Decoder(
-                    [NSData dataWithBytes:packet + 1 length:packetLength - 1],
+                    [NSData dataWithBytesNoCopy:(void *)configuration
+                                         length:configurationLength
+                                   freeWhenDone:NO],
                     &nativeError
                 );
-            } else if (packet[0] == 2 && packetLength > 6) {
-                uint32_t sequence = ((uint32_t)packet[2] << 24)
-                    | ((uint32_t)packet[3] << 16)
-                    | ((uint32_t)packet[4] << 8)
-                    | (uint32_t)packet[5];
+            }
+        }
+    }
+    if (!ok) SetNativeError(errorMessage, nativeError);
+    return ok;
+}
+
+bool simdeck_camera_decode_h264_frame(const char *udid,
+                                      const uint8_t *frame,
+                                      size_t frameLength,
+                                      bool keyFrame,
+                                      uint32_t sequence,
+                                      void *owner,
+                                      SimDeckCameraReleaseCallback releaseOwner,
+                                      char **errorMessage) {
+    __block BOOL ok = NO;
+    __block BOOL ownershipTransferred = NO;
+    __block NSString *nativeError = nil;
+    @autoreleasepool {
+        @synchronized (CameraLock()) {
+            NSString *requestedUDID = StringFromCString(udid);
+            if (!releaseOwner) {
+                nativeError = @"Camera H.264 frame release callback is missing.";
+            } else if (!gServiceStarted || ![requestedUDID isEqualToString:gActiveUDID]) {
+                nativeError = @"Camera simulation is not running for this simulator.";
+            } else if (gSourceKind != SIMDECK_CAMERA_SOURCE_CAMERA) {
+                nativeError = @"Camera source is not active.";
+            } else if (!frame || frameLength == 0 || frameLength > 2 * 1024 * 1024) {
+                nativeError = @"Invalid camera H.264 frame size.";
+            } else {
                 uint32_t previous = atomic_exchange(&gLastCameraSequence, sequence);
                 if (previous != 0 && sequence != previous + 1) {
                     atomic_fetch_add(&gDroppedFrames, 1);
                 }
+                ownershipTransferred = YES;
                 ok = DecodeBrowserH264Frame(
-                    [NSData dataWithBytes:packet + 6 length:packetLength - 6],
-                    packet[1] == 1,
+                    frame,
+                    frameLength,
+                    keyFrame,
+                    owner,
+                    releaseOwner,
                     &nativeError
                 );
-            } else {
-                nativeError = @"Unknown camera H.264 packet.";
             }
         }
     }
+    if (!ownershipTransferred && releaseOwner) releaseOwner(owner);
     if (!ok) SetNativeError(errorMessage, nativeError);
     return ok;
 }
