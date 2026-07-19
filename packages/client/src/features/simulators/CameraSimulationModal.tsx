@@ -51,6 +51,9 @@ declare global {
         transport: CameraStats | null;
         udid: string;
       };
+      pause(): void;
+      restart(): Promise<CameraStatusResponse>;
+      resume(): void;
       start(): Promise<CameraStatusResponse>;
       stop(): Promise<CameraStatusResponse>;
     };
@@ -121,6 +124,16 @@ export function CameraSimulationModal({
         transport: cameraStatsRef.current,
         udid,
       }),
+      pause: () => benchmarkSourceRef.current?.pause(),
+      restart: async () => {
+        cameraFeedRef.current?.stop();
+        cameraFeedRef.current = null;
+        cameraStatsRef.current = null;
+        setCameraStats(null);
+        await startCurrentCameraFeed(await cameraStream());
+        return fetchCameraStatus(udid);
+      },
+      resume: () => benchmarkSourceRef.current?.resume(),
       start: async () => {
         if (!selectedSimulator?.isBooted || !udid) {
           throw new Error(

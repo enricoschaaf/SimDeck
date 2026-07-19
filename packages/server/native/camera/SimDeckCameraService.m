@@ -53,7 +53,17 @@ static dispatch_queue_t gBrowserPublishQueue;
 static CVPixelBufferRef gLatestBrowserPixelBuffer = NULL;
 static BOOL gBrowserPublishScheduled = NO;
 static atomic_ullong gBrowserDecodeErrors;
+static atomic_ullong gBrowserDecodedFrames;
+static atomic_ullong gBrowserPublishedFrames;
+static atomic_ullong gBrowserDecoderLatencyTotalNs;
+static atomic_ullong gBrowserDecoderLatencyMaxNs;
+static atomic_ullong gBrowserSurfaceLatencyTotalNs;
+static atomic_ullong gBrowserSurfaceLatencyMaxNs;
+static atomic_ullong gBrowserPipelineLatencyTotalNs;
+static atomic_ullong gBrowserPipelineLatencyMaxNs;
 static atomic_uint gLastCameraSequence;
+static uint64_t gLatestBrowserAssembledNs;
+static uint64_t gLatestBrowserDecodedNs;
 static CVPixelBufferRef gSurfaceRing[SIMDECK_CAMERA_SURFACE_RING_SIZE];
 static uint32_t gNextSurfaceSlot;
 static uint64_t gSurfaceGeneration;
@@ -80,6 +90,11 @@ static void RunOnMainSync(dispatch_block_t block) {
 
 static uint64_t NowNs(void) {
     return (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000000000.0);
+}
+
+static void UpdateAtomicMaximum(atomic_ullong *target, uint64_t value) {
+    uint64_t previous = atomic_load(target);
+    while (value > previous && !atomic_compare_exchange_weak(target, &previous, value)) {}
 }
 
 static NSString *StringFromCString(const char *value) {
@@ -346,23 +361,45 @@ static BOOL CanDecodeImageAtPath(NSString *path, NSString **error) {
     return NO;
 }
 
-static void PublishBrowserPixelBuffer(CVPixelBufferRef pixelBuffer) {
+static void PublishBrowserPixelBuffer(CVPixelBufferRef pixelBuffer,
+                                      uint64_t assembledTimestampNs,
+                                      uint64_t decodedTimestampNs) {
     if (!pixelBuffer || !gHeader || gSourceKind != SIMDECK_CAMERA_SOURCE_CAMERA) return;
-    PublishSurface(pixelBuffer, SIMDECK_CAMERA_SOURCE_CAMERA, @"camera");
+    if (!PublishSurface(pixelBuffer, SIMDECK_CAMERA_SOURCE_CAMERA, @"camera")) return;
+    uint64_t publishedTimestampNs = NowNs();
+    atomic_fetch_add(&gBrowserPublishedFrames, 1);
+    if (decodedTimestampNs > 0 && publishedTimestampNs >= decodedTimestampNs) {
+        uint64_t latency = publishedTimestampNs - decodedTimestampNs;
+        atomic_fetch_add(&gBrowserSurfaceLatencyTotalNs, latency);
+        UpdateAtomicMaximum(&gBrowserSurfaceLatencyMaxNs, latency);
+    }
+    if (assembledTimestampNs > 0 && publishedTimestampNs >= assembledTimestampNs) {
+        uint64_t latency = publishedTimestampNs - assembledTimestampNs;
+        atomic_fetch_add(&gBrowserPipelineLatencyTotalNs, latency);
+        UpdateAtomicMaximum(&gBrowserPipelineLatencyMaxNs, latency);
+    }
 }
 
 static void DrainLatestBrowserFrame(void) {
     while (gSourceKind == SIMDECK_CAMERA_SOURCE_CAMERA) {
         pthread_mutex_lock(&gBrowserFrameLock);
         CVPixelBufferRef pixelBuffer = gLatestBrowserPixelBuffer;
+        uint64_t assembledTimestampNs = gLatestBrowserAssembledNs;
+        uint64_t decodedTimestampNs = gLatestBrowserDecodedNs;
         gLatestBrowserPixelBuffer = NULL;
+        gLatestBrowserAssembledNs = 0;
+        gLatestBrowserDecodedNs = 0;
         if (!pixelBuffer) gBrowserPublishScheduled = NO;
         pthread_mutex_unlock(&gBrowserFrameLock);
         if (!pixelBuffer) return;
-        PublishBrowserPixelBuffer(pixelBuffer);
+        PublishBrowserPixelBuffer(pixelBuffer, assembledTimestampNs, decodedTimestampNs);
         CVPixelBufferRelease(pixelBuffer);
     }
 }
+
+typedef struct {
+    uint64_t assembledTimestampNs;
+} SimDeckCameraDecodeTiming;
 
 static void BrowserH264Output(void *refCon,
                               void *sourceFrameRefCon,
@@ -372,15 +409,25 @@ static void BrowserH264Output(void *refCon,
                               CMTime presentationTimeStamp,
                               CMTime presentationDuration) {
     (void)refCon;
-    (void)sourceFrameRefCon;
     (void)infoFlags;
     (void)presentationTimeStamp;
     (void)presentationDuration;
+    SimDeckCameraDecodeTiming *timing = sourceFrameRefCon;
+    uint64_t assembledTimestampNs = timing ? timing->assembledTimestampNs : 0;
+    if (timing) free(timing);
     if (status != noErr) {
         atomic_fetch_add(&gBrowserDecodeErrors, 1);
         return;
     }
     if (!imageBuffer || gSourceKind != SIMDECK_CAMERA_SOURCE_CAMERA) return;
+
+    uint64_t decodedTimestampNs = NowNs();
+    atomic_fetch_add(&gBrowserDecodedFrames, 1);
+    if (assembledTimestampNs > 0 && decodedTimestampNs >= assembledTimestampNs) {
+        uint64_t latency = decodedTimestampNs - assembledTimestampNs;
+        atomic_fetch_add(&gBrowserDecoderLatencyTotalNs, latency);
+        UpdateAtomicMaximum(&gBrowserDecoderLatencyMaxNs, latency);
+    }
 
     CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)imageBuffer;
     CVPixelBufferRetain(pixelBuffer);
@@ -391,6 +438,8 @@ static void BrowserH264Output(void *refCon,
         atomic_fetch_add(&gDroppedFrames, 1);
     }
     gLatestBrowserPixelBuffer = pixelBuffer;
+    gLatestBrowserAssembledNs = assembledTimestampNs;
+    gLatestBrowserDecodedNs = decodedTimestampNs;
     if (!gBrowserPublishScheduled) {
         gBrowserPublishScheduled = YES;
         schedulePublisher = YES;
@@ -525,6 +574,7 @@ static void ReleaseCameraFrameBlock(void *refCon, void *memoryBlock, size_t size
 static BOOL DecodeBrowserH264Frame(const uint8_t *frame,
                                    size_t frameLength,
                                    BOOL keyFrame,
+                                   uint64_t assembledTimestampNs,
                                    void *owner,
                                    SimDeckCameraReleaseCallback releaseOwner,
                                    NSString **error) {
@@ -588,16 +638,24 @@ static BOOL DecodeBrowserH264Frame(const uint8_t *frame,
         CFDictionarySetValue(attachment, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
         if (!keyFrame) CFDictionarySetValue(attachment, kCMSampleAttachmentKey_NotSync, kCFBooleanTrue);
     }
+    SimDeckCameraDecodeTiming *timing = malloc(sizeof(SimDeckCameraDecodeTiming));
+    if (!timing) {
+        if (error) *error = @"Unable to allocate camera decode timing.";
+        CFRelease(sample);
+        return NO;
+    }
+    timing->assembledTimestampNs = assembledTimestampNs;
     VTDecodeInfoFlags info = 0;
     status = VTDecompressionSessionDecodeFrame(
         gBrowserDecoder.session,
         sample,
         kVTDecodeFrame_EnableAsynchronousDecompression,
-        NULL,
+        timing,
         &info
     );
     CFRelease(sample);
     if (status != noErr) {
+        free(timing);
         if (error) *error = [NSString stringWithFormat:@"Camera H.264 decode failed (%d).", status];
         return NO;
     }
@@ -613,6 +671,8 @@ static void StopBrowserSource(void) {
         gLatestBrowserPixelBuffer = NULL;
     }
     gBrowserPublishScheduled = NO;
+    gLatestBrowserAssembledNs = 0;
+    gLatestBrowserDecodedNs = 0;
     pthread_mutex_unlock(&gBrowserFrameLock);
 }
 
@@ -634,6 +694,14 @@ static BOOL StartBrowserSource(NSString **error) {
         gBrowserPublishQueue = dispatch_queue_create("dev.nativescript.simdeck.camera.stream", DISPATCH_QUEUE_SERIAL);
     }
     atomic_store(&gBrowserDecodeErrors, 0);
+    atomic_store(&gBrowserDecodedFrames, 0);
+    atomic_store(&gBrowserPublishedFrames, 0);
+    atomic_store(&gBrowserDecoderLatencyTotalNs, 0);
+    atomic_store(&gBrowserDecoderLatencyMaxNs, 0);
+    atomic_store(&gBrowserSurfaceLatencyTotalNs, 0);
+    atomic_store(&gBrowserSurfaceLatencyMaxNs, 0);
+    atomic_store(&gBrowserPipelineLatencyTotalNs, 0);
+    atomic_store(&gBrowserPipelineLatencyMaxNs, 0);
     atomic_store(&gLastCameraSequence, 0);
     SetSourceState(SIMDECK_CAMERA_SOURCE_CAMERA, @"camera", nil);
     SetSourceMetadata(SIMDECK_CAMERA_SOURCE_CAMERA, @"camera");
@@ -798,7 +866,23 @@ static NSDictionary *StatusPayload(BOOL ok, NSString *error) {
     }
     if (gLastPixelFormat != 0) payload[@"pixelFormat"] = FourCCString(gLastPixelFormat);
     if (gSourceKind == SIMDECK_CAMERA_SOURCE_CAMERA) {
+        uint64_t decodedFrames = atomic_load(&gBrowserDecodedFrames);
+        uint64_t publishedFrames = atomic_load(&gBrowserPublishedFrames);
         payload[@"decodeErrors"] = @(atomic_load(&gBrowserDecodeErrors));
+        payload[@"decodedFrames"] = @(decodedFrames);
+        payload[@"publishedFrames"] = @(publishedFrames);
+        payload[@"averageDecoderLatencyMs"] = @(decodedFrames > 0
+            ? (double)atomic_load(&gBrowserDecoderLatencyTotalNs) / (double)decodedFrames / 1000000.0
+            : 0.0);
+        payload[@"maximumDecoderLatencyMs"] = @((double)atomic_load(&gBrowserDecoderLatencyMaxNs) / 1000000.0);
+        payload[@"averageSurfacePublicationLatencyMs"] = @(publishedFrames > 0
+            ? (double)atomic_load(&gBrowserSurfaceLatencyTotalNs) / (double)publishedFrames / 1000000.0
+            : 0.0);
+        payload[@"maximumSurfacePublicationLatencyMs"] = @((double)atomic_load(&gBrowserSurfaceLatencyMaxNs) / 1000000.0);
+        payload[@"averagePipelineLatencyMs"] = @(publishedFrames > 0
+            ? (double)atomic_load(&gBrowserPipelineLatencyTotalNs) / (double)publishedFrames / 1000000.0
+            : 0.0);
+        payload[@"maximumPipelineLatencyMs"] = @((double)atomic_load(&gBrowserPipelineLatencyMaxNs) / 1000000.0);
         payload[@"cameraSequence"] = @(atomic_load(&gLastCameraSequence));
     }
     if (error.length > 0) payload[@"error"] = error;
@@ -1056,6 +1140,7 @@ bool simdeck_camera_decode_h264_frame(const char *udid,
                                       size_t frameLength,
                                       bool keyFrame,
                                       uint32_t sequence,
+                                      uint64_t assembledTimestampNs,
                                       void *owner,
                                       SimDeckCameraReleaseCallback releaseOwner,
                                       char **errorMessage) {
@@ -1083,6 +1168,7 @@ bool simdeck_camera_decode_h264_frame(const char *udid,
                     frame,
                     frameLength,
                     keyFrame,
+                    assembledTimestampNs,
                     owner,
                     releaseOwner,
                     &nativeError

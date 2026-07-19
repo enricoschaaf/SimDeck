@@ -19,11 +19,14 @@ export interface CameraStats {
   encodedFramesPerSecond: number;
   inputHeight: number;
   inputWidth: number;
+  jitterMs: number;
   keyFramesEncoded: number;
   outputHeight: number;
   outputWidth: number;
+  packetsLost: number;
   packetsSent: number;
   qualityLimitationReason: string;
+  roundTripTimeMs: number;
   skippedFrames: number;
 }
 
@@ -341,6 +344,18 @@ class CameraStatsReporter {
     this.previousTimestamp = timestamp;
     const framesEncoded = Number(outbound.framesEncoded ?? 0);
     const totalEncodeTime = Number(outbound.totalEncodeTime ?? 0);
+    const remoteInbound = remoteInboundVideoStats(report, outbound);
+    const roundTripTime = Number(remoteInbound?.roundTripTime ?? 0);
+    const roundTripMeasurements = Number(
+      remoteInbound?.roundTripTimeMeasurements ?? 0,
+    );
+    const averageRoundTripTime =
+      roundTripTime > 0
+        ? roundTripTime
+        : roundTripMeasurements > 0
+          ? Number(remoteInbound?.totalRoundTripTime ?? 0) /
+            roundTripMeasurements
+          : 0;
     const stats: CameraStats = {
       averageEncodeTimeMs:
         framesEncoded > 0 ? (totalEncodeTime * 1_000) / framesEncoded : 0,
@@ -351,13 +366,16 @@ class CameraStatsReporter {
       encodedFramesPerSecond: Number(outbound.framesPerSecond ?? 0),
       inputHeight: this.height,
       inputWidth: this.width,
+      jitterMs: Number(remoteInbound?.jitter ?? 0) * 1_000,
       keyFramesEncoded: Number(outbound.keyFramesEncoded ?? 0),
-      outputHeight: this.height,
-      outputWidth: this.width,
+      outputHeight: Number(outbound.frameHeight ?? this.height),
+      outputWidth: Number(outbound.frameWidth ?? this.width),
+      packetsLost: Number(remoteInbound?.packetsLost ?? 0),
       packetsSent: Number(outbound.packetsSent ?? 0),
       qualityLimitationReason: String(
         outbound.qualityLimitationReason ?? "none",
       ),
+      roundTripTimeMs: averageRoundTripTime * 1_000,
       skippedFrames: Math.max(
         0,
         framesEncoded - Number(outbound.framesSent ?? framesEncoded),
@@ -368,6 +386,32 @@ class CameraStatsReporter {
       this.channel.send(JSON.stringify({ event: "telemetry", stats }));
     }
   }
+}
+
+function remoteInboundVideoStats(
+  report: RTCStatsReport,
+  outbound: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const remoteId = String(outbound.remoteId ?? "");
+  if (remoteId) {
+    const remote = report.get(remoteId) as
+      | (RTCStats & Record<string, unknown>)
+      | undefined;
+    if (remote?.type === "remote-inbound-rtp") {
+      return remote;
+    }
+  }
+  let remoteInbound: Record<string, unknown> | null = null;
+  report.forEach((entry) => {
+    const stats = entry as RTCStats & Record<string, unknown>;
+    if (
+      stats.type === "remote-inbound-rtp" &&
+      (stats.kind === "video" || stats.mediaType === "video")
+    ) {
+      remoteInbound = stats;
+    }
+  });
+  return remoteInbound;
 }
 
 function outboundVideoStats(

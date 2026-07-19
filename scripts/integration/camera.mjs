@@ -343,6 +343,7 @@ async function runBrowserBenchmark() {
     const cameraStatus = simdeckJson(["camera", "status", simulatorUDID]);
     const viewer = await browserViewerSample(cdp);
     const metricsDurationMs = Date.now() - metricsStartedAt;
+    const recovery = await verifyCameraRecovery(cdp);
     const stopped = await cdp.evaluate(
       "window.__simdeckCameraBenchmark.stop()",
       true,
@@ -376,6 +377,7 @@ async function runBrowserBenchmark() {
         ),
       },
       processStats,
+      recovery,
       firstMarker,
       finalMarker,
       cameraStatus,
@@ -384,6 +386,69 @@ async function runBrowserBenchmark() {
   } finally {
     cdp.close();
   }
+}
+
+async function verifyCameraRecovery(cdp) {
+  const beforePause = readMarker();
+  await cdp.evaluate("window.__simdeckCameraBenchmark.pause()");
+  await sleep(800);
+  const paused = readMarker();
+  if ((paused?.frames ?? 0) > (beforePause?.frames ?? 0) + 2) {
+    throw new Error(
+      `camera frames continued accumulating while paused: ${JSON.stringify({ beforePause, paused })}`,
+    );
+  }
+
+  const resumedAt = Date.now();
+  await cdp.evaluate("window.__simdeckCameraBenchmark.resume()");
+  const resumed = await waitForMarker(
+    "camera frames after source resume",
+    (marker) => marker.frames > (paused?.frames ?? 0),
+  );
+  const resumeRecoveryMs = Date.now() - resumedAt;
+  if (resumeRecoveryMs > 1_000) {
+    throw new Error(`camera source resume took ${resumeRecoveryMs} ms`);
+  }
+
+  const restartedAt = Date.now();
+  await cdp.evaluate("window.__simdeckCameraBenchmark.restart()", true);
+  const restarted = await waitForMarker(
+    "camera frames after WebRTC restart",
+    (marker) => marker.frames > resumed.frames,
+  );
+  const restartRecoveryMs = Date.now() - restartedAt;
+  if (restartRecoveryMs > 1_000) {
+    throw new Error(`camera WebRTC restart took ${restartRecoveryMs} ms`);
+  }
+  const browser = await waitForBrowserValue(
+    cdp,
+    "window.__simdeckCameraBenchmark.snapshot()",
+    (value) => value?.transport?.keyFramesEncoded >= 1,
+    5_000,
+  );
+  const status = simdeckJson(["camera", "status", simulatorUDID]);
+  assertOptimizedCameraStatus(status);
+  if (
+    status.webRtcCamera?.pliCount > 0 &&
+    status.webRtcCamera?.pliRecoveries < 1
+  ) {
+    throw new Error(
+      `camera PLI did not recover with a keyframe: ${JSON.stringify(status.webRtcCamera)}`,
+    );
+  }
+  if ((status.webRtcCamera?.maximumPliRecoveryMs ?? 0) > 1_000) {
+    throw new Error(
+      `camera PLI recovery exceeded one second: ${JSON.stringify(status.webRtcCamera)}`,
+    );
+  }
+  return {
+    pauseFrameDelta: (paused?.frames ?? 0) - (beforePause?.frames ?? 0),
+    resumeRecoveryMs,
+    restartRecoveryMs,
+    restarted,
+    keyFramesEncoded: browser.transport.keyFramesEncoded,
+    webRtcCamera: status.webRtcCamera,
+  };
 }
 
 async function verifyBgraCameraOutput(cdp) {
@@ -1246,7 +1311,20 @@ function assertOptimizedCameraStatus(status) {
     status.surfacePublicationFailures !== 0 ||
     status.geometryConversions !== 0 ||
     status.pixelConversions !== 0 ||
-    status.fullFrameCopies !== 0
+    status.fullFrameCopies !== 0 ||
+    status.sampleBufferFailures !== 0 ||
+    status.decodeErrors !== 0 ||
+    status.decodedFrames < 1 ||
+    status.publishedFrames < 1 ||
+    status.webRtcCamera?.nativeErrors !== 0 ||
+    status.webRtcCamera?.queueHighWater > 1 ||
+    status.webRtcCamera?.browser?.inputWidth !== 1280 ||
+    status.webRtcCamera?.browser?.inputHeight !== 720 ||
+    status.webRtcCamera?.browser?.outputWidth !== 1280 ||
+    status.webRtcCamera?.browser?.outputHeight !== 720 ||
+    !String(status.webRtcCamera?.browser?.codec ?? "")
+      .toLowerCase()
+      .includes("h264")
   ) {
     throw new Error(
       `optimized camera path performed unexpected work: ${JSON.stringify(status)}`,

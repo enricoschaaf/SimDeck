@@ -161,6 +161,7 @@ pub fn decode_camera_frame(
     frame: Bytes,
     key_frame: bool,
     sequence: u32,
+    assembled_timestamp_ns: u64,
 ) -> Result<(), AppError> {
     validate_udid(udid)?;
     if frame.is_empty() || frame.len() > 2 * 1024 * 1024 {
@@ -181,6 +182,7 @@ pub fn decode_camera_frame(
             frame_length,
             key_frame,
             sequence,
+            assembled_timestamp_ns,
             owner,
             Some(release_camera_frame),
             &mut error_message,

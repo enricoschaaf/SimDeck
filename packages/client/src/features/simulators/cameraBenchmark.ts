@@ -11,6 +11,8 @@ export interface CameraBenchmarkSource {
   readonly height: number;
   readonly stream: MediaStream;
   readonly width: number;
+  pause(): void;
+  resume(): void;
   snapshot(): CameraBenchmarkSnapshot;
   stop(): void;
 }
@@ -57,7 +59,7 @@ export function createCameraBenchmarkSource(
     frame = (frame + 1) % 2 ** FRAME_BITS;
   };
   draw();
-  const timer = window.setInterval(draw, 1_000 / framesPerSecond);
+  let timer = window.setInterval(draw, 1_000 / framesPerSecond);
   const stream = canvas.captureStream(framesPerSecond);
 
   return {
@@ -65,6 +67,17 @@ export function createCameraBenchmarkSource(
     height,
     stream,
     width,
+    pause() {
+      window.clearInterval(timer);
+      timer = 0;
+    },
+    resume() {
+      if (timer !== 0) {
+        return;
+      }
+      draw();
+      timer = window.setInterval(draw, 1_000 / framesPerSecond);
+    },
     snapshot: () => ({
       frame: (frame - 1 + 2 ** FRAME_BITS) % 2 ** FRAME_BITS,
       generatedAt,
@@ -72,6 +85,7 @@ export function createCameraBenchmarkSource(
     }),
     stop() {
       window.clearInterval(timer);
+      timer = 0;
       for (const track of stream.getTracks()) {
         track.stop();
       }

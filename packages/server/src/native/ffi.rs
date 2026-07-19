@@ -66,6 +66,7 @@ unsafe extern "C" {
         frame_length: usize,
         key_frame: bool,
         sequence: u32,
+        assembled_timestamp_ns: u64,
         owner: *mut c_void,
         release_owner: Option<simdeck_camera_release_callback>,
         error_message: *mut *mut c_char,

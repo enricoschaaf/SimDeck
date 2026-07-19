@@ -130,13 +130,15 @@ bool simdeck_camera_configure_h264(const char *udid,
 
 bool simdeck_camera_decode_h264_frame(
     const char *udid, const uint8_t *frame, size_t frame_length,
-    bool key_frame, uint32_t sequence, void *owner,
+    bool key_frame, uint32_t sequence, uint64_t assembled_timestamp_ns,
+    void *owner,
     simdeck_camera_release_callback release_owner, char **error_message) {
   (void)udid;
   (void)frame;
   (void)frame_length;
   (void)key_frame;
   (void)sequence;
+  (void)assembled_timestamp_ns;
   if (release_owner) {
     release_owner(owner);
   }

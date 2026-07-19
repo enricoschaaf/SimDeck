@@ -6,12 +6,13 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time;
 use tracing::{info, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
 use webrtc::api::APIBuilder;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
@@ -68,7 +69,90 @@ struct CameraWebRtcMetrics {
     dependency_drops: AtomicU64,
     native_errors: AtomicU64,
     pli_count: AtomicU64,
+    pli_recoveries: AtomicU64,
+    last_pli_recovery_ms: AtomicU64,
+    maximum_pli_recovery_ms: AtomicU64,
+    pending_pli: Mutex<Option<Instant>>,
     queue_high_water: AtomicU64,
+    browser: Mutex<Option<CameraBrowserStats>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CameraBrowserStats {
+    #[serde(default)]
+    average_encode_time_ms: f64,
+    #[serde(default)]
+    bitrate: u64,
+    #[serde(default)]
+    buffered_bytes: u64,
+    #[serde(default)]
+    bytes_sent: u64,
+    #[serde(default)]
+    codec: String,
+    #[serde(default)]
+    encoded_frames_per_second: f64,
+    #[serde(default)]
+    input_height: u32,
+    #[serde(default)]
+    input_width: u32,
+    #[serde(default)]
+    jitter_ms: f64,
+    #[serde(default)]
+    key_frames_encoded: u64,
+    #[serde(default)]
+    output_height: u32,
+    #[serde(default)]
+    output_width: u32,
+    #[serde(default)]
+    packets_lost: i64,
+    #[serde(default)]
+    packets_sent: u64,
+    #[serde(default)]
+    quality_limitation_reason: String,
+    #[serde(default)]
+    round_trip_time_ms: f64,
+    #[serde(default)]
+    skipped_frames: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "event", rename_all = "camelCase")]
+enum CameraDataChannelMessage {
+    Telemetry { stats: CameraBrowserStats },
+    Stopping,
+}
+
+impl CameraWebRtcMetrics {
+    fn record_pli(&self) {
+        self.pli_count.fetch_add(1, Ordering::Relaxed);
+        let mut pending = self.pending_pli.lock().unwrap();
+        if pending.is_none() {
+            *pending = Some(Instant::now());
+        }
+    }
+
+    fn record_keyframe(&self) {
+        let started = self.pending_pli.lock().unwrap().take();
+        let Some(started) = started else {
+            return;
+        };
+        let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        self.pli_recoveries.fetch_add(1, Ordering::Relaxed);
+        self.last_pli_recovery_ms
+            .store(elapsed_ms, Ordering::Relaxed);
+        update_atomic_maximum(&self.maximum_pli_recovery_ms, elapsed_ms);
+    }
+}
+
+fn update_atomic_maximum(target: &AtomicU64, value: u64) {
+    let mut previous = target.load(Ordering::Relaxed);
+    while value > previous {
+        match target.compare_exchange_weak(previous, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(actual) => previous = actual,
+        }
+    }
 }
 
 static CAMERA_WEBRTC_SESSIONS: OnceLock<Mutex<HashMap<String, Arc<CameraWebRtcSession>>>> =
@@ -127,12 +211,33 @@ pub async fn create_answer(
     let metrics = Arc::new(CameraWebRtcMetrics::default());
 
     let data_udid = udid.clone();
+    let data_metrics = metrics.clone();
     peer_connection.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
         let data_udid = data_udid.clone();
+        let data_metrics = data_metrics.clone();
         Box::pin(async move {
             if channel.label() != CAMERA_DATA_CHANNEL_LABEL {
                 return;
             }
+            let message_metrics = data_metrics.clone();
+            let message_udid = data_udid.clone();
+            channel.on_message(Box::new(move |message: DataChannelMessage| {
+                let data_metrics = message_metrics.clone();
+                let data_udid = message_udid.clone();
+                Box::pin(async move {
+                    let Ok(text) = std::str::from_utf8(&message.data) else {
+                        warn!("Invalid camera telemetry bytes for {data_udid}");
+                        return;
+                    };
+                    match serde_json::from_str::<CameraDataChannelMessage>(text) {
+                        Ok(CameraDataChannelMessage::Telemetry { stats }) => {
+                            *data_metrics.browser.lock().unwrap() = Some(stats);
+                        }
+                        Ok(CameraDataChannelMessage::Stopping) => {}
+                        Err(err) => warn!("Invalid camera telemetry for {data_udid}: {err}"),
+                    }
+                })
+            }));
             let ready_channel = channel.clone();
             channel.on_open(Box::new(move || {
                 let ready_channel = ready_channel.clone();
@@ -261,7 +366,11 @@ pub fn enrich_status(udid: &str, object: &mut Map<String, Value>) {
             "dependencyDrops": metrics.dependency_drops.load(Ordering::Relaxed),
             "nativeErrors": metrics.native_errors.load(Ordering::Relaxed),
             "pliCount": metrics.pli_count.load(Ordering::Relaxed),
+            "pliRecoveries": metrics.pli_recoveries.load(Ordering::Relaxed),
+            "lastPliRecoveryMs": metrics.last_pli_recovery_ms.load(Ordering::Relaxed),
+            "maximumPliRecoveryMs": metrics.maximum_pli_recovery_ms.load(Ordering::Relaxed),
             "queueHighWater": metrics.queue_high_water.load(Ordering::Relaxed),
+            "browser": metrics.browser.lock().unwrap().clone(),
         }),
     );
 }
@@ -306,6 +415,9 @@ async fn receive_h264_track(
         for packet in reordered.packets {
             let result = assembler.push(packet);
             if let Some(frame) = result.frame {
+                if frame.key_frame {
+                    metrics.record_keyframe();
+                }
                 metrics.assembled_frames.fetch_add(1, Ordering::Relaxed);
                 queue.push(frame, &metrics);
             } else if result.request_keyframe {
@@ -321,7 +433,7 @@ async fn receive_h264_track(
                     .await
                     .is_ok()
                 {
-                    metrics.pli_count.fetch_add(1, Ordering::Relaxed);
+                    metrics.record_pli();
                     last_pli = Instant::now();
                 }
             }
@@ -344,7 +456,13 @@ fn decode_latest_frames(
                 continue;
             }
         }
-        match decode_camera_frame(&udid, frame.data, frame.key_frame, sequence) {
+        match decode_camera_frame(
+            &udid,
+            frame.data,
+            frame.key_frame,
+            sequence,
+            frame.assembled_timestamp_ns,
+        ) {
             Ok(()) => {
                 metrics.published_frames.fetch_add(1, Ordering::Relaxed);
             }
@@ -407,6 +525,7 @@ struct CompleteFrame {
     data: Bytes,
     key_frame: bool,
     decoder_config: Option<Bytes>,
+    assembled_timestamp_ns: u64,
 }
 
 struct H264FrameAssembler {
@@ -499,6 +618,11 @@ impl H264FrameAssembler {
                     data: self.data.split().freeze(),
                     key_frame: self.key_frame,
                     decoder_config,
+                    assembled_timestamp_ns: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                        .min(u64::MAX as u128) as u64,
                 })
             }
         };
