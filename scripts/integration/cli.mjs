@@ -316,15 +316,14 @@ async function main() {
   await measuredStep(
     "CLI batch",
     async () => {
+      await ensureFixtureForeground("CLI batch foreground fixture");
+      simdeckJson(["open-url", simulatorUDID, fixtureFocusUrl]);
       const batch = simdeckJson([
         "batch",
         "--step",
-        "button home",
-        "--step",
-        "tap --x 0.5 --y 0.7 --normalized --duration-ms 20",
+        "tap --id fixture.message --wait-timeout-ms 15000 --duration-ms 20",
         "--step",
         "type batch",
-        "--continue-on-error",
       ]);
       if (batch.ok !== true || batch.failureCount !== 0) {
         throw new Error(`batch command failed: ${JSON.stringify(batch)}`);
