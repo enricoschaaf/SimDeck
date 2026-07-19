@@ -1140,16 +1140,20 @@ async fn run_batch_step(state: AppState, udid: String, step: BatchStep) -> Resul
                 .await?;
                 return Ok(json_value!({ "action": "type" }));
             }
-            run_bridge_action(state, move |bridge| {
-                let input = bridge.create_input_session(&udid)?;
-                if !text.is_empty() {
-                    std::thread::sleep(Duration::from_millis(delay_ms.unwrap_or(100)));
-                    bridge.set_pasteboard_text(&udid, &text)?;
-                    input.send_key(HID_KEY_V, HID_MODIFIER_COMMAND)?;
+            if let Some(delay_ms) = delay_ms.filter(|delay_ms| *delay_ms > 0) {
+                for character in text.chars() {
+                    run_semantic_text_control(
+                        &state,
+                        &udid,
+                        character.to_string(),
+                        None,
+                    )
+                    .await?;
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 }
-                Ok(())
-            })
-            .await?;
+            } else {
+                run_semantic_text_control(&state, &udid, text, None).await?;
+            }
             Ok(json_value!({ "action": "type" }))
         }
         BatchStep::Button {

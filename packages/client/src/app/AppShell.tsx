@@ -2089,7 +2089,12 @@ export function AppShell({
       if (!selectedSimulator) {
         return;
       }
-      sendControl(selectedSimulator.udid, { type: "text", text });
+      sendControl(selectedSimulator.udid, {
+        type: "text",
+        text,
+        bundleId:
+          selectedSimulatorState?.foregroundApp?.bundleIdentifier ?? undefined,
+      });
     },
     onToggleSoftwareKeyboard: () => {
       toggleSoftwareKeyboard();

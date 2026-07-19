@@ -5,8 +5,9 @@ use crate::android_emulation_control::{
 use crate::api::routes::{
     apply_stream_client_foreground_from_stats, apply_stream_quality_payload,
     bridge_input_session_for_control, run_bridge_multitouch_control_message, run_control_message,
-    run_toggle_appearance_control, run_tvos_control_message, stream_quality_limits_for_payload,
-    AppState, ControlMessage, StreamQualityPayload, TvosControlTouchGesture,
+    run_semantic_text_control, run_toggle_appearance_control, run_tvos_control_message,
+    stream_quality_limits_for_payload, AppState, ControlMessage, StreamQualityPayload,
+    TvosControlTouchGesture,
 };
 use crate::error::AppError;
 use crate::metrics::counters::ClientStreamStats;
@@ -859,7 +860,7 @@ async fn run_android_webrtc_control_message(
         } => state
             .android
             .send_key(&udid, key_code, modifiers.unwrap_or(0)),
-        ControlMessage::Text { text } => state.android.type_text(&udid, &text),
+        ControlMessage::Text { text, .. } => state.android.type_text(&udid, &text),
         ControlMessage::Button {
             button,
             duration_ms,
@@ -920,6 +921,9 @@ async fn run_webrtc_control_queue(
     _stream_control_tx: mpsc::UnboundedSender<WebRtcStreamCommand>,
     mut receiver: mpsc::UnboundedReceiver<ControlMessage>,
 ) {
+    if !session.is_tvos() {
+        crate::semantic_text::prewarm(udid.clone());
+    }
     let mut pending = VecDeque::new();
     let mut tvos_touch = TvosControlTouchGesture::default();
     let mut multitouch_input_session = None;
@@ -966,6 +970,12 @@ async fn run_webrtc_control_queue(
                 let bridge = state.registry.bridge().clone();
                 let action_udid = udid.clone();
                 let result = run_toggle_appearance_control(bridge, action_udid).await;
+                if let Err(error) = result {
+                    warn!("WebRTC control message failed for {udid}: {error}");
+                }
+            }
+            ControlMessage::Text { text, bundle_id } => {
+                let result = run_semantic_text_control(&state, &udid, text, bundle_id).await;
                 if let Err(error) = result {
                     warn!("WebRTC control message failed for {udid}: {error}");
                 }

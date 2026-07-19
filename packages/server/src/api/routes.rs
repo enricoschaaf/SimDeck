@@ -65,8 +65,6 @@ const FOREGROUND_APP_ROUTE_TIMEOUT: Duration = Duration::from_millis(1200);
 const APP_UPLOAD_FILE_NAME_HEADER: &str = "x-simdeck-filename";
 const MAX_APP_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_SEMANTIC_TEXT_BYTES: usize = 1024 * 1024;
-const HID_KEY_V: u16 = 25;
-const HID_MODIFIER_COMMAND: u32 = 1 << 3;
 const FOREGROUND_PROCESS_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 const ACCESSIBILITY_SOURCE_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(250);
 const ACCESSIBILITY_TREE_CACHE_TTL: Duration = Duration::from_secs(5);
@@ -568,6 +566,7 @@ pub(crate) enum ControlMessage {
     },
     Text {
         text: String,
+        bundle_id: Option<String>,
     },
     Button {
         button: String,
@@ -2931,7 +2930,7 @@ async fn run_android_control_message(
                     key_code,
                     modifiers,
                 } => android.send_key(&udid, key_code, modifiers.unwrap_or(0)),
-                ControlMessage::Text { text } => android.type_text(&udid, &text),
+                ControlMessage::Text { text, .. } => android.type_text(&udid, &text),
                 ControlMessage::Button {
                     button,
                     duration_ms,
@@ -3017,7 +3016,16 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
         .await;
     let (control_tx, control_rx) = mpsc::unbounded_channel::<ControlMessage>();
     let bridge = state.registry.bridge().clone();
-    let control_task = task::spawn(run_control_queue(session, bridge, udid.clone(), control_rx));
+    if !session.is_tvos() {
+        crate::semantic_text::prewarm(udid.clone());
+    }
+    let control_task = task::spawn(run_control_queue(
+        state,
+        session,
+        bridge,
+        udid.clone(),
+        control_rx,
+    ));
 
     while let Some(message) = receiver.next().await {
         let text = match message {
@@ -3050,6 +3058,7 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
 }
 
 async fn run_control_queue(
+    state: AppState,
     session: SimulatorSession,
     bridge: NativeBridge,
     udid: String,
@@ -3099,6 +3108,9 @@ async fn run_control_queue(
         let result = match message {
             ControlMessage::ToggleAppearance => {
                 run_toggle_appearance_control(bridge.clone(), udid.clone()).await
+            }
+            ControlMessage::Text { text, bundle_id } => {
+                run_semantic_text_control(&state, &udid, text, bundle_id).await
             }
             message if session.is_tvos() => {
                 run_tvos_control_message(session.clone(), bridge.clone(), message, &mut tvos_touch)
@@ -3162,7 +3174,7 @@ fn control_message_ends_touch(message: &ControlMessage) -> bool {
 
 pub(crate) async fn run_control_message(
     session: SimulatorSession,
-    bridge: NativeBridge,
+    _bridge: NativeBridge,
     message: ControlMessage,
 ) -> Result<(), AppError> {
     task::spawn_blocking(move || match message {
@@ -3203,7 +3215,9 @@ pub(crate) async fn run_control_message(
             key_code,
             modifiers,
         } => session.send_key(key_code, modifiers.unwrap_or(0)),
-        ControlMessage::Text { text } => send_semantic_text(&session, &bridge, &text),
+        ControlMessage::Text { .. } => Err(AppError::bad_request(
+            "Semantic text input requires a state-aware control channel.",
+        )),
         ControlMessage::Button {
             button,
             duration_ms,
@@ -3244,10 +3258,11 @@ pub(crate) async fn run_control_message(
     .map_err(|error| AppError::internal(format!("Failed to join control task: {error}")))?
 }
 
-fn send_semantic_text(
-    session: &SimulatorSession,
-    bridge: &NativeBridge,
-    text: &str,
+pub(crate) async fn run_semantic_text_control(
+    state: &AppState,
+    udid: &str,
+    text: String,
+    bundle_id: Option<String>,
 ) -> Result<(), AppError> {
     if text.is_empty() {
         return Ok(());
@@ -3258,8 +3273,19 @@ fn send_semantic_text(
         )));
     }
 
-    bridge.set_pasteboard_text(session.udid(), text)?;
-    session.send_key(HID_KEY_V, HID_MODIFIER_COMMAND)
+    let bundle_id = match bundle_id.filter(|bundle_id| !bundle_id.trim().is_empty()) {
+        Some(bundle_id) => bundle_id,
+        None => foreground_app_for_simulator(state, udid)
+            .await
+            .map_err(AppError::native)?
+            .and_then(|foreground| foreground.bundle_identifier)
+            .ok_or_else(|| {
+                AppError::bad_request("No foreground application is available for text input.")
+            })?,
+    };
+    crate::semantic_text::type_text(udid, &bundle_id, &text)
+        .await
+        .map_err(AppError::native)
 }
 
 pub(crate) async fn bridge_input_session_for_control(

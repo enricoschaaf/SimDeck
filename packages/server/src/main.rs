@@ -14,6 +14,7 @@ mod logs;
 mod metrics;
 mod native;
 mod performance;
+mod semantic_text;
 mod service;
 mod simulators;
 mod static_files;
@@ -6129,6 +6130,8 @@ async fn serve(
         _ = &mut quit_key_signal => {}
         _ = &mut termination_signal => {}
     }
+
+    semantic_text::shutdown_all().await;
 
     Ok(())
 }
