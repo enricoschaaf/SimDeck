@@ -640,8 +640,22 @@ static BOOL StartVideo(NSString *path, NSString **error) {
         while (atomic_load(&gSourceGeneration) == generation) {
             @autoreleasepool {
                 AVAsset *asset = [AVAsset assetWithURL:url];
+                dispatch_semaphore_t loaded = dispatch_semaphore_create(0);
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                [asset loadValuesAsynchronouslyForKeys:@[@"tracks"] completionHandler:^{
+                    dispatch_semaphore_signal(loaded);
+                }];
+                if (dispatch_semaphore_wait(loaded, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
+                    fprintf(stderr, "simdeck-camera: video track loading timed out\n");
+                    continue;
+                }
+                NSError *trackError = nil;
+                if ([asset statusOfValueForKey:@"tracks" error:&trackError] != AVKeyValueStatusLoaded) {
+                    fprintf(stderr, "simdeck-camera: video track loading failed: %s\n", trackError.localizedDescription.UTF8String);
+                    usleep(300 * 1000);
+                    continue;
+                }
                 NSArray<AVAssetTrack *> *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
 #pragma clang diagnostic pop
                 AVAssetTrack *track = tracks.firstObject;
