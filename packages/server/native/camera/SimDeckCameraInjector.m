@@ -36,6 +36,7 @@ static NSMutableArray<NSValue *> *gSessions;
 static NSMutableArray<NSValue *> *gVideoOutputs;
 static NSHashTable<AVSampleBufferDisplayLayer *> *gPreviewLayers;
 static NSMutableSet<NSString *> *gHookedVideoOutputClasses;
+static uint32_t gLastAppliedMirrorMode = UINT32_MAX;
 
 static char kSessionInputsKey;
 static char kSessionOutputsKey;
@@ -169,12 +170,40 @@ static void RegisterOutputLayer(CALayer *host) {
     @synchronized(gPreviewLayers) {
         [gPreviewLayers addObject:layer];
     }
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [layer setAffineTransform:gHeader && gHeader->mirrorMode == SIMDECK_CAMERA_MIRROR_ON
+        ? CGAffineTransformMakeScale(-1, 1)
+        : CGAffineTransformIdentity];
+    [CATransaction commit];
 }
 
 static void RegisterPreviewLayer(CALayer *layer) {
     if (!layer) return;
     RegisterOutputLayer(layer);
     DebugLog(@"installed sample-buffer preview layer on %@", NSStringFromClass(object_getClass(layer)));
+}
+
+static void ApplyPreviewMirroringIfNeeded(void) {
+    if (!gHeader) return;
+    uint32_t mirrorMode = gHeader->mirrorMode;
+    if (mirrorMode == gLastAppliedMirrorMode) return;
+    gLastAppliedMirrorMode = mirrorMode;
+    NSArray<AVSampleBufferDisplayLayer *> *layers = nil;
+    @synchronized(gPreviewLayers) {
+        layers = gPreviewLayers.allObjects;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        CGAffineTransform transform = mirrorMode == SIMDECK_CAMERA_MIRROR_ON
+            ? CGAffineTransformMakeScale(-1, 1)
+            : CGAffineTransformIdentity;
+        for (AVSampleBufferDisplayLayer *layer in layers) {
+            [layer setAffineTransform:transform];
+        }
+        [CATransaction commit];
+    });
 }
 
 static void SimDeckSetVideoSettings(AVCaptureVideoDataOutput *output,
@@ -539,6 +568,7 @@ static void DeliverSample(CMSampleBufferRef sample, AVCaptureVideoDataOutput *ou
 }
 
 static void DeliverFrame(void) {
+    ApplyPreviewMirroringIfNeeded();
     SimDeckFrameDescriptor descriptor = {0};
     CVPixelBufferRef pixelBuffer = CurrentPixelBuffer(YES, &descriptor);
     if (!pixelBuffer) return;

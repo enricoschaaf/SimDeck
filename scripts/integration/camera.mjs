@@ -113,8 +113,25 @@ async function main() {
   step("build camera fixture app");
   const appPath = buildCameraFixtureApp();
   const imagePath = path.join(tempRoot, "solid-red.bmp");
+  const mirrorImagePath = path.join(tempRoot, "mirror-red-green.bmp");
+  const mirrorScreenshotPath = path.join(tempRoot, "mirror-result.bmp");
+  const mirrorFrozenOffScreenshotPath = path.join(
+    tempRoot,
+    "mirror-frozen-off.bmp",
+  );
+  const mirrorFrozenOnScreenshotPath = path.join(
+    tempRoot,
+    "mirror-frozen-on.bmp",
+  );
   const videoPath = path.join(tempRoot, "solid-green.mov");
   writeSolidBmp(imagePath, 32, 24, { r: 255, g: 0, b: 0 });
+  writeSplitBmp(
+    mirrorImagePath,
+    64,
+    48,
+    { r: 255, g: 0, b: 0 },
+    { r: 0, g: 255, b: 0 },
+  );
   writeSolidMov(videoPath, 64, 48, { r: 0, g: 255, b: 0 });
 
   step("install camera fixture app");
@@ -221,6 +238,95 @@ async function main() {
   );
   console.log(
     `received placeholder frames: frames=${placeholderMarker.frames} rgb=${Math.round(placeholderMarker.avgRed)},${Math.round(placeholderMarker.avgGreen)},${Math.round(placeholderMarker.avgBlue)}`,
+  );
+
+  step("verify horizontally mirrored preview");
+  const mirrorStatus = simdeckJson([
+    "camera",
+    "switch",
+    simulatorUDID,
+    "--file",
+    mirrorImagePath,
+    "--mirror",
+    "on",
+  ]);
+  if (mirrorStatus.mirror !== "on") {
+    throw new Error(
+      `camera mirror mode was not enabled: ${JSON.stringify(mirrorStatus)}`,
+    );
+  }
+  await waitForMarker(
+    "split-color mirror frames",
+    (marker) =>
+      marker.frames > placeholderMarker.frames &&
+      marker.avgRed > 100 &&
+      marker.avgGreen > 100 &&
+      marker.avgBlue < 40,
+  );
+  await sleep(250);
+  runText("xcrun", [
+    "simctl",
+    "io",
+    simulatorUDID,
+    "screenshot",
+    "--type=bmp",
+    "--mask=ignored",
+    mirrorScreenshotPath,
+  ]);
+  const mirroredLeft = readBmpPixel(mirrorScreenshotPath, 0.25, 0.5);
+  const mirroredRight = readBmpPixel(mirrorScreenshotPath, 0.75, 0.5);
+  if (
+    mirroredLeft.g <= mirroredLeft.r * 1.5 ||
+    mirroredRight.r <= mirroredRight.g * 1.5
+  ) {
+    throw new Error(
+      `camera preview was not mirrored horizontally: ${JSON.stringify({ mirroredLeft, mirroredRight })}`,
+    );
+  }
+  console.log(
+    `mirrored preview: left=${JSON.stringify(mirroredLeft)} right=${JSON.stringify(mirroredRight)}`,
+  );
+
+  step("verify mirror updates without a new camera frame");
+  const frozenOffStatus = await switchCameraSourceViaApi(simulatorUDID, {
+    mirror: "off",
+    source: { kind: "camera" },
+  });
+  await sleep(250);
+  captureSimulatorBmp(simulatorUDID, mirrorFrozenOffScreenshotPath);
+  const frozenOffLeft = readBmpPixel(mirrorFrozenOffScreenshotPath, 0.25, 0.5);
+  const frozenOffRight = readBmpPixel(mirrorFrozenOffScreenshotPath, 0.75, 0.5);
+  const frozenOnStatus = await switchCameraSourceViaApi(simulatorUDID, {
+    mirror: "on",
+    source: { kind: "camera" },
+  });
+  await sleep(250);
+  captureSimulatorBmp(simulatorUDID, mirrorFrozenOnScreenshotPath);
+  const frozenOnLeft = readBmpPixel(mirrorFrozenOnScreenshotPath, 0.25, 0.5);
+  const frozenOnRight = readBmpPixel(mirrorFrozenOnScreenshotPath, 0.75, 0.5);
+  if (
+    frozenOffStatus.sequence !== frozenOnStatus.sequence ||
+    frozenOffLeft.r <= frozenOffLeft.g * 1.5 ||
+    frozenOffRight.g <= frozenOffRight.r * 1.5 ||
+    frozenOnLeft.g <= frozenOnLeft.r * 1.5 ||
+    frozenOnRight.r <= frozenOnRight.g * 1.5
+  ) {
+    throw new Error(
+      `camera mirror did not update on a frozen frame: ${JSON.stringify({ frozenOffStatus, frozenOnStatus, frozenOffLeft, frozenOffRight, frozenOnLeft, frozenOnRight })}`,
+    );
+  }
+
+  const restoredPlaceholder = simdeckJson([
+    "camera",
+    "switch",
+    simulatorUDID,
+    "--placeholder",
+    "--mirror",
+    "on",
+  ]);
+  await waitForMarker(
+    "restored placeholder frames",
+    (marker) => marker.frames > restoredPlaceholder.frames,
   );
 
   if (verifyCameraIsolation) {
@@ -1576,6 +1682,14 @@ function assertOptimizedCameraStatus(status) {
 }
 
 function writeSolidBmp(filePath, width, height, color) {
+  writeBmp(filePath, width, height, () => color);
+}
+
+function writeSplitBmp(filePath, width, height, left, right) {
+  writeBmp(filePath, width, height, (x) => (x < width / 2 ? left : right));
+}
+
+function writeBmp(filePath, width, height, colorAtX) {
   const rowStride = Math.ceil((width * 3) / 4) * 4;
   const pixelOffset = 54;
   const fileSize = pixelOffset + rowStride * height;
@@ -1592,6 +1706,7 @@ function writeSolidBmp(filePath, width, height, color) {
   for (let y = 0; y < height; y += 1) {
     const row = pixelOffset + y * rowStride;
     for (let x = 0; x < width; x += 1) {
+      const color = colorAtX(x);
       const offset = row + x * 3;
       buffer[offset] = color.b;
       buffer[offset + 1] = color.g;
@@ -1599,6 +1714,91 @@ function writeSolidBmp(filePath, width, height, color) {
     }
   }
   fs.writeFileSync(filePath, buffer);
+}
+
+function readBmpPixel(filePath, normalizedX, normalizedY) {
+  const buffer = fs.readFileSync(filePath);
+  if (buffer.toString("ascii", 0, 2) !== "BM") {
+    throw new Error(`invalid BMP screenshot: ${filePath}`);
+  }
+  const pixelOffset = buffer.readUInt32LE(10);
+  const width = buffer.readInt32LE(18);
+  const signedHeight = buffer.readInt32LE(22);
+  const bitsPerPixel = buffer.readUInt16LE(28);
+  const compression = buffer.readUInt32LE(30);
+  const bitfields = bitsPerPixel === 32 && compression === 3;
+  if (
+    width <= 0 ||
+    signedHeight === 0 ||
+    ![24, 32].includes(bitsPerPixel) ||
+    (compression !== 0 && !bitfields)
+  ) {
+    throw new Error(
+      `unsupported BMP screenshot: ${JSON.stringify({ width, height: signedHeight, bitsPerPixel, compression })}`,
+    );
+  }
+  const height = Math.abs(signedHeight);
+  const x = Math.min(width - 1, Math.max(0, Math.floor(normalizedX * width)));
+  const y = Math.min(height - 1, Math.max(0, Math.floor(normalizedY * height)));
+  const sourceY = signedHeight > 0 ? height - y - 1 : y;
+  const rowStride = Math.ceil((width * bitsPerPixel) / 32) * 4;
+  const offset = pixelOffset + sourceY * rowStride + x * (bitsPerPixel / 8);
+  if (bitfields) {
+    const pixel = buffer.readUInt32LE(offset);
+    return {
+      r: bmpBitfieldComponent(pixel, buffer.readUInt32LE(54)),
+      g: bmpBitfieldComponent(pixel, buffer.readUInt32LE(58)),
+      b: bmpBitfieldComponent(pixel, buffer.readUInt32LE(62)),
+    };
+  }
+  return {
+    r: buffer[offset + 2],
+    g: buffer[offset + 1],
+    b: buffer[offset],
+  };
+}
+
+function captureSimulatorBmp(udid, filePath) {
+  runText("xcrun", [
+    "simctl",
+    "io",
+    udid,
+    "screenshot",
+    "--type=bmp",
+    "--mask=ignored",
+    filePath,
+  ]);
+}
+
+async function switchCameraSourceViaApi(udid, payload) {
+  const url = new URL(
+    `/api/simulators/${encodeURIComponent(udid)}/camera/source`,
+    serverUrl,
+  );
+  const response = await fetch(url, {
+    body: JSON.stringify(payload),
+    headers: {
+      "Content-Type": "application/json",
+      Origin: serverUrl.origin,
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Camera source switch failed with ${response.status}: ${await response.text()}`,
+    );
+  }
+  return response.json();
+}
+
+function bmpBitfieldComponent(pixel, mask) {
+  if (mask === 0) {
+    return 0;
+  }
+  const leastSignificantBit = (mask & -mask) >>> 0;
+  const shift = 31 - Math.clz32(leastSignificantBit);
+  const maximum = mask >>> shift;
+  return Math.round((((pixel & mask) >>> shift) * 255) / maximum);
 }
 
 function simdeckJson(args, options = {}) {
