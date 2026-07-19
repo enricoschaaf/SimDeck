@@ -29,6 +29,7 @@ import {
 } from "../api/controls";
 import {
   fetchAccessibilityTree,
+  fetchCameraStatus,
   fetchChromeProfile,
   fetchSimulatorState,
 } from "../api/simulators";
@@ -37,6 +38,7 @@ import type {
   AccessibilitySource,
   AccessibilitySourcePreference,
   AccessibilityTreeResponse,
+  CameraStatusResponse,
   ChromeProfile,
   SimulatorMetadata,
   SimulatorStateResponse,
@@ -562,6 +564,8 @@ export function AppShell({
   const [simulatorMenuOpen, setSimulatorMenuOpen] = useState(false);
   const [newSimulatorOpen, setNewSimulatorOpen] = useState(false);
   const [cameraSimulationOpen, setCameraSimulationOpen] = useState(false);
+  const [cameraDebugStatus, setCameraDebugStatus] =
+    useState<CameraStatusResponse | null>(null);
   const [deepLinkOpen, setDeepLinkOpen] = useState(false);
   const [filesMediaVisible, setFilesMediaVisible] = useState(false);
   const [filesMediaTab, setFilesMediaTab] = useState<FilesMediaTab>("files");
@@ -835,6 +839,32 @@ export function AppShell({
         ? "Booting..."
         : "Stopping..."
       : "";
+
+  useEffect(() => {
+    if (!debugVisible || !selectedSimulator?.isBooted) {
+      setCameraDebugStatus(null);
+      return;
+    }
+    let cancelled = false;
+    const refreshCameraDebugStatus = async () => {
+      try {
+        const camera = await fetchCameraStatus(selectedSimulator.udid);
+        if (!cancelled) {
+          setCameraDebugStatus(camera);
+        }
+      } catch {
+        if (!cancelled) {
+          setCameraDebugStatus(null);
+        }
+      }
+    };
+    void refreshCameraDebugStatus();
+    const interval = window.setInterval(refreshCameraDebugStatus, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [debugVisible, selectedSimulator?.isBooted, selectedSimulator?.udid]);
 
   useEffect(() => {
     const udid = baseSelectedSimulator?.udid;
@@ -4013,6 +4043,7 @@ export function AppShell({
         debugPanel={
           debugVisible ? (
             <DebugPanel
+              camera={cameraDebugStatus}
               encoder={selectedSimulator.privateDisplay?.encoder}
               fps={fps}
               inline

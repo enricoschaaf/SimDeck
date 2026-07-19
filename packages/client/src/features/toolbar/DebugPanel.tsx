@@ -1,4 +1,4 @@
-import type { EncoderStats } from "../../api/types";
+import type { CameraStatusResponse, EncoderStats } from "../../api/types";
 import type {
   StreamRuntimeInfo,
   StreamStats,
@@ -6,6 +6,7 @@ import type {
 } from "../stream/streamTypes";
 
 interface DebugPanelProps {
+  camera?: CameraStatusResponse | null;
   encoder?: EncoderStats | null;
   fps: number;
   inline?: boolean;
@@ -43,6 +44,20 @@ function formatPercent(value: number | undefined): string {
   return `${value.toFixed(0)}%`;
 }
 
+function formatBitrate(value: number | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return "—";
+  }
+  return `${(value / 1_000_000).toFixed(1)} Mbps`;
+}
+
+function formatCameraResolution(camera: CameraStatusResponse): string {
+  const browser = camera.webRtcCamera?.browser;
+  const width = browser?.outputWidth ?? camera.width;
+  const height = browser?.outputHeight ?? camera.height;
+  return width && height ? `${width}×${height}` : "—";
+}
+
 function formatResolution(stats: StreamStats): string {
   if (!stats.width || !stats.height) {
     return "—";
@@ -51,6 +66,7 @@ function formatResolution(stats: StreamStats): string {
 }
 
 export function DebugPanel({
+  camera,
   encoder,
   fps,
   inline = false,
@@ -113,6 +129,53 @@ export function DebugPanel({
       {
         label: "Overload Events",
         value: String(encoder.overloadEvents ?? 0),
+      },
+    );
+  }
+  if (camera?.alive && camera.source === "camera") {
+    const browser = camera.webRtcCamera?.browser;
+    const cameraDrops =
+      (camera.webRtcCamera?.droppedFrames ?? 0) +
+      (camera.webRtcCamera?.dependencyDrops ?? 0);
+    rows.push(
+      { label: "Camera Resolution", value: formatCameraResolution(camera) },
+      {
+        label: "Camera FPS",
+        value: formatFps(browser?.encodedFramesPerSecond ?? 0),
+      },
+      { label: "Camera Bitrate", value: formatBitrate(browser?.bitrate) },
+      {
+        label: "Camera Color",
+        value:
+          [camera.colorRange, camera.yCbCrMatrix].filter(Boolean).join(" / ") ||
+          "—",
+      },
+      {
+        label: "Camera Encode",
+        value: formatMs(browser?.averageEncodeTimeMs ?? 0),
+      },
+      {
+        label: "Camera Pipeline",
+        value: formatMs(camera.averagePipelineLatencyMs ?? 0),
+      },
+      {
+        label: "Camera RTP Loss",
+        value: String(camera.webRtcCamera?.lostPackets ?? 0),
+      },
+      {
+        label: "Camera Queue",
+        value: String(camera.webRtcCamera?.queueHighWater ?? 0),
+      },
+      { label: "Camera Drops", value: String(cameraDrops) },
+      {
+        label: "Camera Copies",
+        value: String(camera.fullFrameCopies ?? 0),
+      },
+      {
+        label: "Camera Conversions",
+        value: String(
+          (camera.geometryConversions ?? 0) + (camera.pixelConversions ?? 0),
+        ),
       },
     );
   }

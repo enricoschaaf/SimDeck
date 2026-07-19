@@ -271,10 +271,49 @@ export interface CameraStatusResponse {
   height?: number;
   sequence?: number;
   cameraSequence?: number;
+  colorPrimaries?: string;
+  colorRange?: string;
+  averageDecoderLatencyMs?: number;
+  averagePipelineLatencyMs?: number;
+  averageSurfacePublicationLatencyMs?: number;
+  consumedSequence?: number;
   decodeErrors?: number;
   droppedFrames?: number;
+  fullFrameCopies?: number;
   frames?: number;
+  geometryConversions?: number;
+  pixelConversions?: number;
+  publishedFrames?: number;
+  transferFunction?: string;
+  webRtcCamera?: {
+    assembledFrames?: number;
+    browser?: {
+      averageEncodeTimeMs?: number;
+      bitrate?: number;
+      codec?: string;
+      encodedFramesPerSecond?: number;
+      inputHeight?: number;
+      inputWidth?: number;
+      keyFramesEncoded?: number;
+      outputHeight?: number;
+      outputWidth?: number;
+      packetsLost?: number;
+      packetsSent?: number;
+      qualityLimitationReason?: string;
+    };
+    dependencyDrops?: number;
+    droppedFrames?: number;
+    lostPackets?: number;
+    nativeErrors?: number;
+    pliCount?: number;
+    publishedFrames?: number;
+    queueHighWater?: number;
+    reorderedPackets?: number;
+    rtpBytes?: number;
+    rtpPackets?: number;
+  };
   appLogPath?: string;
+  yCbCrMatrix?: string;
   error?: string;
 }
 
