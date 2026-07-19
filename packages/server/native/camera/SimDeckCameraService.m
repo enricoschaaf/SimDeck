@@ -11,7 +11,6 @@
 #import <dispatch/dispatch.h>
 #import <fcntl.h>
 #import <pthread.h>
-#import <signal.h>
 #import <stdatomic.h>
 #import <stdbool.h>
 #import <stdint.h>
@@ -156,6 +155,7 @@ static void PublishBGRA(const uint8_t *source,
                         NSString *label) {
     if (!gHeader || !gPixels || !source || sourceWidth == 0 || sourceHeight == 0) return;
     dispatch_sync(gWriteQueue, ^{
+        if (!gHeader || !gPixels) return;
         gHeader->sequence += 1;
         for (uint32_t y = 0; y < gHeight; y += 1) {
             uint32_t sy = (uint32_t)(((uint64_t)y * sourceHeight) / MAX(gHeight, 1));
@@ -228,6 +228,7 @@ static void PublishPixelBuffer(CVPixelBufferRef pixelBuffer, uint32_t sourceKind
 static void DrawPlaceholderFrame(uint32_t frameIndex) {
     if (!gHeader || !gPixels) return;
     dispatch_sync(gWriteQueue, ^{
+        if (!gHeader || !gPixels) return;
         gHeader->sequence += 1;
         for (uint32_t y = 0; y < gHeight; y += 1) {
             uint8_t *row = gPixels + ((size_t)y * gHeader->bytesPerRow);
@@ -313,6 +314,7 @@ static void PublishBrowserPixelBuffer(CVPixelBufferRef pixelBuffer) {
         imageByCroppingToRect:outputBounds];
     CIImage *composed = [positioned imageByCompositingOverImage:background];
     dispatch_sync(gWriteQueue, ^{
+        if (!gHeader || !gPixels) return;
         gHeader->sequence += 1;
         [gBrowserRenderContext render:composed
                              toBitmap:gPixels
@@ -755,28 +757,36 @@ static int OpenSharedMemory(void) {
 
 static void Cleanup(void) {
     StopCurrentSource();
-    if (gHeader) {
-        munmap(gHeader, gMappedSize);
+    __block SimDeckCameraHeader *mappedHeader = NULL;
+    __block size_t mappedSize = 0;
+    if (gWriteQueue) {
+        dispatch_sync(gWriteQueue, ^{
+            mappedHeader = gHeader;
+            mappedSize = gMappedSize;
+            gHeader = NULL;
+            gPixels = NULL;
+            gMappedSize = 0;
+        });
+    } else {
+        mappedHeader = gHeader;
+        mappedSize = gMappedSize;
         gHeader = NULL;
+        gPixels = NULL;
+        gMappedSize = 0;
+    }
+    if (mappedHeader) {
+        munmap(mappedHeader, mappedSize);
     }
     if (gShmName) {
         shm_unlink(gShmName);
         free(gShmName);
         gShmName = NULL;
     }
-    gPixels = NULL;
-    gMappedSize = 0;
     gSourceName = nil;
     gSourceArgument = nil;
     gSourceKind = SIMDECK_CAMERA_SOURCE_PLACEHOLDER;
     gActiveUDID = nil;
     gServiceStarted = NO;
-}
-
-static void SignalHandler(int signalNumber) {
-    (void)signalNumber;
-    Cleanup();
-    _exit(0);
 }
 
 static char *CopyCString(NSString *value) {
@@ -824,8 +834,6 @@ bool simdeck_camera_start(const char *udid,
                 gLastPixelFormat = 0;
                 [NSApplication sharedApplication];
                 [NSApp finishLaunching];
-                signal(SIGINT, SignalHandler);
-                signal(SIGTERM, SignalHandler);
                 if (OpenSharedMemory() != 0) {
                     nativeError = @"Unable to open camera shared memory.";
                     Cleanup();

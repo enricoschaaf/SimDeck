@@ -320,7 +320,7 @@ export function SimulatorMenu({
                     onCloseMenu();
                   }}
                 >
-                  Camera Simulation…
+                  Camera…
                 </button>
                 <button
                   className="menu-action mobile-menu-action"

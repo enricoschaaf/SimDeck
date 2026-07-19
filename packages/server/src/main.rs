@@ -817,8 +817,7 @@ enum PasteboardCommand {
 #[derive(Subcommand)]
 enum CameraCommand {
     Start {
-        #[arg(value_name = "UDID_OR_BUNDLE_ID", num_args = 1..=2)]
-        args: Vec<String>,
+        udid: Option<String>,
         #[arg(long)]
         file: Option<String>,
         #[arg(long, default_value = "auto")]
@@ -4213,9 +4212,7 @@ fn main() -> anyhow::Result<()> {
             }
         },
         Command::Camera { command } => match command {
-            CameraCommand::Start { args, file, mirror } => {
-                let (udid, bundle_id) =
-                    parse_optional_udid_value_args("camera start", args, "BUNDLE_ID")?;
+            CameraCommand::Start { udid, file, mirror } => {
                 let udid = resolve_device_udid(udid.as_deref())?;
                 let service_url = command_service_url(explicit_server_url.as_deref())?;
                 let source = camera_source_from_args(file, false)?;
@@ -4224,7 +4221,6 @@ fn main() -> anyhow::Result<()> {
                     "POST",
                     &format!("/api/simulators/{}/camera", url_path_component(&udid)),
                     Some(&serde_json::json!({
-                        "bundleId": bundle_id,
                         "source": source,
                         "mirror": mirror,
                     })),
@@ -6352,10 +6348,10 @@ mod tests {
         run_maestro_command, server_health_watchdog_should_restart, service_addresses,
         service_matches_launch_options, service_post_error_is_retryable, simdeck_open_link,
         simdeck_pair_url, studio_service_restart_args, workspace_service_process_is_current,
-        write_project_service_credentials_to_path, AndroidGpuMode, Cli, Command, ElementSelector,
-        NoCommandAction, PairingAddress, ProjectServiceCredentials, ServiceCommand,
-        ServiceLaunchOptions, ServiceMetadata, StreamQualityProfileArg, StudioExposeOptions,
-        TapCommandTarget, VideoCodecMode, WorkspaceServiceProcess, YamlValue,
+        write_project_service_credentials_to_path, AndroidGpuMode, CameraCommand, Cli, Command,
+        ElementSelector, NoCommandAction, PairingAddress, ProjectServiceCredentials,
+        ServiceCommand, ServiceLaunchOptions, ServiceMetadata, StreamQualityProfileArg,
+        StudioExposeOptions, TapCommandTarget, VideoCodecMode, WorkspaceServiceProcess, YamlValue,
         DEFAULT_LOCAL_STREAM_QUALITY_PROFILE, SERVER_HEALTH_WATCHDOG_FAILURE_THRESHOLD,
         SERVER_HEALTH_WATCHDOG_HTTP_FAILURE_THRESHOLD,
     };
@@ -7286,6 +7282,17 @@ mod tests {
         };
         assert_eq!(udid, None);
         assert!(stdout);
+
+        let parsed =
+            Cli::try_parse_from(["simdeck", "camera", "start", "--mirror", "off"]).unwrap();
+        let Command::Camera {
+            command: CameraCommand::Start { udid, mirror, .. },
+        } = parsed.command
+        else {
+            panic!("expected camera start command");
+        };
+        assert_eq!(udid, None);
+        assert_eq!(mirror, "off");
     }
 
     #[test]

@@ -53,8 +53,6 @@ impl Default for CameraSource {
 #[serde(rename_all = "camelCase")]
 pub struct CameraStartRequest {
     #[serde(default)]
-    pub bundle_id: Option<String>,
-    #[serde(default)]
     pub source: CameraSource,
     #[serde(default)]
     pub mirror: Option<String>,
@@ -71,7 +69,7 @@ pub struct CameraSwitchRequest {
 #[derive(Clone, Debug)]
 pub struct CameraStartOptions {
     pub udid: String,
-    pub bundle_id: Option<String>,
+    pub bundle_id: String,
     pub source: CameraSource,
     pub mirror: Option<String>,
 }
@@ -80,26 +78,18 @@ pub fn start_camera(options: CameraStartOptions) -> Result<Value, AppError> {
     validate_udid(&options.udid)?;
     let source = normalize_source(options.source)?;
     let mirror = normalize_mirror(options.mirror.as_deref())?;
-    let bundle_id = options
-        .bundle_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    if let Some(bundle_id) = bundle_id {
-        validate_bundle_id(bundle_id)?;
-    }
+    let bundle_id = options.bundle_id.trim();
+    validate_bundle_id(bundle_id)?;
     fs::create_dir_all(camera_state_dir()).map_err(app_internal)?;
 
     let shm_name = shm_name_for_udid(&options.udid);
     native_start_camera(&options.udid, &shm_name, &source, &mirror)?;
 
-    if let Some(bundle_id) = bundle_id {
-        if let Err(error) = launch_with_injector(&options.udid, bundle_id, &shm_name, &mirror) {
-            let _ = native_stop_camera(&options.udid);
-            return Err(error);
-        }
-        record_injected_bundle(&options.udid, bundle_id)?;
+    if let Err(error) = launch_with_injector(&options.udid, bundle_id, &shm_name, &mirror) {
+        let _ = native_stop_camera(&options.udid);
+        return Err(error);
     }
+    record_injected_bundle(&options.udid, bundle_id)?;
 
     let mut status = native_status(&options.udid)?;
     enrich_status(&options.udid, &mut status);
@@ -193,7 +183,7 @@ fn native_start_camera(
     } else {
         Err(native_error(
             error_message,
-            "Unable to start daemon camera simulation.",
+            "Unable to start the camera daemon.",
         ))
     }
 }
@@ -239,7 +229,7 @@ fn native_stop_camera(udid: &str) -> Result<(), AppError> {
     } else {
         Err(native_error(
             error_message,
-            "Unable to stop daemon camera simulation.",
+            "Unable to stop the camera daemon.",
         ))
     }
 }

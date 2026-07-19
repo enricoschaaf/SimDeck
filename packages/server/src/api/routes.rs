@@ -3320,7 +3320,7 @@ async fn refresh_stream(
 async fn camera_status(Path(udid): Path<String>) -> Result<Json<Value>, AppError> {
     if android::is_android_id(&udid) {
         return Err(AppError::bad_request(
-            "Camera simulation is only supported for iOS simulators.",
+            "Camera control is only supported for iOS simulators.",
         ));
     }
     let status = task::spawn_blocking(move || camera::camera_status(&udid))
@@ -3330,18 +3330,33 @@ async fn camera_status(Path(udid): Path<String>) -> Result<Json<Value>, AppError
 }
 
 async fn start_camera(
+    State(state): State<AppState>,
     Path(udid): Path<String>,
     Json(payload): Json<CameraStartRequest>,
 ) -> Result<Json<Value>, AppError> {
     if android::is_android_id(&udid) {
         return Err(AppError::bad_request(
-            "Camera simulation is only supported for iOS simulators.",
+            "Camera control is only supported for iOS simulators.",
+        ));
+    }
+    let bundle_id = foreground_app_for_simulator_with_cache_ttl(&state, &udid, Duration::ZERO)
+        .await
+        .map_err(|error| {
+            AppError::native(format!("Unable to resolve the foreground app. {error}"))
+        })?
+        .and_then(|app| app.bundle_identifier)
+        .ok_or_else(|| {
+            AppError::bad_request("Open the app that should receive the camera before starting it.")
+        })?;
+    if !is_camera_target_bundle_id(&bundle_id) {
+        return Err(AppError::bad_request(
+            "Open a user-installed app before starting the camera.",
         ));
     }
     let status = task::spawn_blocking(move || {
         camera::start_camera(camera::CameraStartOptions {
             udid,
-            bundle_id: payload.bundle_id,
+            bundle_id,
             source: payload.source,
             mirror: payload.mirror,
         })
@@ -3351,13 +3366,17 @@ async fn start_camera(
     Ok(json(status))
 }
 
+fn is_camera_target_bundle_id(bundle_id: &str) -> bool {
+    !bundle_id.starts_with("com.apple.") && !bundle_id.ends_with(".xctrunner")
+}
+
 async fn switch_camera_source(
     Path(udid): Path<String>,
     Json(payload): Json<CameraSwitchRequest>,
 ) -> Result<Json<Value>, AppError> {
     if android::is_android_id(&udid) {
         return Err(AppError::bad_request(
-            "Camera simulation is only supported for iOS simulators.",
+            "Camera control is only supported for iOS simulators.",
         ));
     }
     let status =
@@ -3370,7 +3389,7 @@ async fn switch_camera_source(
 async fn stop_camera(Path(udid): Path<String>) -> Result<Json<Value>, AppError> {
     if android::is_android_id(&udid) {
         return Err(AppError::bad_request(
-            "Camera simulation is only supported for iOS simulators.",
+            "Camera control is only supported for iOS simulators.",
         ));
     }
     let status = task::spawn_blocking(move || camera::stop_camera(&udid))
@@ -3385,7 +3404,7 @@ async fn camera_stream_socket(Path(udid): Path<String>, websocket: WebSocketUpgr
             StatusCode::BAD_REQUEST,
             Json(json_value!({
                 "ok": false,
-                "error": "Camera simulation is only supported for iOS simulators.",
+                "error": "Camera control is only supported for iOS simulators.",
             })),
         )
             .into_response();
@@ -6382,7 +6401,7 @@ mod tests {
         client_stats_foreground, compact_accessibility_snapshot, content_disposition_header,
         decode_percent_encoded_utf8, element_matches_selector, first_matching_element,
         inspector_available_sources, inspector_metadata, inspector_session_from_published,
-        inspector_session_score, is_inspector_agent_transport_path,
+        inspector_session_score, is_camera_target_bundle_id, is_inspector_agent_transport_path,
         is_transient_native_ax_snapshot_error, logical_screen_size_from_display_pixels,
         normalize_inspector_node, normalize_screen_point_from_snapshot,
         normalized_gesture_coordinates, parse_lsof_tcp_listener,
@@ -6452,6 +6471,15 @@ mod tests {
 
         assert!(options.emulator_args.is_empty());
         assert!(options.disable_audio);
+    }
+
+    #[test]
+    fn camera_target_requires_a_user_app() {
+        assert!(is_camera_target_bundle_id("com.green-got.dev"));
+        assert!(!is_camera_target_bundle_id("com.apple.DocumentsApp"));
+        assert!(!is_camera_target_bundle_id(
+            "com.green-got.dev-tests.xctrunner"
+        ));
     }
 
     fn accessibility_snapshot() -> Value {

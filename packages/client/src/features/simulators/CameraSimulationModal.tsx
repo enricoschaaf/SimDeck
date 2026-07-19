@@ -29,7 +29,6 @@ import {
 } from "./cameraTransport";
 
 interface CameraSimulationModalProps {
-  foregroundBundleId?: string | null;
   onClose: () => void;
   open: boolean;
   selectedSimulator: SimulatorMetadata | null;
@@ -38,17 +37,16 @@ interface CameraSimulationModalProps {
 type SourceMode = "placeholder" | "camera" | "media";
 type MirrorMode = "auto" | "on" | "off";
 type CameraAccess = "idle" | "requesting" | "granted" | "denied";
+const CAMERA_DEVICE_STORAGE_KEY = "simdeck.camera.deviceId";
 
 export function CameraSimulationModal({
-  foregroundBundleId,
   onClose,
   open,
   selectedSimulator,
 }: CameraSimulationModalProps) {
-  const [bundleId, setBundleId] = useState("");
   const [sourceMode, setSourceMode] = useState<SourceMode>("placeholder");
   const [mediaPath, setMediaPath] = useState("");
-  const [cameraId, setCameraId] = useState("");
+  const [cameraId, setCameraId] = useState(storedCameraId);
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [cameraAccess, setCameraAccess] = useState<CameraAccess>("idle");
   const [cameraStats, setCameraStats] = useState<CameraStats | null>(null);
@@ -64,7 +62,6 @@ export function CameraSimulationModal({
   const udid = selectedSimulator?.udid ?? "";
   const canApply = Boolean(
     selectedSimulator?.isBooted &&
-    bundleId.trim() &&
     (sourceMode !== "media" || mediaPath.trim()) &&
     (sourceMode !== "camera" || cameraAccess === "granted"),
   );
@@ -73,7 +70,6 @@ export function CameraSimulationModal({
     if (!open) {
       return;
     }
-    setBundleId(foregroundBundleId ?? "");
     setError("");
     setIsApplying(false);
     setIsStopping(false);
@@ -85,7 +81,51 @@ export function CameraSimulationModal({
         : "idle",
     );
     void refreshStatus();
-  }, [foregroundBundleId, open, udid]);
+  }, [open, udid]);
+
+  useEffect(() => {
+    if (!selectedSimulator?.isBooted || !udid) {
+      return;
+    }
+    let cancelled = false;
+    const resume = async () => {
+      try {
+        const nextStatus = await fetchCameraStatus(udid);
+        if (cancelled) {
+          return;
+        }
+        setStatus(nextStatus);
+        if (!nextStatus.alive || nextStatus.source !== "camera") {
+          return;
+        }
+        setSourceMode("camera");
+        if (
+          cameraFeedRef.current ||
+          !(await cameraPermissionWasGranted()) ||
+          cancelled
+        ) {
+          return;
+        }
+        setCameraAccess("granted");
+        const stream = await cameraStream();
+        if (cancelled) {
+          for (const track of stream.getTracks()) {
+            track.stop();
+          }
+          return;
+        }
+        await startCurrentCameraFeed(stream);
+      } catch (resumeError) {
+        if (!cancelled) {
+          setError(cameraAccessError(resumeError));
+        }
+      }
+    };
+    void resume();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSimulator?.isBooted, udid]);
 
   useEffect(() => {
     if (!open || sourceMode !== "camera" || !navigator.mediaDevices) {
@@ -107,12 +147,84 @@ export function CameraSimulationModal({
   }, [open, sourceMode]);
 
   useEffect(() => {
+    if (!open || sourceMode !== "camera") {
+      return;
+    }
+    const activeTrack = cameraStreamRef.current
+      ?.getVideoTracks()
+      .find((track) => track.readyState === "live");
+    if (activeTrack) {
+      setCameraAccess("granted");
+      return;
+    }
+    let cancelled = false;
+    let permission: PermissionStatus | null = null;
+    const updatePermission = async () => {
+      if (permission && !cancelled) {
+        setCameraAccess(
+          permission.state === "granted"
+            ? "granted"
+            : permission.state === "denied"
+              ? "denied"
+              : "idle",
+        );
+      }
+      if (permission?.state === "granted" && navigator.mediaDevices) {
+        const devices = videoDevices(
+          await navigator.mediaDevices.enumerateDevices(),
+        );
+        if (!cancelled) {
+          setCameras(devices);
+        }
+      }
+    };
+    const inspectPermission = async () => {
+      try {
+        permission = await navigator.permissions?.query({
+          name: "camera" as PermissionName,
+        });
+      } catch {
+        permission = null;
+      }
+      if (permission) {
+        permission.addEventListener?.("change", updatePermission);
+        await updatePermission();
+        return;
+      }
+      try {
+        const mediaDevices = await navigator.mediaDevices.enumerateDevices();
+        const devices = videoDevices(mediaDevices);
+        if (!cancelled) {
+          setCameras(devices);
+          setCameraAccess(
+            mediaDevices.some(
+              (device) =>
+                device.kind === "videoinput" && device.label.trim().length > 0,
+            )
+              ? "granted"
+              : "idle",
+          );
+        }
+      } catch {
+        if (!cancelled) {
+          setCameraAccess("idle");
+        }
+      }
+    };
+    void inspectPermission();
+    return () => {
+      cancelled = true;
+      permission?.removeEventListener?.("change", updatePermission);
+    };
+  }, [open, sourceMode]);
+
+  useEffect(() => {
     if (!open) {
       return;
     }
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        onClose();
+        close();
       }
     }
     window.addEventListener("keydown", handleKeyDown);
@@ -135,16 +247,13 @@ export function CameraSimulationModal({
     return () => stopCameraFeed(true);
   }, [stopCameraFeed, udid]);
 
-  const activeBundleText = useMemo(() => {
-    const bundleIds = status?.bundleIds ?? [];
-    if (bundleIds.length === 0) {
-      return status?.alive ? "daemon running" : "not running";
+  const statusText = useMemo(() => {
+    if (!status?.alive) {
+      return "not running";
     }
-    return bundleIds.join(", ");
+    return status.sourceLabel ? `running · ${status.sourceLabel}` : "running";
   }, [status]);
-  const updatesRunningSimulation = Boolean(
-    status?.alive && status.bundleIds?.includes(bundleId.trim()),
-  );
+  const updatesRunningCamera = Boolean(status?.alive);
 
   if (!open) {
     return null;
@@ -233,6 +342,7 @@ export function CameraSimulationModal({
     const selectedId = stream.getVideoTracks()[0]?.getSettings().deviceId ?? "";
     if (selectedId) {
       setCameraId(selectedId);
+      storeCameraId(selectedId);
     }
     const devices = videoDevices(
       await navigator.mediaDevices.enumerateDevices(),
@@ -269,15 +379,7 @@ export function CameraSimulationModal({
   async function apply(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedSimulator?.isBooted) {
-      setError(
-        "Boot the selected simulator before enabling camera simulation.",
-      );
-      return;
-    }
-    if (!bundleId.trim()) {
-      setError(
-        "Enter the app bundle identifier to relaunch with camera simulation.",
-      );
+      setError("Boot the selected simulator before starting the camera.");
       return;
     }
     setIsApplying(true);
@@ -287,13 +389,12 @@ export function CameraSimulationModal({
       if (sourceMode === "camera") {
         stream = await cameraStream();
       }
-      const nextStatus = updatesRunningSimulation
+      const nextStatus = updatesRunningCamera
         ? await switchCameraSimulationSource(udid, {
             mirror,
             source: requestSource(),
           })
         : await startCameraSimulation(udid, {
-            bundleId: bundleId.trim(),
             mirror,
             source: requestSource(),
           });
@@ -319,7 +420,7 @@ export function CameraSimulationModal({
           ? cameraAccessError(applyError)
           : applyError instanceof Error
             ? applyError.message
-            : "Unable to start camera simulation.",
+            : "Unable to start the camera.",
       );
     } finally {
       setIsApplying(false);
@@ -337,11 +438,18 @@ export function CameraSimulationModal({
       setError(
         stopError instanceof Error
           ? stopError.message
-          : "Unable to stop camera simulation.",
+          : "Unable to stop the camera.",
       );
     } finally {
       setIsStopping(false);
     }
+  }
+
+  function close() {
+    if (!cameraFeedRef.current) {
+      stopCameraFeed(true);
+    }
+    onClose();
   }
 
   return (
@@ -349,7 +457,7 @@ export function CameraSimulationModal({
       className="new-sim-overlay"
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) {
-          onClose();
+          close();
         }
       }}
     >
@@ -366,7 +474,7 @@ export function CameraSimulationModal({
             <span className="new-sim-window-dot minimize" />
             <span className="new-sim-window-dot zoom" />
           </span>
-          <h2 id="camera-sim-title">Camera Simulation</h2>
+          <h2 id="camera-sim-title">Camera</h2>
         </div>
 
         <div className="new-sim-body">
@@ -400,17 +508,6 @@ export function CameraSimulationModal({
             className="new-sim-fieldset camera-sim-fieldset"
             disabled={isApplying || isStopping}
           >
-            <label className="new-sim-field">
-              <span>Bundle ID:</span>
-              <input
-                autoCapitalize="none"
-                autoCorrect="off"
-                autoFocus
-                onChange={(event) => setBundleId(event.currentTarget.value)}
-                placeholder="com.example.app"
-                value={bundleId}
-              />
-            </label>
             {sourceMode === "media" ? (
               <label className="new-sim-field">
                 <span>File or URL:</span>
@@ -428,7 +525,11 @@ export function CameraSimulationModal({
                 <label className="new-sim-field">
                   <span>Camera:</span>
                   <select
-                    onChange={(event) => setCameraId(event.currentTarget.value)}
+                    onChange={(event) => {
+                      const nextCameraId = event.currentTarget.value;
+                      setCameraId(nextCameraId);
+                      storeCameraId(nextCameraId);
+                    }}
                     value={cameraId}
                   >
                     <option value="">System default</option>
@@ -486,9 +587,7 @@ export function CameraSimulationModal({
               </select>
             </label>
             <p className="new-sim-status camera-sim-status">
-              {isLoading
-                ? "Loading camera status..."
-                : `Status: ${activeBundleText}`}
+              {isLoading ? "Loading camera status..." : `Status: ${statusText}`}
             </p>
             {cameraStats ? (
               <p className="new-sim-status camera-sim-transport-status">
@@ -508,7 +607,7 @@ export function CameraSimulationModal({
           <button
             className="new-sim-button"
             disabled={isApplying || isStopping}
-            onClick={onClose}
+            onClick={close}
             type="button"
           >
             Close
@@ -520,7 +619,7 @@ export function CameraSimulationModal({
               onClick={stop}
               type="button"
             >
-              {isStopping ? "Stopping..." : "Stop simulation"}
+              {isStopping ? "Stopping..." : "Stop"}
             </button>
           ) : null}
           <span className="new-sim-action-spacer" />
@@ -530,17 +629,58 @@ export function CameraSimulationModal({
             type="submit"
           >
             {isApplying
-              ? updatesRunningSimulation
+              ? updatesRunningCamera
                 ? "Updating..."
                 : "Starting..."
-              : updatesRunningSimulation
+              : updatesRunningCamera
                 ? "Update source"
-                : "Start simulation"}
+                : "Start Camera"}
           </button>
         </div>
       </form>
     </div>
   );
+}
+
+function storedCameraId(): string {
+  try {
+    return window.localStorage.getItem(CAMERA_DEVICE_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function storeCameraId(cameraId: string) {
+  try {
+    if (cameraId) {
+      window.localStorage.setItem(CAMERA_DEVICE_STORAGE_KEY, cameraId);
+    } else {
+      window.localStorage.removeItem(CAMERA_DEVICE_STORAGE_KEY);
+    }
+  } catch {
+    return;
+  }
+}
+
+async function cameraPermissionWasGranted(): Promise<boolean> {
+  try {
+    const permission = await navigator.permissions?.query({
+      name: "camera" as PermissionName,
+    });
+    if (permission) {
+      return permission.state === "granted";
+    }
+  } catch {
+    // Browsers without camera permission queries expose device labels after a grant.
+  }
+  try {
+    return (await navigator.mediaDevices.enumerateDevices()).some(
+      (device) =>
+        device.kind === "videoinput" && device.label.trim().length > 0,
+    );
+  } catch {
+    return false;
+  }
 }
 
 function looksLikeVideo(value: string): boolean {

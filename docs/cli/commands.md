@@ -85,12 +85,10 @@ simdeck open-url https://example.com
 simdeck toggle-appearance
 ```
 
-## Camera Simulation
+## Camera
 
 ```sh
-simdeck camera sources
-simdeck camera start com.example.App --file /absolute/path/to/feed.mov --mirror off
-simdeck camera start com.example.App --webcam
+simdeck camera start --file /absolute/path/to/feed.mov --mirror off
 simdeck camera switch --placeholder
 simdeck camera switch --file /absolute/path/to/frame.png
 simdeck camera status
@@ -98,7 +96,7 @@ simdeck camera stop
 ```
 
 `camera start` is iOS-simulator-only. It starts the daemon-owned camera feed,
-relaunches the target bundle with the SimDeck camera injector, and makes
+relaunches the foreground app with the SimDeck camera injector, and makes
 `AVCaptureDevice`, `AVCaptureVideoDataOutput`, `AVCapturePhotoOutput`, and
 `AVCaptureVideoPreviewLayer` consume the simulated feed. `camera switch` changes
 the running daemon source without relaunching the app. Media files must use

@@ -136,21 +136,20 @@ Launch apps and open URLs through `/api/simulators/{udid}/action` with
 `{ "action": "launch", "bundleId": "com.example.App" }` or
 `{ "action": "openUrl", "url": "https://example.com" }`.
 
-## Camera Simulation
+## Camera
 
-| Method   | Path                                   | Purpose                                   |
-| -------- | -------------------------------------- | ----------------------------------------- |
-| `GET`    | `/api/camera/webcams`                  | List available Mac camera sources         |
-| `GET`    | `/api/simulators/{udid}/camera`        | Get daemon camera feed status             |
-| `POST`   | `/api/simulators/{udid}/camera`        | Start feed and optionally relaunch an app |
-| `POST`   | `/api/simulators/{udid}/camera/source` | Switch the running daemon source          |
-| `DELETE` | `/api/simulators/{udid}/camera`        | Stop the daemon camera feed               |
+| Method   | Path                                   | Purpose                                       |
+| -------- | -------------------------------------- | --------------------------------------------- |
+| `GET`    | `/api/simulators/{udid}/camera`        | Get daemon camera feed status                 |
+| `POST`   | `/api/simulators/{udid}/camera`        | Start the feed for the foreground app         |
+| `POST`   | `/api/simulators/{udid}/camera/source` | Switch the running daemon source              |
+| `GET`    | `/api/simulators/{udid}/camera/stream` | Stream browser H.264 packets over a WebSocket |
+| `DELETE` | `/api/simulators/{udid}/camera`        | Stop the daemon camera feed                   |
 
 Start request:
 
 ```json
 {
-  "bundleId": "com.example.App",
   "mirror": "off",
   "source": {
     "kind": "video",
@@ -159,11 +158,10 @@ Start request:
 }
 ```
 
-Source `kind` is `placeholder`, `image`, `video`, or `webcam`. Image and video
+Source `kind` is `placeholder`, `image`, `video`, or `camera`. Image and video
 sources require `arg`; local files must be absolute paths. Video sources also
-accept `http://`, `https://`, and `file://` URLs. `webcam` can omit `arg` to use
-the first available Mac camera, or pass a camera ID/name from `/api/camera/webcams`.
-`mirror` is `auto`, `on`, or `off`.
+accept `http://`, `https://`, and `file://` URLs. Browser camera frames use the
+`camera` source and the camera WebSocket. `mirror` is `auto`, `on`, or `off`.
 
 ## Performance
 

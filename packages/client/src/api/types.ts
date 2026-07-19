@@ -253,7 +253,6 @@ export interface CameraSourceRequest {
 }
 
 export interface CameraStartRequest {
-  bundleId?: string;
   source: CameraSourceRequest;
   mirror?: "auto" | "on" | "off";
 }

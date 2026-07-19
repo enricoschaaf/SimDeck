@@ -66,18 +66,17 @@ Supported commands include `launchApp`, `openLink`, `tapOn`, `inputText`, `erase
 
 ## Camera Apps
 
-For iOS apps that use `AVFoundation`, start camera simulation before running the
+For iOS apps that use `AVFoundation`, start the camera before running the
 camera workflow:
 
 ```sh
-simdeck camera start com.example.App --file /absolute/path/to/feed.mov --mirror off
+simdeck camera start --file /absolute/path/to/feed.mov --mirror off
 simdeck camera switch --placeholder
 simdeck camera stop
 ```
 
-The browser UI exposes the same controls from **Camera Simulation...** in the
-simulator menu. Webcam forwarding is available with `--webcam` when macOS has an
-available camera and has granted camera permission to SimDeck.
+The browser UI exposes the same controls from **Camera...** in the simulator
+menu and can stream a camera available to that browser.
 
 ## Repository tests
 

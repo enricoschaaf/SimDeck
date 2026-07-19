@@ -3905,9 +3905,6 @@ export function AppShell({
         selectedSimulator={selectedSimulator}
       />
       <CameraSimulationModal
-        foregroundBundleId={
-          selectedSimulatorState?.foregroundApp?.bundleIdentifier ?? null
-        }
         onClose={() => setCameraSimulationOpen(false)}
         open={cameraSimulationOpen}
         selectedSimulator={selectedSimulator}
