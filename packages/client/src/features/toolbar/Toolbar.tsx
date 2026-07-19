@@ -44,6 +44,7 @@ interface ToolbarProps {
   onHome: () => void;
   onInstallAppPrompt: () => void;
   onOpenCameraSimulation: () => void;
+  onOpenFilesMedia: () => void;
   onOpenAppSwitcher: () => void;
   onOpenBundlePrompt: () => void;
   onOpenNewSimulator: () => void;
@@ -112,6 +113,7 @@ export function Toolbar({
   onHome,
   onInstallAppPrompt,
   onOpenCameraSimulation,
+  onOpenFilesMedia,
   onOpenAppSwitcher,
   onOpenBundlePrompt,
   onOpenNewSimulator,
@@ -196,6 +198,7 @@ export function Toolbar({
           onHome={onHome}
           onInstallAppPrompt={onInstallAppPrompt}
           onOpenCameraSimulation={onOpenCameraSimulation}
+          onOpenFilesMedia={onOpenFilesMedia}
           onOpenAppSwitcher={onOpenAppSwitcher}
           onOpenBundlePrompt={onOpenBundlePrompt}
           onOpenUrlPrompt={onOpenUrlPrompt}

@@ -44,6 +44,12 @@ import type {
 } from "../api/types";
 import { AccessibilityInspector } from "../features/accessibility/AccessibilityInspector";
 import { DevToolsPanel } from "../features/devtools/DevToolsPanel";
+import {
+  FilesMediaPanel,
+  filesMediaTabForSurface,
+  shouldAutoOpenFilesMedia,
+  type FilesMediaTab,
+} from "../features/files/FilesMediaPanel";
 import { normalizedClientCoordinates } from "../features/input/gestureMath";
 import { isEditableTarget } from "../features/input/keycodes";
 import { useKeyboardInput } from "../features/input/useKeyboardInput";
@@ -122,6 +128,7 @@ import {
 import {
   isMoveControlMessage,
   parseControlServerEvent,
+  type ControlServerEvent,
 } from "./controlMessages";
 
 const ACCESSIBILITY_REFRESH_MS = 1500;
@@ -556,6 +563,10 @@ export function AppShell({
   const [newSimulatorOpen, setNewSimulatorOpen] = useState(false);
   const [cameraSimulationOpen, setCameraSimulationOpen] = useState(false);
   const [deepLinkOpen, setDeepLinkOpen] = useState(false);
+  const [filesMediaVisible, setFilesMediaVisible] = useState(false);
+  const [filesMediaTab, setFilesMediaTab] = useState<FilesMediaTab>("files");
+  const [filesMediaEvent, setFilesMediaEvent] =
+    useState<ControlServerEvent | null>(null);
   const [localError, setLocalError] = useState("");
   const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(
     null,
@@ -639,6 +650,20 @@ export function AppShell({
     useState<SimulatorStateResponse | null>(null);
 
   useEffect(() => {
+    const surface = selectedSimulatorState?.systemSurface;
+    if (
+      !shouldAutoOpenFilesMedia(surface, dismissedFilesMediaSessionsRef.current)
+    ) {
+      return;
+    }
+    setFilesMediaTab(filesMediaTabForSurface(surface));
+    setFilesMediaVisible(true);
+  }, [
+    selectedSimulatorState?.systemSurface?.kind,
+    selectedSimulatorState?.systemSurface?.sessionId,
+  ]);
+
+  useEffect(() => {
     if (window.parent === window) {
       return;
     }
@@ -669,6 +694,7 @@ export function AppShell({
   const appInstallDragDepthRef = useRef(0);
   const appInstallStatusTimeoutRef = useRef(0);
   const captureStatusTimeoutRef = useRef(0);
+  const dismissedFilesMediaSessionsRef = useRef(new Set<string>());
   const outerCanvasRef = useRef<HTMLDivElement | null>(null);
   const streamCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [outerCanvasElement, setOuterCanvasElement] =
@@ -2548,11 +2574,24 @@ export function AppShell({
       if (!message || message.udid !== udid) {
         return;
       }
-      setSelectedSimulatorState((current) =>
-        current?.udid === udid
-          ? { ...current, systemSurface: message.systemSurface }
-          : current,
-      );
+      if (message.type === "system-surface.changed") {
+        setSelectedSimulatorState((current) =>
+          current?.udid === udid
+            ? { ...current, systemSurface: message.systemSurface }
+            : current,
+        );
+        if (
+          shouldAutoOpenFilesMedia(
+            message.systemSurface,
+            dismissedFilesMediaSessionsRef.current,
+          )
+        ) {
+          setFilesMediaTab(filesMediaTabForSurface(message.systemSurface));
+          setFilesMediaVisible(true);
+        }
+        return;
+      }
+      setFilesMediaEvent(message);
     });
 
     return state;
@@ -3801,6 +3840,13 @@ export function AppShell({
           setMenuOpen(false);
           setCameraSimulationOpen(true);
         }}
+        onOpenFilesMedia={() => {
+          setMenuOpen(false);
+          setFilesMediaTab(
+            filesMediaTabForSurface(selectedSimulatorState?.systemSurface),
+          );
+          setFilesMediaVisible(true);
+        }}
         onOpenAppSwitcher={() => {
           if (!selectedSimulator) {
             return;
@@ -4057,6 +4103,24 @@ export function AppShell({
             onClose={() => setDevToolsVisible(false)}
             selectedSimulator={selectedSimulator}
             visible={devToolsVisible}
+          />
+        }
+        filesMediaPanel={
+          <FilesMediaPanel
+            activeSurface={selectedSimulatorState?.systemSurface}
+            activeTab={filesMediaTab}
+            event={filesMediaEvent}
+            onActiveTabChange={setFilesMediaTab}
+            onClose={() => {
+              const sessionId =
+                selectedSimulatorState?.systemSurface?.sessionId;
+              if (sessionId) {
+                dismissedFilesMediaSessionsRef.current.add(sessionId);
+              }
+              setFilesMediaVisible(false);
+            }}
+            selectedSimulator={selectedSimulator}
+            visible={filesMediaVisible}
           />
         }
         zoomDockRef={handleZoomDockRef}

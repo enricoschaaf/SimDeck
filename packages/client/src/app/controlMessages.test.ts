@@ -73,31 +73,86 @@ describe("controlMessages", () => {
         sessionId: "surface-a",
       },
     });
+    const closing = parseControlServerEvent(
+      JSON.stringify({
+        type: "system-surface.changed",
+        udid: "device-a",
+        systemSurface: null,
+      }),
+    );
+    expect(closing?.type).toBe("system-surface.changed");
     expect(
-      parseControlServerEvent(
-        JSON.stringify({
-          type: "system-surface.changed",
-          udid: "device-a",
-          systemSurface: null,
-        }),
-      )?.systemSurface,
+      closing?.type === "system-surface.changed"
+        ? closing.systemSurface
+        : undefined,
     ).toBeNull();
   });
 
   it("parses photo picker surface events", () => {
+    const opening = parseControlServerEvent(
+      JSON.stringify({
+        type: "system-surface.changed",
+        udid: "device-a",
+        systemSurface: {
+          kind: "photoPicker",
+          processIdentifier: 456,
+          sessionId: "surface-photo",
+        },
+      }),
+    );
+    expect(
+      opening?.type === "system-surface.changed"
+        ? opening.systemSurface?.kind
+        : undefined,
+    ).toBe("photoPicker");
+  });
+
+  it("parses file changes and media transfer evidence", () => {
     expect(
       parseControlServerEvent(
         JSON.stringify({
-          type: "system-surface.changed",
+          type: "file.created",
           udid: "device-a",
-          systemSurface: {
-            kind: "photoPicker",
-            processIdentifier: 456,
-            sessionId: "surface-photo",
+          source: "native",
+          item: {
+            id: "file-a",
+            parentId: "root",
+            name: "Décompte.pdf",
+            kind: "file",
+            size: 42,
+            createdAt: 1,
+            modifiedAt: 1,
+            version: 1,
           },
         }),
-      )?.systemSurface?.kind,
-    ).toBe("photoPicker");
+      )?.type,
+    ).toBe("file.created");
+    expect(
+      parseControlServerEvent(
+        JSON.stringify({
+          type: "media.import-completed",
+          udid: "device-a",
+          transferId: "transfer-a",
+          fileName: "photo.png",
+          bytesTransferred: 42,
+          totalBytes: 42,
+        }),
+      )?.type,
+    ).toBe("media.import-completed");
+    expect(
+      parseControlServerEvent(
+        JSON.stringify({
+          type: "file.transfer-progress",
+          udid: "device-a",
+          transferId: "transfer-b",
+          fileName: "Décompte.pdf",
+          direction: "upload",
+          status: "completed",
+          bytesTransferred: 42,
+          totalBytes: 42,
+        }),
+      ),
+    ).toMatchObject({ status: "completed" });
   });
 
   it("rejects unknown and malformed server events", () => {
@@ -113,6 +168,17 @@ describe("controlMessages", () => {
           type: "system-surface.changed",
           udid: "device-a",
           systemSurface: { kind: "documentPicker" },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseControlServerEvent(
+        JSON.stringify({
+          type: "file.transfer-progress",
+          udid: "device-a",
+          transferId: "transfer-b",
+          fileName: "file.txt",
+          bytesTransferred: 42,
         }),
       ),
     ).toBeNull();
