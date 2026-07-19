@@ -1644,6 +1644,9 @@ function cleanup() {
     } catch {}
     if (!keepSimulator) {
       try {
+        simdeckJson(["shutdown", simulatorUDID], { timeoutMs: 120_000 });
+      } catch {}
+      try {
         runText("xcrun", ["simctl", "shutdown", simulatorUDID], {
           allowFailure: true,
           timeoutMs: 120_000,
@@ -1656,6 +1659,7 @@ function cleanup() {
         });
       } catch {}
     }
+    simulatorUDID = "";
   }
   cleanupSecondarySimulator();
   if (!keepSimulator) {
@@ -1675,6 +1679,11 @@ function cleanupSecondarySimulator() {
     });
   } catch {}
   if (!keepSimulator) {
+    try {
+      simdeckJson(["shutdown", secondarySimulatorUDID], {
+        timeoutMs: 120_000,
+      });
+    } catch {}
     try {
       runText("xcrun", ["simctl", "shutdown", secondarySimulatorUDID], {
         allowFailure: true,
