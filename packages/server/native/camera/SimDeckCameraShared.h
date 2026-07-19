@@ -46,7 +46,7 @@ typedef struct SimDeckCameraHeader {
     uint32_t yCbCrMatrix;
     uint32_t orientation;
     uint32_t sourceKind;
-    uint32_t mirrorMode;
+    volatile uint32_t mirrorMode;
     uint32_t ringSlot;
     uint32_t ringSize;
     uint32_t surfaceIds[SIMDECK_CAMERA_SURFACE_RING_SIZE];
@@ -63,6 +63,14 @@ typedef struct SimDeckCameraHeader {
     volatile uint64_t consumerDroppedFrames;
     char sourceLabel[240];
 } SimDeckCameraHeader;
+
+static inline uint32_t SimDeckCameraLoadMirrorMode(const SimDeckCameraHeader *header) {
+    return __atomic_load_n(&header->mirrorMode, __ATOMIC_ACQUIRE);
+}
+
+static inline void SimDeckCameraStoreMirrorMode(SimDeckCameraHeader *header, uint32_t value) {
+    __atomic_store_n(&header->mirrorMode, value, __ATOMIC_RELEASE);
+}
 
 static inline uint64_t SimDeckCameraBufferSize(void) {
     return (uint64_t)SIMDECK_CAMERA_HEADER_SIZE;

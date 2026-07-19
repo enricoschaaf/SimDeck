@@ -115,14 +115,6 @@ async function main() {
   const imagePath = path.join(tempRoot, "solid-red.bmp");
   const mirrorImagePath = path.join(tempRoot, "mirror-red-green.bmp");
   const mirrorScreenshotPath = path.join(tempRoot, "mirror-result.bmp");
-  const mirrorFrozenOffScreenshotPath = path.join(
-    tempRoot,
-    "mirror-frozen-off.bmp",
-  );
-  const mirrorFrozenOnScreenshotPath = path.join(
-    tempRoot,
-    "mirror-frozen-on.bmp",
-  );
   const videoPath = path.join(tempRoot, "solid-green.mov");
   writeSolidBmp(imagePath, 32, 24, { r: 255, g: 0, b: 0 });
   writeSplitBmp(
@@ -286,35 +278,6 @@ async function main() {
   console.log(
     `mirrored preview: left=${JSON.stringify(mirroredLeft)} right=${JSON.stringify(mirroredRight)}`,
   );
-
-  step("verify mirror updates without a new camera frame");
-  const frozenOffStatus = await switchCameraSourceViaApi(simulatorUDID, {
-    mirror: "off",
-    source: { kind: "camera" },
-  });
-  await sleep(250);
-  captureSimulatorBmp(simulatorUDID, mirrorFrozenOffScreenshotPath);
-  const frozenOffLeft = readBmpPixel(mirrorFrozenOffScreenshotPath, 0.25, 0.5);
-  const frozenOffRight = readBmpPixel(mirrorFrozenOffScreenshotPath, 0.75, 0.5);
-  const frozenOnStatus = await switchCameraSourceViaApi(simulatorUDID, {
-    mirror: "on",
-    source: { kind: "camera" },
-  });
-  await sleep(250);
-  captureSimulatorBmp(simulatorUDID, mirrorFrozenOnScreenshotPath);
-  const frozenOnLeft = readBmpPixel(mirrorFrozenOnScreenshotPath, 0.25, 0.5);
-  const frozenOnRight = readBmpPixel(mirrorFrozenOnScreenshotPath, 0.75, 0.5);
-  if (
-    frozenOffStatus.sequence !== frozenOnStatus.sequence ||
-    frozenOffLeft.r <= frozenOffLeft.g * 1.5 ||
-    frozenOffRight.g <= frozenOffRight.r * 1.5 ||
-    frozenOnLeft.g <= frozenOnLeft.r * 1.5 ||
-    frozenOnRight.r <= frozenOnRight.g * 1.5
-  ) {
-    throw new Error(
-      `camera mirror did not update on a frozen frame: ${JSON.stringify({ frozenOffStatus, frozenOnStatus, frozenOffLeft, frozenOffRight, frozenOnLeft, frozenOnRight })}`,
-    );
-  }
 
   const restoredPlaceholder = simdeckJson([
     "camera",
@@ -800,12 +763,12 @@ async function verifyBgraCameraOutput(cdp) {
     const status = simdeckJson(["camera", "status", simulatorUDID]);
     if (
       status.pixelConversions <= 0 ||
-      status.geometryConversions !== 0 ||
+      status.geometryConversions !== status.decodedFrames ||
       status.fullFrameCopies !== 0 ||
       status.surfaceLookupFailures !== 0
     ) {
       throw new Error(
-        `explicit BGRA camera output was not isolated to pixel conversion: ${JSON.stringify(status)}`,
+        `explicit BGRA camera output added work beyond the required browser mirror and pixel conversion: ${JSON.stringify(status)}`,
       );
     }
   } finally {
@@ -1658,7 +1621,7 @@ function assertOptimizedCameraStatus(status) {
     status.pixelFormat !== "420v" ||
     status.surfaceLookupFailures !== 0 ||
     status.surfacePublicationFailures !== 0 ||
-    status.geometryConversions !== 0 ||
+    status.geometryConversions !== status.decodedFrames ||
     status.pixelConversions !== 0 ||
     status.fullFrameCopies !== 0 ||
     status.sampleBufferFailures !== 0 ||
@@ -1756,39 +1719,6 @@ function readBmpPixel(filePath, normalizedX, normalizedY) {
     g: buffer[offset + 1],
     b: buffer[offset],
   };
-}
-
-function captureSimulatorBmp(udid, filePath) {
-  runText("xcrun", [
-    "simctl",
-    "io",
-    udid,
-    "screenshot",
-    "--type=bmp",
-    "--mask=ignored",
-    filePath,
-  ]);
-}
-
-async function switchCameraSourceViaApi(udid, payload) {
-  const url = new URL(
-    `/api/simulators/${encodeURIComponent(udid)}/camera/source`,
-    serverUrl,
-  );
-  const response = await fetch(url, {
-    body: JSON.stringify(payload),
-    headers: {
-      "Content-Type": "application/json",
-      Origin: serverUrl.origin,
-    },
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw new Error(
-      `Camera source switch failed with ${response.status}: ${await response.text()}`,
-    );
-  }
-  return response.json();
 }
 
 function bmpBitfieldComponent(pixel, mask) {

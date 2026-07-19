@@ -513,6 +513,61 @@ static BOOL PublishImageAtPath(SimDeckCameraContext *context, NSString *path, NS
     return published;
 }
 
+static BOOL MirrorBrowserPixelBufferInPlace(CVPixelBufferRef pixelBuffer) {
+    if (CVPixelBufferLockBaseAddress(pixelBuffer, 0) != kCVReturnSuccess) return NO;
+    OSType format = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    BOOL mirrored = YES;
+    if (format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+        format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
+        size_t yWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0);
+        size_t yHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0);
+        size_t yStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
+        uint8_t *yBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+        for (size_t y = 0; y < yHeight; y += 1) {
+            uint8_t *row = yBase + y * yStride;
+            for (size_t x = 0; x < yWidth / 2; x += 1) {
+                uint8_t value = row[x];
+                row[x] = row[yWidth - x - 1];
+                row[yWidth - x - 1] = value;
+            }
+        }
+        size_t chromaWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 1);
+        size_t chromaHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1);
+        size_t chromaStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+        uint8_t *chromaBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+        for (size_t y = 0; y < chromaHeight; y += 1) {
+            uint8_t *row = chromaBase + y * chromaStride;
+            for (size_t x = 0; x < chromaWidth / 2; x += 1) {
+                size_t left = x * 2;
+                size_t right = (chromaWidth - x - 1) * 2;
+                uint8_t cb = row[left];
+                uint8_t cr = row[left + 1];
+                row[left] = row[right];
+                row[left + 1] = row[right + 1];
+                row[right] = cb;
+                row[right + 1] = cr;
+            }
+        }
+    } else if (format == kCVPixelFormatType_32BGRA) {
+        size_t width = CVPixelBufferGetWidth(pixelBuffer);
+        size_t height = CVPixelBufferGetHeight(pixelBuffer);
+        size_t stride = CVPixelBufferGetBytesPerRow(pixelBuffer);
+        uint8_t *base = CVPixelBufferGetBaseAddress(pixelBuffer);
+        for (size_t y = 0; y < height; y += 1) {
+            uint32_t *row = (uint32_t *)(base + y * stride);
+            for (size_t x = 0; x < width / 2; x += 1) {
+                uint32_t value = row[x];
+                row[x] = row[width - x - 1];
+                row[width - x - 1] = value;
+            }
+        }
+    } else {
+        mirrored = NO;
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    return mirrored;
+}
+
 static BOOL CanDecodeImageAtPath(NSString *path, NSString **error) {
     NSImage *image = [[NSImage alloc] initWithContentsOfFile:path];
     if ([image CGImageForProposedRect:NULL context:nil hints:nil]) {
@@ -527,6 +582,11 @@ static void PublishBrowserPixelBuffer(SimDeckCameraContext *context,
                                       uint64_t assembledTimestampNs,
                                       uint64_t decodedTimestampNs) {
     if (!pixelBuffer || !context->header || context->sourceKind != SIMDECK_CAMERA_SOURCE_CAMERA) return;
+    if (!MirrorBrowserPixelBufferInPlace(pixelBuffer)) {
+        atomic_fetch_add(&context->droppedFrames, 1);
+        return;
+    }
+    context->header->geometryConversions += 1;
     if (!PublishSurface(context, pixelBuffer, SIMDECK_CAMERA_SOURCE_CAMERA, @"camera")) return;
     uint64_t publishedTimestampNs = NowNs();
     atomic_fetch_add(&context->browserPublishedFrames, 1);
@@ -1006,7 +1066,7 @@ static NSDictionary *StatusPayload(SimDeckCameraContext *context, BOOL ok, NSStr
         @"ok": @(ok),
         @"alive": @YES,
         @"source": context->sourceName ?: SourceNameForKind(context->sourceKind),
-        @"mirror": context->header ? MirrorName(context->header->mirrorMode) : @"auto",
+        @"mirror": context->header ? MirrorName(SimDeckCameraLoadMirrorMode(context->header)) : @"auto",
         @"width": @(context->width),
         @"height": @(context->height),
         @"processId": @((int)getpid()),
@@ -1096,7 +1156,7 @@ static int OpenSharedMemory(SimDeckCameraContext *context) {
     context->header->pixelFormat = kCVPixelFormatType_32BGRA;
     context->header->colorRange = SIMDECK_CAMERA_COLOR_RANGE_FULL;
     context->header->orientation = SIMDECK_CAMERA_ORIENTATION_UP;
-    context->header->mirrorMode = SIMDECK_CAMERA_MIRROR_AUTO;
+    SimDeckCameraStoreMirrorMode(context->header, SIMDECK_CAMERA_MIRROR_AUTO);
     context->header->ringSize = SIMDECK_CAMERA_SURFACE_RING_SIZE;
     context->surfaceGeneration = 1;
     context->nextSurfaceSlot = 0;
@@ -1202,7 +1262,8 @@ bool simdeck_camera_start(const char *udid,
                     return;
                 }
                 if (context->header) {
-                    context->header->mirrorMode = MirrorModeForName(StringFromCString(mirror));
+                    SimDeckCameraStoreMirrorMode(context->header,
+                                                 MirrorModeForName(StringFromCString(mirror)));
                 }
                 if (!SwitchSource(context,
                                   StringFromCString(source),
@@ -1260,17 +1321,18 @@ char *simdeck_camera_switch(const char *udid,
                 }
                 BOOL hasMirrorUpdate = mirror && mirror[0] && context->header;
                 uint32_t previousMirrorMode = hasMirrorUpdate
-                    ? context->header->mirrorMode
+                    ? SimDeckCameraLoadMirrorMode(context->header)
                     : SIMDECK_CAMERA_MIRROR_AUTO;
                 if (mirror && mirror[0] && context->header) {
-                    context->header->mirrorMode = MirrorModeForName(StringFromCString(mirror));
+                    SimDeckCameraStoreMirrorMode(context->header,
+                                                 MirrorModeForName(StringFromCString(mirror)));
                 }
                 if (source && source[0] && !SwitchSource(context,
                                                          StringFromCString(source),
                                                          StringFromCString(sourceArgument),
                                                          &nativeError)) {
                     if (hasMirrorUpdate && context->header) {
-                        context->header->mirrorMode = previousMirrorMode;
+                        SimDeckCameraStoreMirrorMode(context->header, previousMirrorMode);
                     }
                     return;
                 }

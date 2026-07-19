@@ -172,7 +172,8 @@ static void RegisterOutputLayer(CALayer *host) {
     }
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    [layer setAffineTransform:gHeader && gHeader->mirrorMode == SIMDECK_CAMERA_MIRROR_ON
+    [layer setAffineTransform:gHeader && gHeader->sourceKind != SIMDECK_CAMERA_SOURCE_CAMERA &&
+                                        SimDeckCameraLoadMirrorMode(gHeader) == SIMDECK_CAMERA_MIRROR_ON
         ? CGAffineTransformMakeScale(-1, 1)
         : CGAffineTransformIdentity];
     [CATransaction commit];
@@ -182,28 +183,6 @@ static void RegisterPreviewLayer(CALayer *layer) {
     if (!layer) return;
     RegisterOutputLayer(layer);
     DebugLog(@"installed sample-buffer preview layer on %@", NSStringFromClass(object_getClass(layer)));
-}
-
-static void ApplyPreviewMirroringIfNeeded(void) {
-    if (!gHeader) return;
-    uint32_t mirrorMode = gHeader->mirrorMode;
-    if (mirrorMode == gLastAppliedMirrorMode) return;
-    gLastAppliedMirrorMode = mirrorMode;
-    NSArray<AVSampleBufferDisplayLayer *> *layers = nil;
-    @synchronized(gPreviewLayers) {
-        layers = gPreviewLayers.allObjects;
-    }
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        CGAffineTransform transform = mirrorMode == SIMDECK_CAMERA_MIRROR_ON
-            ? CGAffineTransformMakeScale(-1, 1)
-            : CGAffineTransformIdentity;
-        for (AVSampleBufferDisplayLayer *layer in layers) {
-            [layer setAffineTransform:transform];
-        }
-        [CATransaction commit];
-    });
 }
 
 static void SimDeckSetVideoSettings(AVCaptureVideoDataOutput *output,
@@ -290,6 +269,7 @@ typedef struct {
     uint64_t generation;
     uint64_t sequence;
     uint64_t timestampNs;
+    uint32_t sourceKind;
     uint32_t mirrorMode;
     uint32_t ringSlot;
     uint32_t surfaceID;
@@ -361,7 +341,8 @@ static CVPixelBufferRef CurrentPixelBuffer(BOOL requireNewFrame,
         descriptor.generation = gHeader->generation;
         descriptor.sequence = before;
         descriptor.timestampNs = gHeader->timestampNs;
-        descriptor.mirrorMode = gHeader->mirrorMode;
+        descriptor.sourceKind = gHeader->sourceKind;
+        descriptor.mirrorMode = SimDeckCameraLoadMirrorMode(gHeader);
         descriptor.ringSlot = slot;
         descriptor.surfaceID = gHeader->surfaceIds[slot];
         uint64_t after = gHeader->sequence;
@@ -568,9 +549,14 @@ static void DeliverSample(CMSampleBufferRef sample, AVCaptureVideoDataOutput *ou
 }
 
 static void DeliverFrame(void) {
-    ApplyPreviewMirroringIfNeeded();
+    BOOL mirrorChanged = NO;
+    if (OpenSharedCamera()) {
+        uint32_t mirrorMode = SimDeckCameraLoadMirrorMode(gHeader);
+        mirrorChanged = mirrorMode != gLastAppliedMirrorMode;
+        gLastAppliedMirrorMode = mirrorMode;
+    }
     SimDeckFrameDescriptor descriptor = {0};
-    CVPixelBufferRef pixelBuffer = CurrentPixelBuffer(YES, &descriptor);
+    CVPixelBufferRef pixelBuffer = CurrentPixelBuffer(!mirrorChanged, &descriptor);
     if (!pixelBuffer) return;
     OSType sourceFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
     uint64_t presentationTimestampNs = (uint64_t)(CACurrentMediaTime() * 1000000000.0);
@@ -619,7 +605,8 @@ static void DeliverFrame(void) {
                 if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
                     [layer flush];
                 }
-                [layer setAffineTransform:descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON
+                [layer setAffineTransform:descriptor.sourceKind != SIMDECK_CAMERA_SOURCE_CAMERA &&
+                                            descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON
                     ? CGAffineTransformMakeScale(-1, 1)
                     : CGAffineTransformIdentity];
                 [layer enqueueSampleBuffer:sourceSample];
