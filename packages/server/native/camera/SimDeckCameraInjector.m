@@ -49,6 +49,7 @@ static char kOutputDiscardsLateFramesKey;
 static char kOutputDeliveryPendingKey;
 static char kPreviewOverlayKey;
 static char kPreviewHostKey;
+static char kPreviewSessionKey;
 static char kPickerOverlayViewKey;
 static char kPickerCaptureControlKey;
 static char kPickerCameraOverlayKey;
@@ -1141,22 +1142,41 @@ static void HidePickerOverlayWindow(UIImagePickerController *picker) {
 @implementation AVCaptureVideoPreviewLayer (SimDeckCamera)
 
 + (instancetype)sd_layerWithSession:(AVCaptureSession *)session {
+    if (OpenSharedCamera()) {
+        AVCaptureVideoPreviewLayer *layer = [self sd_layerWithSession:nil];
+        objc_setAssociatedObject(layer, &kPreviewSessionKey, session, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        RegisterPreviewLayer(layer);
+        return layer;
+    }
     AVCaptureVideoPreviewLayer *layer = [self sd_layerWithSession:session];
-    if (OpenSharedCamera()) RegisterPreviewLayer(layer);
     return layer;
 }
 
 - (instancetype)sd_initWithSession:(AVCaptureSession *)session {
-    id layer = [self sd_initWithSession:session];
-    if (layer && OpenSharedCamera()) {
-        RegisterPreviewLayer(layer);
+    if (OpenSharedCamera()) {
+        id layer = [self sd_initWithSession:nil];
+        if (layer) {
+            objc_setAssociatedObject(layer, &kPreviewSessionKey, session, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            RegisterPreviewLayer(layer);
+        }
+        return layer;
     }
+    id layer = [self sd_initWithSession:session];
     return layer;
 }
 
 - (void)sd_setSession:(AVCaptureSession *)session {
+    if (OpenSharedCamera() && session) {
+        objc_setAssociatedObject(self, &kPreviewSessionKey, session, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        RegisterPreviewLayer(self);
+        return;
+    }
     [self sd_setSession:session];
-    RegisterPreviewLayer(self);
+}
+
+- (AVCaptureSession *)sd_session {
+    AVCaptureSession *session = objc_getAssociatedObject(self, &kPreviewSessionKey);
+    return session ?: [self sd_session];
 }
 
 @end
@@ -1222,6 +1242,7 @@ static void SimDeckCameraInstall(void) {
         ExchangeClass(AVCaptureVideoPreviewLayer.class, @selector(layerWithSession:), @selector(sd_layerWithSession:));
         ExchangeInstance(AVCaptureVideoPreviewLayer.class, @selector(initWithSession:), @selector(sd_initWithSession:));
         ExchangeInstance(AVCaptureVideoPreviewLayer.class, @selector(setSession:), @selector(sd_setSession:));
+        ExchangeInstance(AVCaptureVideoPreviewLayer.class, @selector(session), @selector(sd_session));
         DebugLog(@"installed");
     }
 }
