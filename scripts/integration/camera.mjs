@@ -622,7 +622,8 @@ async function verifyCameraRecovery(cdp) {
     "camera frames after source resume",
     (marker) => marker.frames > (paused?.frames ?? 0),
   );
-  const resumeRecoveryMs = Date.now() - resumedAt;
+  const resumeObservationMs = Date.now() - resumedAt;
+  const resumeRecoveryMs = Math.max(0, resumed.receivedAtMs - resumedAt);
   if (resumeRecoveryMs > 1_000) {
     throw new Error(`camera source resume took ${resumeRecoveryMs} ms`);
   }
@@ -633,7 +634,8 @@ async function verifyCameraRecovery(cdp) {
     "camera frames after WebRTC restart",
     (marker) => marker.frames > resumed.frames,
   );
-  const restartRecoveryMs = Date.now() - restartedAt;
+  const restartObservationMs = Date.now() - restartedAt;
+  const restartRecoveryMs = Math.max(0, restarted.receivedAtMs - restartedAt);
   if (restartRecoveryMs > 1_000) {
     throw new Error(`camera WebRTC restart took ${restartRecoveryMs} ms`);
   }
@@ -661,7 +663,9 @@ async function verifyCameraRecovery(cdp) {
   return {
     pauseFrameDelta: (paused?.frames ?? 0) - (beforePause?.frames ?? 0),
     resumeRecoveryMs,
+    resumeObservationMs,
     restartRecoveryMs,
+    restartObservationMs,
     restarted,
     keyFramesEncoded: browser.transport.keyFramesEncoded,
     webRtcCamera: status.webRtcCamera,
@@ -1391,14 +1395,15 @@ function fixtureSource() {
   [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
   NSString *path = [directory stringByAppendingPathComponent:@"camera-frame.json"];
   NSString *payload = [NSString stringWithFormat:
-    @"{\\"status\\":\\"%@\\",\\"frames\\":%ld,\\"width\\":%zu,\\"height\\":%zu,\\"avgRed\\":%.3f,\\"avgGreen\\":%.3f,\\"avgBlue\\":%.3f}",
+    @"{\\"status\\":\\"%@\\",\\"frames\\":%ld,\\"width\\":%zu,\\"height\\":%zu,\\"avgRed\\":%.3f,\\"avgGreen\\":%.3f,\\"avgBlue\\":%.3f,\\"receivedAtMs\\":%.0f}",
     status ?: @"unknown",
     (long)self.frames,
     width,
     height,
     red,
     green,
-    blue];
+    blue,
+    NSDate.date.timeIntervalSince1970 * 1000.0];
   [payload writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
