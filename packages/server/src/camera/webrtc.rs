@@ -52,6 +52,7 @@ pub struct CameraWebRtcAnswer {
 }
 
 struct CameraWebRtcSession {
+    cancelled: Arc<AtomicBool>,
     peer_connection: Arc<webrtc::peer_connection::RTCPeerConnection>,
     metrics: Arc<CameraWebRtcMetrics>,
 }
@@ -173,6 +174,8 @@ pub async fn create_answer(
         ));
     }
 
+    stop(&udid).await;
+
     let mut media_engine = MediaEngine::default();
     media_engine
         .register_codec(
@@ -209,6 +212,7 @@ pub async fn create_answer(
         .map_err(|err| AppError::internal(format!("create camera WebRTC peer: {err}")))?,
     );
     let metrics = Arc::new(CameraWebRtcMetrics::default());
+    let cancelled = Arc::new(AtomicBool::new(false));
 
     let data_udid = udid.clone();
     let data_metrics = metrics.clone();
@@ -257,12 +261,21 @@ pub async fn create_answer(
     let track_peer = peer_connection.clone();
     let track_metrics = metrics.clone();
     let track_udid = udid.clone();
+    let track_cancelled = cancelled.clone();
     peer_connection.on_track(Box::new(move |track, _, _| {
         let track_peer = track_peer.clone();
         let track_metrics = track_metrics.clone();
         let track_udid = track_udid.clone();
+        let track_cancelled = track_cancelled.clone();
         tokio::spawn(async move {
-            receive_h264_track(track_udid, track_peer, track, track_metrics).await;
+            receive_h264_track(
+                track_udid,
+                track_peer,
+                track,
+                track_metrics,
+                track_cancelled,
+            )
+            .await;
         });
         Box::pin(async {})
     }));
@@ -321,11 +334,13 @@ pub async fn create_answer(
     }
 
     let session = Arc::new(CameraWebRtcSession {
+        cancelled,
         peer_connection,
         metrics,
     });
     let previous = sessions().lock().unwrap().insert(udid, session);
     if let Some(previous) = previous {
+        previous.cancelled.store(true, Ordering::Release);
         let _ = previous.peer_connection.close().await;
     }
     let _ = payload.client_id;
@@ -339,6 +354,7 @@ pub async fn create_answer(
 pub async fn stop(udid: &str) {
     let session = sessions().lock().unwrap().remove(udid);
     if let Some(session) = session {
+        session.cancelled.store(true, Ordering::Release);
         let _ = session.peer_connection.close().await;
     }
 }
@@ -384,6 +400,7 @@ async fn receive_h264_track(
     peer_connection: Arc<webrtc::peer_connection::RTCPeerConnection>,
     track: Arc<TrackRemote>,
     metrics: Arc<CameraWebRtcMetrics>,
+    cancelled: Arc<AtomicBool>,
 ) {
     if track.kind() != RTPCodecType::Video {
         return;
@@ -392,12 +409,26 @@ async fn receive_h264_track(
     let decoder_queue = queue.clone();
     let decoder_metrics = metrics.clone();
     let decoder_udid = udid.clone();
-    std::thread::spawn(move || decode_latest_frames(decoder_udid, decoder_queue, decoder_metrics));
+    let decoder_cancelled = cancelled.clone();
+    std::thread::spawn(move || {
+        decode_latest_frames(
+            decoder_udid,
+            decoder_queue,
+            decoder_metrics,
+            decoder_cancelled,
+        )
+    });
 
     let mut reorder = RtpReorderBuffer::new(REORDER_WINDOW_PACKETS);
     let mut assembler = H264FrameAssembler::default();
     let mut last_pli = Instant::now() - PLI_INTERVAL;
-    while let Ok((packet, _)) = track.read_rtp().await {
+    while !cancelled.load(Ordering::Acquire) {
+        let Ok((packet, _)) = track.read_rtp().await else {
+            break;
+        };
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
         metrics.rtp_packets.fetch_add(1, Ordering::Relaxed);
         metrics
             .rtp_bytes
@@ -446,9 +477,13 @@ fn decode_latest_frames(
     udid: String,
     queue: Arc<LatestFrameQueue>,
     metrics: Arc<CameraWebRtcMetrics>,
+    cancelled: Arc<AtomicBool>,
 ) {
     let mut sequence = 0u32;
     while let Some(frame) = queue.pop() {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
         if let Some(config) = frame.decoder_config {
             if let Err(err) = configure_camera_decoder(&udid, &config) {
                 metrics.native_errors.fetch_add(1, Ordering::Relaxed);
