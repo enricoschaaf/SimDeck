@@ -27,6 +27,10 @@ import {
   type CameraFeed,
   type CameraStats,
 } from "./cameraTransport";
+import {
+  createCameraBenchmarkSource,
+  type CameraBenchmarkSource,
+} from "./cameraBenchmark";
 
 interface CameraSimulationModalProps {
   onClose: () => void;
@@ -38,6 +42,21 @@ type SourceMode = "placeholder" | "camera" | "media";
 type MirrorMode = "auto" | "on" | "off";
 type CameraAccess = "idle" | "requesting" | "granted" | "denied";
 const CAMERA_DEVICE_STORAGE_KEY = "simdeck.camera.deviceId";
+
+declare global {
+  interface Window {
+    __simdeckCameraBenchmark?: {
+      snapshot(): {
+        camera: ReturnType<CameraBenchmarkSource["snapshot"]> | null;
+        ready: boolean;
+        transport: CameraStats | null;
+        udid: string;
+      };
+      start(): Promise<CameraStatusResponse>;
+      stop(): Promise<CameraStatusResponse>;
+    };
+  }
+}
 
 export function CameraSimulationModal({
   onClose,
@@ -58,8 +77,11 @@ export function CameraSimulationModal({
   const [error, setError] = useState("");
   const cameraFeedRef = useRef<CameraFeed | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
+  const cameraStatsRef = useRef<CameraStats | null>(null);
+  const benchmarkSourceRef = useRef<CameraBenchmarkSource | null>(null);
 
   const udid = selectedSimulator?.udid ?? "";
+  const benchmarkMode = cameraBenchmarkEnabled();
   const canApply = Boolean(
     selectedSimulator?.isBooted &&
     (sourceMode !== "media" || mediaPath.trim()) &&
@@ -74,14 +96,62 @@ export function CameraSimulationModal({
     setIsApplying(false);
     setIsStopping(false);
     setCameraAccess(
-      cameraStreamRef.current
-        ?.getVideoTracks()
-        .some((track) => track.readyState === "live")
+      benchmarkMode
         ? "granted"
-        : "idle",
+        : cameraStreamRef.current
+              ?.getVideoTracks()
+              .some((track) => track.readyState === "live")
+          ? "granted"
+          : "idle",
     );
     void refreshStatus();
-  }, [open, udid]);
+  }, [benchmarkMode, open, udid]);
+
+  useEffect(() => {
+    cameraStatsRef.current = cameraStats;
+  }, [cameraStats]);
+
+  useEffect(() => {
+    if (!benchmarkMode) {
+      return;
+    }
+    const benchmark = {
+      snapshot: () => ({
+        camera: benchmarkSourceRef.current?.snapshot() ?? null,
+        ready: Boolean(selectedSimulator?.isBooted && udid),
+        transport: cameraStatsRef.current,
+        udid,
+      }),
+      start: async () => {
+        if (!selectedSimulator?.isBooted || !udid) {
+          throw new Error(
+            "Boot and select a simulator before benchmarking the camera.",
+          );
+        }
+        const stream = await cameraStream();
+        const nextStatus = await startCameraSimulation(udid, {
+          mirror: "off",
+          source: { kind: "camera" },
+        });
+        setStatus(nextStatus);
+        setSourceMode("camera");
+        await startCurrentCameraFeed(stream);
+        return nextStatus;
+      },
+      stop: async () => {
+        stopCameraFeed(true);
+        const nextStatus = await stopCameraSimulation(udid);
+        setStatus(nextStatus);
+        return nextStatus;
+      },
+    };
+    window.__simdeckCameraBenchmark = benchmark;
+    return () => {
+      if (window.__simdeckCameraBenchmark === benchmark) {
+        delete window.__simdeckCameraBenchmark;
+      }
+    };
+  }, [benchmarkMode, selectedSimulator?.isBooted, udid]);
 
   useEffect(() => {
     if (!selectedSimulator?.isBooted || !udid) {
@@ -236,6 +306,8 @@ export function CameraSimulationModal({
     cameraFeedRef.current = null;
     setCameraStats(null);
     if (stopTracks) {
+      benchmarkSourceRef.current?.stop();
+      benchmarkSourceRef.current = null;
       for (const track of cameraStreamRef.current?.getTracks() ?? []) {
         track.stop();
       }
@@ -331,6 +403,14 @@ export function CameraSimulationModal({
       track.stop();
     }
     cameraStreamRef.current = null;
+    if (benchmarkMode) {
+      benchmarkSourceRef.current?.stop();
+      const source = createCameraBenchmarkSource(cameraBenchmarkOptions());
+      benchmarkSourceRef.current = source;
+      cameraStreamRef.current = source.stream;
+      setCameraAccess("granted");
+      return source.stream;
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("Camera capture is unavailable in this browser.");
     }
@@ -532,7 +612,11 @@ export function CameraSimulationModal({
                     }}
                     value={cameraId}
                   >
-                    <option value="">System default</option>
+                    <option value="">
+                      {benchmarkMode
+                        ? "Deterministic benchmark"
+                        : "System default"}
+                    </option>
                     {cameras.map((camera) => (
                       <option key={camera.id} value={camera.id}>
                         {camera.name}
@@ -660,6 +744,25 @@ function storeCameraId(cameraId: string) {
   } catch {
     return;
   }
+}
+
+function cameraBenchmarkEnabled(): boolean {
+  return (
+    new URLSearchParams(window.location.search).get("cameraBenchmark") === "1"
+  );
+}
+
+function cameraBenchmarkOptions() {
+  const params = new URLSearchParams(window.location.search);
+  const numeric = (name: string) => {
+    const value = Number(params.get(name));
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+  return {
+    framesPerSecond: numeric("cameraBenchmarkFps"),
+    height: numeric("cameraBenchmarkHeight"),
+    width: numeric("cameraBenchmarkWidth"),
+  };
 }
 
 async function cameraPermissionWasGranted(): Promise<boolean> {

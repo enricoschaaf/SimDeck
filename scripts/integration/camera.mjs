@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { selectIntegrationSimulator } from "./simulator-selection.mjs";
 
 const root = path.resolve(new URL("../..", import.meta.url).pathname);
@@ -14,11 +14,22 @@ const minimumIosVersion = "15.0";
 const verbose = process.env.SIMDECK_INTEGRATION_VERBOSE === "1";
 const showSimulator = process.env.SIMDECK_INTEGRATION_SHOW_SIMULATOR === "1";
 const keepSimulator = process.env.SIMDECK_INTEGRATION_KEEP_SIMULATOR === "1";
+const serverUrl = new URL(
+  process.env.SIMDECK_SERVER_URL ?? "http://127.0.0.1:4310",
+);
+const chromePath =
+  process.env.CHROME_PATH ??
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const chromeDebugPort = Number(
+  process.env.SIMDECK_CAMERA_BENCHMARK_CHROME_PORT ?? "9341",
+);
+const benchmarkOutputPath = process.env.SIMDECK_CAMERA_BENCHMARK_OUTPUT ?? "";
 const commandTimeoutMs = Number(
   process.env.SIMDECK_INTEGRATION_SIMCTL_TIMEOUT_MS ?? "300000",
 );
 
 let simulatorUDID = "";
+let chromeProcess = null;
 
 process.on("SIGINT", () => {
   cleanup();
@@ -80,6 +91,7 @@ async function main() {
   runText("xcrun", ["simctl", "bootstatus", simulatorUDID, "-b"], {
     timeoutMs: 600_000,
   });
+  simdeckJson(["boot", simulatorUDID], { timeoutMs: commandTimeoutMs });
   if (showSimulator) {
     runText(
       "open",
@@ -99,7 +111,9 @@ async function main() {
   writeSolidMov(videoPath, 64, 48, { r: 0, g: 255, b: 0 });
 
   step("install camera fixture app");
-  runText("xcrun", ["simctl", "install", simulatorUDID, appPath], {
+  await retryRunText("xcrun", ["simctl", "install", simulatorUDID, appPath], {
+    attempts: 3,
+    delayMs: 2_000,
     timeoutMs: commandTimeoutMs,
   });
 
@@ -111,12 +125,19 @@ async function main() {
     );
   }
 
+  step("launch camera fixture app");
+  simdeckJson(["launch", simulatorUDID, bundleId]);
+  await waitForMarker(
+    "fixture launch",
+    (marker) => marker.status === "view-loaded",
+  );
+  await waitForForegroundBundle(bundleId);
+
   step("start injected app with image source");
   const startStatus = simdeckJson([
     "camera",
     "start",
     simulatorUDID,
-    bundleId,
     "--file",
     imagePath,
     "--mirror",
@@ -201,6 +222,481 @@ async function main() {
       `camera stop did not report alive=false: ${JSON.stringify(stopStatus)}`,
     );
   }
+
+  step("run deterministic browser camera baseline");
+  const benchmark = await runBrowserBenchmark();
+  console.log(`camera benchmark: ${JSON.stringify(benchmark)}`);
+  if (benchmarkOutputPath) {
+    fs.mkdirSync(path.dirname(path.resolve(benchmarkOutputPath)), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.resolve(benchmarkOutputPath),
+      `${JSON.stringify(benchmark, null, 2)}\n`,
+    );
+  }
+}
+
+async function runBrowserBenchmark() {
+  if (!fs.existsSync(chromePath)) {
+    throw new Error(`Missing Chrome at ${chromePath}.`);
+  }
+  const chromeProfile = path.join(tempRoot, "chrome-profile");
+  chromeProcess = spawn(
+    chromePath,
+    [
+      "--headless=new",
+      "--autoplay-policy=no-user-gesture-required",
+      `--remote-debugging-port=${chromeDebugPort}`,
+      `--user-data-dir=${chromeProfile}`,
+      "about:blank",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  await waitForChrome();
+  const viewerUrl = new URL(serverUrl);
+  viewerUrl.searchParams.set("device", simulatorUDID);
+  viewerUrl.searchParams.set("cameraBenchmark", "1");
+  viewerUrl.searchParams.set("cameraBenchmarkWidth", "1280");
+  viewerUrl.searchParams.set("cameraBenchmarkHeight", "720");
+  viewerUrl.searchParams.set("cameraBenchmarkFps", "30");
+  viewerUrl.searchParams.set("stream", "webrtc");
+  const targetResponse = await fetch(
+    `http://127.0.0.1:${chromeDebugPort}/json/new?${encodeURIComponent(viewerUrl)}`,
+    { method: "PUT" },
+  );
+  if (!targetResponse.ok) {
+    throw new Error(
+      `Chrome target creation failed with ${targetResponse.status}: ${await targetResponse.text()}`,
+    );
+  }
+  const target = await targetResponse.json();
+  const cdp = await connectCdp(target.webSocketDebuggerUrl);
+  try {
+    await cdp.send("Runtime.enable");
+    await waitForBrowserValue(
+      cdp,
+      "window.__simdeckCameraBenchmark?.snapshot() ?? null",
+      (value) => value?.ready && value.udid === simulatorUDID,
+      60_000,
+    );
+    await waitForBrowserValue(
+      cdp,
+      `(() => {
+        const video = document.querySelector("video.stream-video");
+        return video ? {
+          readyState: video.readyState,
+          width: video.videoWidth,
+          height: video.videoHeight,
+        } : null;
+      })()`,
+      (value) => value?.readyState >= 2 && value.width > 0 && value.height > 0,
+      90_000,
+    );
+    const started = await cdp.evaluate(
+      "window.__simdeckCameraBenchmark.start()",
+      true,
+    );
+    const firstMarker = await waitForMarker(
+      "deterministic browser camera frames",
+      (marker) => marker.status === "frame" && marker.frames >= 10,
+    );
+    const sampleStartedAt = Date.now();
+    const firstBrowserSample = await waitForBrowserValue(
+      cdp,
+      "window.__simdeckCameraBenchmark.snapshot()",
+      (value) => value?.transport?.encodedFramesPerSecond > 0,
+      30_000,
+    );
+    const initialCameraStatus = simdeckJson([
+      "camera",
+      "status",
+      simulatorUDID,
+    ]);
+    const initialMarker = readMarker();
+    const initialViewer = await browserViewerSample(cdp);
+    const state = await fetchSimulatorState();
+    const benchmarkDurationMs = 10_000;
+    const metricsStartedAt = Date.now();
+    const processStatsPromise = collectProcessStats(
+      [
+        { name: "server", pid: started.processId },
+        {
+          name: "simulatorApp",
+          pid: state.foregroundApp?.processIdentifier,
+        },
+      ],
+      benchmarkDurationMs,
+    );
+    const glassToGlass = await collectGlassToGlassSamples(
+      cdp,
+      benchmarkDurationMs,
+    );
+    const processStats = await processStatsPromise;
+    const finalBrowserSample = await cdp.evaluate(
+      "window.__simdeckCameraBenchmark.snapshot()",
+    );
+    const finalMarker = readMarker();
+    const cameraStatus = simdeckJson(["camera", "status", simulatorUDID]);
+    const viewer = await browserViewerSample(cdp);
+    const metricsDurationMs = Date.now() - metricsStartedAt;
+    const stopped = await cdp.evaluate(
+      "window.__simdeckCameraBenchmark.stop()",
+      true,
+    );
+    return {
+      transport: "websocket-webcodecs",
+      source: { width: 1280, height: 720, framesPerSecond: 30 },
+      started,
+      stopped,
+      sampleDurationMs: Date.now() - sampleStartedAt,
+      firstBrowserSample,
+      finalBrowserSample,
+      glassToGlass,
+      rates: {
+        observedDurationMs: metricsDurationMs,
+        appFramesPerSecond: frameRate(
+          initialMarker?.frames,
+          finalMarker?.frames,
+          metricsDurationMs,
+        ),
+        decodedFramesPerSecond: frameRate(
+          initialCameraStatus.frames,
+          cameraStatus.frames,
+          metricsDurationMs,
+        ),
+        presentedFramesPerSecond: frameRate(
+          initialViewer?.presentedFrames,
+          viewer?.presentedFrames,
+          metricsDurationMs,
+        ),
+      },
+      processStats,
+      firstMarker,
+      finalMarker,
+      cameraStatus,
+      viewer,
+    };
+  } finally {
+    cdp.close();
+  }
+}
+
+async function browserViewerSample(cdp) {
+  return cdp.evaluate(`(() => {
+    const video = document.querySelector("video.stream-video");
+    if (!video) return null;
+    const quality = video.getVideoPlaybackQuality?.();
+    return {
+      readyState: video.readyState,
+      width: video.videoWidth,
+      height: video.videoHeight,
+      presentedFrames: quality?.totalVideoFrames ?? 0,
+      droppedFrames: quality?.droppedVideoFrames ?? 0,
+    };
+  })()`);
+}
+
+async function fetchSimulatorState() {
+  const url = new URL(
+    `/api/simulators/${encodeURIComponent(simulatorUDID)}/state`,
+    serverUrl,
+  );
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `Simulator state failed with ${response.status}: ${await response.text()}`,
+    );
+  }
+  return response.json();
+}
+
+async function collectProcessStats(processes, durationMs) {
+  const samples = new Map(
+    processes
+      .filter((process) => Number.isInteger(process.pid) && process.pid > 0)
+      .map((process) => [process.name, []]),
+  );
+  const deadline = Date.now() + durationMs;
+  while (Date.now() < deadline) {
+    for (const process of processes) {
+      if (!samples.has(process.name)) {
+        continue;
+      }
+      const output = runText(
+        "ps",
+        ["-o", "%cpu=,rss=", "-p", String(process.pid)],
+        { allowFailure: true, timeoutMs: 5_000 },
+      ).trim();
+      const [cpu, rssKilobytes] = output.split(/\s+/).map(Number);
+      if (Number.isFinite(cpu) && Number.isFinite(rssKilobytes)) {
+        samples.get(process.name).push({ cpu, rssKilobytes });
+      }
+    }
+    await sleep(500);
+  }
+  return Object.fromEntries(
+    [...samples.entries()].map(([name, values]) => {
+      const cpu = values.map((value) => value.cpu).sort((a, b) => a - b);
+      const rss = values
+        .map((value) => value.rssKilobytes)
+        .sort((a, b) => a - b);
+      return [
+        name,
+        {
+          samples: values.length,
+          averageCpuPercent:
+            cpu.reduce((total, value) => total + value, 0) /
+            Math.max(1, cpu.length),
+          p95CpuPercent: percentile(cpu, 0.95),
+          minimumRssBytes: (rss[0] ?? 0) * 1024,
+          maximumRssBytes: (rss.at(-1) ?? 0) * 1024,
+        },
+      ];
+    }),
+  );
+}
+
+function frameRate(initialValue, finalValue, durationMs) {
+  if (!Number.isFinite(initialValue) || !Number.isFinite(finalValue)) {
+    return null;
+  }
+  return ((finalValue - initialValue) * 1_000) / durationMs;
+}
+
+async function waitForChrome() {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (chromeProcess?.exitCode !== null) {
+      throw new Error(`Chrome exited before DevTools was ready.`);
+    }
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${chromeDebugPort}/json/version`,
+      );
+      if (response.ok) {
+        return;
+      }
+    } catch {}
+    await sleep(100);
+  }
+  throw new Error("Timed out waiting for Chrome DevTools.");
+}
+
+async function connectCdp(url) {
+  const socket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", reject, { once: true });
+  });
+  let nextId = 1;
+  const pending = new Map();
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data);
+    const request = pending.get(message.id);
+    if (!request) {
+      return;
+    }
+    pending.delete(message.id);
+    if (message.error) {
+      request.reject(new Error(message.error.message));
+    } else {
+      request.resolve(message.result);
+    }
+  });
+  return {
+    close: () => socket.close(),
+    send(method, params = {}) {
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        socket.send(JSON.stringify({ id, method, params }));
+      });
+    },
+    async evaluate(expression, awaitPromise = false) {
+      const result = await this.send("Runtime.evaluate", {
+        expression,
+        awaitPromise,
+        returnByValue: true,
+      });
+      if (result.exceptionDetails) {
+        throw new Error(
+          result.exceptionDetails.exception?.description ??
+            result.exceptionDetails.text,
+        );
+      }
+      return result.result.value;
+    },
+  };
+}
+
+async function waitForBrowserValue(cdp, expression, predicate, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let value;
+  while (Date.now() < deadline) {
+    value = await cdp.evaluate(expression);
+    if (predicate(value)) {
+      return value;
+    }
+    await sleep(100);
+  }
+  throw new Error(
+    `Timed out waiting for browser value from ${expression}: ${JSON.stringify(value)}`,
+  );
+}
+
+async function collectGlassToGlassSamples(cdp, durationMs) {
+  const result = await cdp.evaluate(
+    `(() => new Promise((resolve, reject) => {
+      const video = document.querySelector("video.stream-video");
+      if (!video || typeof video.requestVideoFrameCallback !== "function") {
+        reject(new Error("Simulator viewer video is unavailable."));
+        return;
+      }
+      const scale = 3;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(video.videoWidth / scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight / scale));
+      const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+      if (!context) {
+        reject(new Error("Unable to create latency sampling canvas."));
+        return;
+      }
+      const markerBits = 48;
+      const timestampModulus = 2 ** 32;
+      const samples = [];
+      let decodeFailures = 0;
+      let lastFrame = -1;
+      let lastBounds = null;
+      let callbackId = 0;
+      let stopped = false;
+      const numberFromBits = (bits) => bits.reduce(
+        (value, bit) => value * 2 + (bit ? 1 : 0),
+        0,
+      );
+      const sampleFrame = () => {
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const image = context.getImageData(0, 0, canvas.width, canvas.height);
+        const data = image.data;
+        let minX = canvas.width;
+        let minY = canvas.height;
+        let maxX = -1;
+        let maxY = -1;
+        const startX = Math.floor(canvas.width * 0.3);
+        const endX = Math.ceil(canvas.width * 0.7);
+        for (let y = Math.floor(canvas.height * 0.04); y < canvas.height * 0.96; y += 1) {
+          for (let x = startX; x < endX; x += 1) {
+            const offset = (y * canvas.width + x) * 4;
+            const red = data[offset];
+            const green = data[offset + 1];
+            const blue = data[offset + 2];
+            if (red > 140 && blue > 140 && green < 155 && red + blue > green * 2.2) {
+              minX = Math.min(minX, x);
+              minY = Math.min(minY, y);
+              maxX = Math.max(maxX, x);
+              maxY = Math.max(maxY, y);
+            }
+          }
+        }
+        if (maxX < minX || maxY - minY < canvas.height * 0.15) {
+          decodeFailures += 1;
+          return;
+        }
+        lastBounds = { minX, minY, maxX, maxY };
+        const cell = (maxY - minY + 1) / (markerBits + 2);
+        const centerX = Math.round((minX + maxX) / 2);
+        const bits = [];
+        for (let index = 0; index < markerBits; index += 1) {
+          const centerY = Math.max(
+            0,
+            Math.min(canvas.height - 1, Math.round(minY + cell * (index + 1.5))),
+          );
+          let luminance = 0;
+          let count = 0;
+          for (let dy = -1; dy <= 1; dy += 1) {
+            for (let dx = -1; dx <= 1; dx += 1) {
+              const x = Math.max(0, Math.min(canvas.width - 1, centerX + dx));
+              const y = Math.max(0, Math.min(canvas.height - 1, centerY + dy));
+              const offset = (y * canvas.width + x) * 4;
+              luminance += data[offset] * 0.2126 + data[offset + 1] * 0.7152 + data[offset + 2] * 0.0722;
+              count += 1;
+            }
+          }
+          bits.push(luminance / count > 128);
+        }
+        const frame = numberFromBits(bits.slice(0, 16));
+        const timestamp = numberFromBits(bits.slice(16));
+        const now = Math.floor(performance.now()) % timestampModulus;
+        const latencyMs = (now - timestamp + timestampModulus) % timestampModulus;
+        if (frame === lastFrame || latencyMs > 5_000) {
+          if (latencyMs > 5_000) decodeFailures += 1;
+          return;
+        }
+        lastFrame = frame;
+        samples.push({ frame, latencyMs, timestamp });
+      };
+      const onFrame = () => {
+        if (stopped) return;
+        sampleFrame();
+        callbackId = video.requestVideoFrameCallback(onFrame);
+      };
+      callbackId = video.requestVideoFrameCallback(onFrame);
+      setTimeout(() => {
+        stopped = true;
+        video.cancelVideoFrameCallback(callbackId);
+        resolve({ samples, decodeFailures, markerBounds: lastBounds });
+      }, ${Math.round(durationMs)});
+    }))()`,
+    true,
+  );
+  const latencies = result.samples
+    .map((sample) => sample.latencyMs)
+    .sort((a, b) => a - b);
+  if (latencies.length < 30) {
+    throw new Error(
+      `Camera latency marker produced only ${latencies.length} samples (${result.decodeFailures} decode failures).`,
+    );
+  }
+  return {
+    samples: latencies.length,
+    decodeFailures: result.decodeFailures,
+    markerBounds: result.markerBounds,
+    minimumMs: latencies[0],
+    medianMs: percentile(latencies, 0.5),
+    p95Ms: percentile(latencies, 0.95),
+    maximumMs: latencies.at(-1),
+  };
+}
+
+function percentile(sortedValues, percentileValue) {
+  const index = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.ceil(sortedValues.length * percentileValue) - 1),
+  );
+  return sortedValues[index];
+}
+
+async function waitForForegroundBundle(expectedBundleId) {
+  const deadline = Date.now() + 30_000;
+  let foregroundApp = null;
+  while (Date.now() < deadline) {
+    const url = new URL(
+      `/api/simulators/${encodeURIComponent(simulatorUDID)}/state`,
+      serverUrl,
+    );
+    const response = await fetch(url);
+    if (response.ok) {
+      const state = await response.json();
+      foregroundApp = state.foregroundApp ?? null;
+      if (foregroundApp?.bundleIdentifier === expectedBundleId) {
+        return;
+      }
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `Timed out waiting for foreground app ${expectedBundleId}: ${JSON.stringify(foregroundApp)}`,
+  );
 }
 
 function buildCameraFixtureApp() {
@@ -383,6 +879,7 @@ function fixtureSource() {
 
 @interface CameraViewController : UIViewController <AVCaptureVideoDataOutputSampleBufferDelegate>
 @property (nonatomic, strong) AVCaptureSession *session;
+@property (nonatomic, strong) AVCaptureVideoPreviewLayer *previewLayer;
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic) NSInteger frames;
 @end
@@ -412,6 +909,11 @@ function fixtureSource() {
       [self startCamera];
     });
   });
+}
+
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  self.previewLayer.frame = self.view.bounds;
 }
 
 - (void)startCamera {
@@ -457,6 +959,13 @@ function fixtureSource() {
   }
   [self.session addInput:input];
   [self.session addOutput:output];
+  dispatch_sync(dispatch_get_main_queue(), ^{
+    self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:self.session];
+    self.previewLayer.frame = self.view.bounds;
+    self.previewLayer.videoGravity = AVLayerVideoGravityResizeAspect;
+    [self.view.layer insertSublayer:self.previewLayer atIndex:0];
+    self.statusLabel.hidden = YES;
+  });
   [self writeMarkerWithStatus:@"starting" width:0 height:0 red:0 green:0 blue:0];
   [self.session startRunning];
   [self writeMarkerWithStatus:@"started" width:0 height:0 red:0 green:0 blue:0];
@@ -699,7 +1208,28 @@ function runText(command, args, options = {}) {
   return result.stdout ?? "";
 }
 
+async function retryRunText(command, args, options) {
+  let lastError;
+  for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
+    try {
+      return runText(command, args, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt < options.attempts) {
+        await sleep(options.delayMs);
+      }
+    }
+  }
+  throw lastError;
+}
+
 function cleanup() {
+  if (chromeProcess) {
+    try {
+      chromeProcess.kill("SIGTERM");
+    } catch {}
+    chromeProcess = null;
+  }
   if (simulatorUDID) {
     try {
       simdeckJson(["camera", "stop", simulatorUDID], { timeoutMs: 30_000 });
