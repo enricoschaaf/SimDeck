@@ -777,6 +777,9 @@ async function collectProcessStats(processes, durationMs) {
       const rss = values
         .map((value) => value.rssKilobytes)
         .sort((a, b) => a - b);
+      const firstRssBytes = (values[0]?.rssKilobytes ?? 0) * 1024;
+      const lastRssBytes = (values.at(-1)?.rssKilobytes ?? 0) * 1024;
+      const maximumRssBytes = (rss.at(-1) ?? 0) * 1024;
       return [
         name,
         {
@@ -785,12 +788,26 @@ async function collectProcessStats(processes, durationMs) {
             cpu.reduce((total, value) => total + value, 0) /
             Math.max(1, cpu.length),
           p95CpuPercent: percentile(cpu, 0.95),
+          firstRssBytes,
+          lastRssBytes,
           minimumRssBytes: (rss[0] ?? 0) * 1024,
-          maximumRssBytes: (rss.at(-1) ?? 0) * 1024,
+          maximumRssBytes,
+          rssChangePercent: percentageChange(firstRssBytes, lastRssBytes),
+          peakRssGrowthPercent: percentageChange(
+            firstRssBytes,
+            maximumRssBytes,
+          ),
         },
       ];
     }),
   );
+}
+
+function percentageChange(initialValue, finalValue) {
+  if (initialValue <= 0) {
+    return null;
+  }
+  return ((finalValue - initialValue) / initialValue) * 100;
 }
 
 function frameRate(initialValue, finalValue, durationMs) {
