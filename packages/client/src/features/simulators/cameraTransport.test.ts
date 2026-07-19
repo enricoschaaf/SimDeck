@@ -7,10 +7,12 @@ import {
 } from "./cameraTransport";
 
 describe("camera", () => {
-  it("requests frame rate without changing browser camera geometry", () => {
+  it("requests a high-resolution native camera mode", () => {
     expect(cameraVideoConstraints("front-camera")).toEqual({
       deviceId: { exact: "front-camera" },
       frameRate: { ideal: 30, max: 30 },
+      height: { ideal: 1080 },
+      width: { ideal: 1920 },
     });
   });
 

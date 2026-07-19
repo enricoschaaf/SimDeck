@@ -65,6 +65,70 @@ static void RegisterOutputLayer(CALayer *layer);
 static void RegisterPreviewLayer(CALayer *layer);
 static void SendPickerCapture(UIImagePickerController *picker);
 
+static CFStringRef ColorPrimariesAttachment(uint32_t value) {
+    switch (value) {
+        case SIMDECK_CAMERA_COLOR_PRIMARIES_ITU_R_709_2:
+            return kCVImageBufferColorPrimaries_ITU_R_709_2;
+        case SIMDECK_CAMERA_COLOR_PRIMARIES_P3_D65:
+            return kCVImageBufferColorPrimaries_P3_D65;
+        case SIMDECK_CAMERA_COLOR_PRIMARIES_ITU_R_2020:
+            return kCVImageBufferColorPrimaries_ITU_R_2020;
+        default:
+            return NULL;
+    }
+}
+
+static CFStringRef TransferFunctionAttachment(uint32_t value) {
+    switch (value) {
+        case SIMDECK_CAMERA_TRANSFER_FUNCTION_ITU_R_709_2:
+            return kCVImageBufferTransferFunction_ITU_R_709_2;
+        case SIMDECK_CAMERA_TRANSFER_FUNCTION_SRGB:
+            return kCVImageBufferTransferFunction_sRGB;
+        case SIMDECK_CAMERA_TRANSFER_FUNCTION_ITU_R_2020:
+            return kCVImageBufferTransferFunction_ITU_R_2020;
+        default:
+            return NULL;
+    }
+}
+
+static CFStringRef YCbCrMatrixAttachment(uint32_t value) {
+    switch (value) {
+        case SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_601_4:
+            return kCVImageBufferYCbCrMatrix_ITU_R_601_4;
+        case SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_709_2:
+            return kCVImageBufferYCbCrMatrix_ITU_R_709_2;
+        case SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_2020:
+            return kCVImageBufferYCbCrMatrix_ITU_R_2020;
+        default:
+            return NULL;
+    }
+}
+
+static void ApplyColorAttachments(CVPixelBufferRef pixelBuffer) {
+    if (!pixelBuffer || !gHeader) return;
+    CFStringRef primaries = ColorPrimariesAttachment(gHeader->colorPrimaries);
+    CFStringRef transfer = TransferFunctionAttachment(gHeader->transferFunction);
+    CFStringRef matrix = YCbCrMatrixAttachment(gHeader->yCbCrMatrix);
+    if (primaries) {
+        CVBufferSetAttachment(pixelBuffer,
+                              kCVImageBufferColorPrimariesKey,
+                              primaries,
+                              kCVAttachmentMode_ShouldPropagate);
+    }
+    if (transfer) {
+        CVBufferSetAttachment(pixelBuffer,
+                              kCVImageBufferTransferFunctionKey,
+                              transfer,
+                              kCVAttachmentMode_ShouldPropagate);
+    }
+    if (matrix) {
+        CVBufferSetAttachment(pixelBuffer,
+                              kCVImageBufferYCbCrMatrixKey,
+                              matrix,
+                              kCVAttachmentMode_ShouldPropagate);
+    }
+}
+
 static BOOL IsVideoMediaType(AVMediaType mediaType) {
     return mediaType == nil || [mediaType isEqualToString:AVMediaTypeVideo];
 }
@@ -311,6 +375,7 @@ static CVPixelBufferRef CurrentPixelBuffer(BOOL requireNewFrame,
         __sync_fetch_and_add(&gHeader->surfaceLookupFailures, 1);
         return NULL;
     }
+    ApplyColorAttachments(pixelBuffer);
     if (requireNewFrame) gLastDeliveredSequence = descriptor.sequence;
     gHeader->consumedSequence = descriptor.sequence;
     if (outDescriptor) *outDescriptor = descriptor;

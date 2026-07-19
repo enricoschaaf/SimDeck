@@ -31,6 +31,8 @@ export interface CameraStats {
 }
 
 const FRAMES_PER_SECOND = 30;
+const PREFERRED_CAMERA_WIDTH = 1_920;
+const PREFERRED_CAMERA_HEIGHT = 1_080;
 const STATS_INTERVAL_MS = 1_000;
 const ICE_GATHER_TIMEOUT_MS = 3_000;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -45,6 +47,8 @@ export function cameraVideoConstraints(
   return {
     ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
     frameRate: { ideal: FRAMES_PER_SECOND, max: FRAMES_PER_SECOND },
+    height: { ideal: PREFERRED_CAMERA_HEIGHT },
+    width: { ideal: PREFERRED_CAMERA_WIDTH },
   };
 }
 

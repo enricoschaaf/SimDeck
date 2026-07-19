@@ -211,6 +211,110 @@ static uint32_t ColorRangeForPixelFormat(OSType format) {
     return SIMDECK_CAMERA_COLOR_RANGE_UNKNOWN;
 }
 
+static BOOL AttachmentEquals(CVPixelBufferRef pixelBuffer, CFStringRef key, CFStringRef expected) {
+    CFTypeRef value = CVBufferCopyAttachment(pixelBuffer, key, NULL);
+    BOOL matches = value && CFEqual(value, expected);
+    if (value) CFRelease(value);
+    return matches;
+}
+
+static uint32_t ColorPrimariesForPixelBuffer(CVPixelBufferRef pixelBuffer) {
+    if (AttachmentEquals(pixelBuffer,
+                         kCVImageBufferColorPrimariesKey,
+                         kCVImageBufferColorPrimaries_ITU_R_709_2)) {
+        return SIMDECK_CAMERA_COLOR_PRIMARIES_ITU_R_709_2;
+    }
+    if (AttachmentEquals(pixelBuffer,
+                         kCVImageBufferColorPrimariesKey,
+                         kCVImageBufferColorPrimaries_P3_D65)) {
+        return SIMDECK_CAMERA_COLOR_PRIMARIES_P3_D65;
+    }
+    if (AttachmentEquals(pixelBuffer,
+                         kCVImageBufferColorPrimariesKey,
+                         kCVImageBufferColorPrimaries_ITU_R_2020)) {
+        return SIMDECK_CAMERA_COLOR_PRIMARIES_ITU_R_2020;
+    }
+    return SIMDECK_CAMERA_COLOR_PRIMARIES_UNKNOWN;
+}
+
+static uint32_t TransferFunctionForPixelBuffer(CVPixelBufferRef pixelBuffer) {
+    if (AttachmentEquals(pixelBuffer,
+                         kCVImageBufferTransferFunctionKey,
+                         kCVImageBufferTransferFunction_ITU_R_709_2)) {
+        return SIMDECK_CAMERA_TRANSFER_FUNCTION_ITU_R_709_2;
+    }
+    if (AttachmentEquals(pixelBuffer,
+                         kCVImageBufferTransferFunctionKey,
+                         kCVImageBufferTransferFunction_sRGB)) {
+        return SIMDECK_CAMERA_TRANSFER_FUNCTION_SRGB;
+    }
+    if (AttachmentEquals(pixelBuffer,
+                         kCVImageBufferTransferFunctionKey,
+                         kCVImageBufferTransferFunction_ITU_R_2020)) {
+        return SIMDECK_CAMERA_TRANSFER_FUNCTION_ITU_R_2020;
+    }
+    return SIMDECK_CAMERA_TRANSFER_FUNCTION_UNKNOWN;
+}
+
+static uint32_t YCbCrMatrixForPixelBuffer(CVPixelBufferRef pixelBuffer) {
+    if (AttachmentEquals(pixelBuffer,
+                         kCVImageBufferYCbCrMatrixKey,
+                         kCVImageBufferYCbCrMatrix_ITU_R_601_4)) {
+        return SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_601_4;
+    }
+    if (AttachmentEquals(pixelBuffer,
+                         kCVImageBufferYCbCrMatrixKey,
+                         kCVImageBufferYCbCrMatrix_ITU_R_709_2)) {
+        return SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_709_2;
+    }
+    if (AttachmentEquals(pixelBuffer,
+                         kCVImageBufferYCbCrMatrixKey,
+                         kCVImageBufferYCbCrMatrix_ITU_R_2020)) {
+        return SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_2020;
+    }
+    return SIMDECK_CAMERA_YCBCR_MATRIX_UNKNOWN;
+}
+
+static BOOL IsBiPlanarYUV(OSType format) {
+    return format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+        format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+}
+
+static NSString *ColorRangeName(uint32_t value) {
+    switch (value) {
+        case SIMDECK_CAMERA_COLOR_RANGE_VIDEO: return @"video";
+        case SIMDECK_CAMERA_COLOR_RANGE_FULL: return @"full";
+        default: return @"unknown";
+    }
+}
+
+static NSString *ColorPrimariesName(uint32_t value) {
+    switch (value) {
+        case SIMDECK_CAMERA_COLOR_PRIMARIES_ITU_R_709_2: return @"bt709";
+        case SIMDECK_CAMERA_COLOR_PRIMARIES_P3_D65: return @"p3-d65";
+        case SIMDECK_CAMERA_COLOR_PRIMARIES_ITU_R_2020: return @"bt2020";
+        default: return @"unknown";
+    }
+}
+
+static NSString *TransferFunctionName(uint32_t value) {
+    switch (value) {
+        case SIMDECK_CAMERA_TRANSFER_FUNCTION_ITU_R_709_2: return @"bt709";
+        case SIMDECK_CAMERA_TRANSFER_FUNCTION_SRGB: return @"srgb";
+        case SIMDECK_CAMERA_TRANSFER_FUNCTION_ITU_R_2020: return @"bt2020";
+        default: return @"unknown";
+    }
+}
+
+static NSString *YCbCrMatrixName(uint32_t value) {
+    switch (value) {
+        case SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_601_4: return @"bt601";
+        case SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_709_2: return @"bt709";
+        case SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_2020: return @"bt2020";
+        default: return @"unknown";
+    }
+}
+
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 static NSDictionary *GlobalSurfacePropertiesForSimulatorLookup(void) {
@@ -264,6 +368,22 @@ static BOOL PublishSurface(SimDeckCameraContext *context,
         size_t width = CVPixelBufferGetWidth(pixelBuffer);
         size_t height = CVPixelBufferGetHeight(pixelBuffer);
         OSType format = CVPixelBufferGetPixelFormatType(pixelBuffer);
+        uint32_t colorPrimaries = ColorPrimariesForPixelBuffer(pixelBuffer);
+        uint32_t transferFunction = TransferFunctionForPixelBuffer(pixelBuffer);
+        uint32_t yCbCrMatrix = YCbCrMatrixForPixelBuffer(pixelBuffer);
+        if (IsBiPlanarYUV(format)) {
+            if (colorPrimaries == SIMDECK_CAMERA_COLOR_PRIMARIES_UNKNOWN) {
+                colorPrimaries = SIMDECK_CAMERA_COLOR_PRIMARIES_ITU_R_709_2;
+            }
+            if (transferFunction == SIMDECK_CAMERA_TRANSFER_FUNCTION_UNKNOWN) {
+                transferFunction = SIMDECK_CAMERA_TRANSFER_FUNCTION_ITU_R_709_2;
+            }
+            if (yCbCrMatrix == SIMDECK_CAMERA_YCBCR_MATRIX_UNKNOWN) {
+                yCbCrMatrix = width >= 1280
+                    ? SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_709_2
+                    : SIMDECK_CAMERA_YCBCR_MATRIX_ITU_R_601_4;
+            }
+        }
         BOOL formatChanged = context->header->width != width ||
             context->header->height != height ||
             context->header->pixelFormat != format;
@@ -279,6 +399,9 @@ static BOOL PublishSurface(SimDeckCameraContext *context,
         context->header->height = (uint32_t)height;
         context->header->pixelFormat = format;
         context->header->colorRange = ColorRangeForPixelFormat(format);
+        context->header->colorPrimaries = colorPrimaries;
+        context->header->transferFunction = transferFunction;
+        context->header->yCbCrMatrix = yCbCrMatrix;
         context->header->orientation = SIMDECK_CAMERA_ORIENTATION_UP;
         context->header->sourceKind = sourceKind;
         context->header->ringSlot = slot;
@@ -906,6 +1029,10 @@ static NSDictionary *StatusPayload(SimDeckCameraContext *context, BOOL ok, NSStr
         payload[@"sampleBufferFailures"] = @(context->header->sampleBufferFailures);
         payload[@"deliveredFrames"] = @(context->header->deliveredFrames);
         payload[@"consumerDroppedFrames"] = @(context->header->consumerDroppedFrames);
+        payload[@"colorRange"] = ColorRangeName(context->header->colorRange);
+        payload[@"colorPrimaries"] = ColorPrimariesName(context->header->colorPrimaries);
+        payload[@"transferFunction"] = TransferFunctionName(context->header->transferFunction);
+        payload[@"yCbCrMatrix"] = YCbCrMatrixName(context->header->yCbCrMatrix);
         NSMutableArray *surfaceUseCounts = [NSMutableArray arrayWithCapacity:SIMDECK_CAMERA_SURFACE_RING_SIZE];
         for (uint32_t slot = 0; slot < SIMDECK_CAMERA_SURFACE_RING_SIZE; slot += 1) {
             [surfaceUseCounts addObject:@(context->header->surfaceUseCounts[slot])];
