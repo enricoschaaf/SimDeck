@@ -24,6 +24,12 @@ const chromeDebugPort = Number(
   process.env.SIMDECK_CAMERA_BENCHMARK_CHROME_PORT ?? "9341",
 );
 const benchmarkOutputPath = process.env.SIMDECK_CAMERA_BENCHMARK_OUTPUT ?? "";
+const benchmarkDurationMs = positiveIntegerEnvironmentValue(
+  "SIMDECK_CAMERA_BENCHMARK_DURATION_MS",
+  10_000,
+);
+const verifyCameraIsolation =
+  process.env.SIMDECK_CAMERA_VERIFY_ISOLATION !== "0";
 const commandTimeoutMs = Number(
   process.env.SIMDECK_INTEGRATION_SIMCTL_TIMEOUT_MS ?? "300000",
 );
@@ -217,12 +223,14 @@ async function main() {
     `received placeholder frames: frames=${placeholderMarker.frames} rgb=${Math.round(placeholderMarker.avgRed)},${Math.round(placeholderMarker.avgGreen)},${Math.round(placeholderMarker.avgBlue)}`,
   );
 
-  await verifyIndependentCameraContexts(
-    runtime,
-    deviceType,
-    appPath,
-    imagePath,
-  );
+  if (verifyCameraIsolation) {
+    await verifyIndependentCameraContexts(
+      runtime,
+      deviceType,
+      appPath,
+      imagePath,
+    );
+  }
 
   step("stop daemon camera feed");
   const stopStatus = simdeckJson(["camera", "stop", simulatorUDID]);
@@ -411,7 +419,6 @@ async function runBrowserBenchmark() {
     const initialMarker = readMarker();
     const initialViewer = await browserViewerSample(cdp);
     const state = await fetchSimulatorState();
-    const benchmarkDurationMs = 10_000;
     const metricsStartedAt = Date.now();
     const processStatsPromise = collectProcessStats(
       [
@@ -435,7 +442,9 @@ async function runBrowserBenchmark() {
     const cameraStatus = simdeckJson(["camera", "status", simulatorUDID]);
     const viewer = await browserViewerSample(cdp);
     const metricsDurationMs = Date.now() - metricsStartedAt;
-    const isolation = await verifySimultaneousBrowserCameras();
+    const isolation = verifyCameraIsolation
+      ? await verifySimultaneousBrowserCameras()
+      : null;
     const recovery = await verifyCameraRecovery(cdp);
     const stopped = await cdp.evaluate(
       "window.__simdeckCameraBenchmark.stop()",
@@ -1680,6 +1689,18 @@ function cleanupSecondarySimulator() {
     } catch {}
   }
   secondarySimulatorUDID = "";
+}
+
+function positiveIntegerEnvironmentValue(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer, received ${value}`);
+  }
+  return parsed;
 }
 
 function sleep(ms) {
