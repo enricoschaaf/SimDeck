@@ -573,7 +573,10 @@ class WebRtcStreamClient implements StreamClientBackend {
     await peerConnection.setLocalDescription(offer);
     await waitForIceGathering(peerConnection, {
       resolveOnHostCandidate: !target.remote,
-      timeoutMs: target.remote ? 3000 : 250,
+      timeoutMs: initialIceGatheringTimeoutMs(
+        Boolean(target.remote),
+        window.location.hostname,
+      ),
     });
     if (generation !== this.connectGeneration) {
       return;
@@ -1636,6 +1639,20 @@ function waitForIceGathering(
     );
     peerConnection.addEventListener("icecandidate", handleIceCandidate);
   });
+}
+
+export function initialIceGatheringTimeoutMs(
+  remote: boolean,
+  hostname: string,
+) {
+  if (!remote) {
+    return 250;
+  }
+  const normalizedHostname = hostname.trim().toLowerCase();
+  return normalizedHostname === "ts.net" ||
+    normalizedHostname.endsWith(".ts.net")
+    ? 250
+    : 3000;
 }
 
 export class StreamWorkerClient {

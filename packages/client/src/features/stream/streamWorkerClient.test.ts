@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildStreamTarget,
+  initialIceGatheringTimeoutMs,
   initialStreamBackend,
   preferredStreamBackend,
 } from "./streamWorkerClient";
@@ -60,5 +61,15 @@ describe("streamWorkerClient", () => {
         globalThis as unknown as { RTCPeerConnection: unknown }
       ).RTCPeerConnection = previousPeerConnection;
     }
+  });
+
+  it("offers quickly when Tailscale host candidates are directly reachable", () => {
+    expect(
+      initialIceGatheringTimeoutMs(true, "ios-simulators.tailnet-19c2.ts.net"),
+    ).toBe(250);
+    expect(initialIceGatheringTimeoutMs(true, "simdeck.example.com")).toBe(
+      3000,
+    );
+    expect(initialIceGatheringTimeoutMs(false, "localhost")).toBe(250);
   });
 });
