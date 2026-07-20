@@ -33,7 +33,18 @@ export interface TransferProgressEvent {
   udid: string;
 }
 
+export interface CameraConsumerStateEvent {
+  type: "camera.consumer-state";
+  activeConsumers: number;
+  consumerRevision: number;
+  framesConsumed: number;
+  framesPublished: number;
+  udid: string;
+  webcamState: "idle" | "requested" | "streaming";
+}
+
 export type ControlServerEvent =
+  | CameraConsumerStateEvent
   | SimulatorFileChangedEvent
   | SystemSurfaceChangedEvent
   | TransferProgressEvent;
@@ -62,6 +73,20 @@ export function parseControlServerEvent(
   }
   if (typeof value.udid !== "string") {
     return null;
+  }
+  if (value.type === "camera.consumer-state") {
+    if (
+      typeof value.activeConsumers !== "number" ||
+      typeof value.consumerRevision !== "number" ||
+      typeof value.framesConsumed !== "number" ||
+      typeof value.framesPublished !== "number" ||
+      (value.webcamState !== "idle" &&
+        value.webcamState !== "requested" &&
+        value.webcamState !== "streaming")
+    ) {
+      return null;
+    }
+    return value as unknown as CameraConsumerStateEvent;
   }
   if (
     value.type === "file.created" ||

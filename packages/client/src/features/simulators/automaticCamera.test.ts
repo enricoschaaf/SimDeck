@@ -1,0 +1,51 @@
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  cameraLifecycleAction,
+  cameraPolicyAllowsCapture,
+  queryCameraPermission,
+} from "./automaticCamera";
+
+describe("automatic camera lifecycle", () => {
+  it("does not prompt after reload unless camera permission is already granted", () => {
+    expect(cameraLifecycleAction(null, 1, "granted")).toBe("start");
+    expect(cameraLifecycleAction(null, 1, "prompt")).toBe("wait");
+    expect(cameraLifecycleAction(null, 1, "unsupported")).toBe("wait");
+  });
+
+  it("starts on first demand and stops only after the final consumer", () => {
+    expect(cameraLifecycleAction(0, 1, "prompt")).toBe("start");
+    expect(cameraLifecycleAction(1, 2, "granted")).toBe("none");
+    expect(cameraLifecycleAction(2, 1, "granted")).toBe("none");
+    expect(cameraLifecycleAction(1, 0, "granted")).toBe("stop");
+  });
+
+  it("reports denied permission without trying capture again", () => {
+    expect(cameraLifecycleAction(0, 1, "denied")).toBe("blocked");
+  });
+});
+
+describe("browser camera permission integration", () => {
+  it("reads the browser camera permission when supported", async () => {
+    const query = vi.fn().mockResolvedValue({ state: "granted" });
+    await expect(queryCameraPermission({ query })).resolves.toBe("granted");
+    expect(query).toHaveBeenCalledWith({ name: "camera" });
+  });
+
+  it("treats unsupported permission queries as unknown", async () => {
+    const query = vi.fn().mockRejectedValue(new TypeError("unsupported"));
+    await expect(queryCameraPermission({ query })).resolves.toBe("unsupported");
+    await expect(queryCameraPermission(undefined)).resolves.toBe("unsupported");
+  });
+
+  it("detects a cross-origin Permissions Policy block", () => {
+    const blocked = {
+      permissionsPolicy: { allowsFeature: () => false },
+    } as unknown as Document;
+    const allowed = {
+      permissionsPolicy: { allowsFeature: () => true },
+    } as unknown as Document;
+    expect(cameraPolicyAllowsCapture(blocked)).toBe(false);
+    expect(cameraPolicyAllowsCapture(allowed)).toBe(true);
+  });
+});

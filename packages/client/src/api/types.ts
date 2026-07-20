@@ -277,6 +277,10 @@ export interface CameraStatusResponse {
   averagePipelineLatencyMs?: number;
   averageSurfacePublicationLatencyMs?: number;
   consumedSequence?: number;
+  activeConsumers?: number;
+  consumerProcesses?: number;
+  consumerRevision?: number;
+  deliveredFrames?: number;
   decodeErrors?: number;
   droppedFrames?: number;
   fullFrameCopies?: number;

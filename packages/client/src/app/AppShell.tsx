@@ -85,6 +85,11 @@ import type {
 } from "../features/viewport/types";
 import { useViewportLayout } from "../features/viewport/useViewportLayout";
 import { CameraSimulationModal } from "../features/simulators/CameraSimulationModal";
+import {
+  CameraRecoveryBanner,
+  CameraSettingsModal,
+} from "../features/simulators/CameraSettingsModal";
+import { useAutomaticCamera } from "../features/simulators/automaticCamera";
 import { DeepLinkModal } from "../features/simulators/DeepLinkModal";
 import { NewSimulatorModal } from "../features/simulators/NewSimulatorModal";
 import { nextViewportWheelPanState } from "../features/viewport/viewportWheel";
@@ -130,6 +135,7 @@ import {
 import {
   isMoveControlMessage,
   parseControlServerEvent,
+  type CameraConsumerStateEvent,
   type ControlServerEvent,
 } from "./controlMessages";
 
@@ -180,6 +186,12 @@ const STREAM_ENCODER_VALUES = new Set<StreamEncoder>([
   "hardware",
   "software",
 ]);
+
+function cameraBenchmarkMode(): boolean {
+  return (
+    new URLSearchParams(window.location.search).get("cameraBenchmark") === "1"
+  );
+}
 const STREAM_TRANSPORT_VALUES = new Set<StreamTransport>(["auto", "webrtc"]);
 const MOBILE_VIEWPORT_MEDIA_QUERY = "(max-width: 600px)";
 const CHROME_RENDERER_ASSET_VERSION = "chrome-renderer-button-overlay-23";
@@ -566,6 +578,8 @@ export function AppShell({
   const [cameraSimulationOpen, setCameraSimulationOpen] = useState(false);
   const [cameraDebugStatus, setCameraDebugStatus] =
     useState<CameraStatusResponse | null>(null);
+  const [cameraConsumerState, setCameraConsumerState] =
+    useState<CameraConsumerStateEvent | null>(null);
   const [deepLinkOpen, setDeepLinkOpen] = useState(false);
   const [filesMediaVisible, setFilesMediaVisible] = useState(false);
   const [filesMediaTab, setFilesMediaTab] = useState<FilesMediaTab>("files");
@@ -819,6 +833,11 @@ export function AppShell({
           ...selectedSimulatorState.simulator,
         }
       : baseSelectedSimulator;
+  const automaticCamera = useAutomaticCamera({
+    consumerState: cameraConsumerState,
+    enabled: Boolean(selectedSimulator?.isBooted),
+    udid: selectedSimulator?.udid ?? "",
+  });
   const selectedSimulatorTransitionKind =
     selectedSimulator != null &&
     simulatorTransition?.udid === selectedSimulator.udid
@@ -2621,6 +2640,10 @@ export function AppShell({
         }
         return;
       }
+      if (message.type === "camera.consumer-state") {
+        setCameraConsumerState(message);
+        return;
+      }
       setFilesMediaEvent(message);
     });
 
@@ -3982,9 +4005,15 @@ export function AppShell({
       />
       <CameraSimulationModal
         onClose={() => setCameraSimulationOpen(false)}
-        open={cameraSimulationOpen}
+        open={cameraSimulationOpen && cameraBenchmarkMode()}
         selectedSimulator={selectedSimulator}
       />
+      <CameraSettingsModal
+        camera={automaticCamera}
+        onClose={() => setCameraSimulationOpen(false)}
+        open={cameraSimulationOpen && !cameraBenchmarkMode()}
+      />
+      <CameraRecoveryBanner camera={automaticCamera} />
       <DeepLinkModal
         onClose={() => setDeepLinkOpen(false)}
         onOpen={async (url) => {

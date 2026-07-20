@@ -155,6 +155,30 @@ describe("controlMessages", () => {
     ).toMatchObject({ status: "completed" });
   });
 
+  it("parses camera demand and frame metrics", () => {
+    expect(
+      parseControlServerEvent(
+        JSON.stringify({
+          type: "camera.consumer-state",
+          udid: "device-a",
+          activeConsumers: 2,
+          consumerRevision: 4,
+          webcamState: "streaming",
+          framesPublished: 91,
+          framesConsumed: 87,
+        }),
+      ),
+    ).toEqual({
+      type: "camera.consumer-state",
+      udid: "device-a",
+      activeConsumers: 2,
+      consumerRevision: 4,
+      webcamState: "streaming",
+      framesPublished: 91,
+      framesConsumed: 87,
+    });
+  });
+
   it("rejects unknown and malformed server events", () => {
     expect(parseControlServerEvent("not-json")).toBeNull();
     expect(

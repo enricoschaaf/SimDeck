@@ -749,6 +749,47 @@
   font-variant-numeric: tabular-nums;
 }
 
+.camera-settings-window {
+  width: min(560px, calc(100vw - 32px));
+  height: auto;
+  min-height: 0;
+}
+
+.camera-settings-body {
+  display: grid;
+  gap: 18px;
+}
+
+.camera-recovery-banner {
+  position: fixed;
+  z-index: 90;
+  top: 58px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(620px, calc(100vw - 24px));
+  padding: 9px 10px 9px 13px;
+  border: 1px solid color-mix(in srgb, #ff5f57 48%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 94%, #ff5f57);
+  color: var(--text);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 30%);
+  font-size: 12px;
+}
+
+.camera-recovery-banner button {
+  flex: none;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: white;
+  font: inherit;
+  font-weight: 700;
+}
+
 .deep-link-window {
   width: min(920px, calc(100vw - 32px));
   height: min(780px, calc(100dvh - 48px));

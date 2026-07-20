@@ -322,7 +322,7 @@ export function SimulatorMenu({
                     onCloseMenu();
                   }}
                 >
-                  Camera…
+                  Camera Settings…
                 </button>
                 <button
                   className="menu-action"
