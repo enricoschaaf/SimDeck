@@ -10,6 +10,7 @@
 
 #import <CoreVideo/CoreVideo.h>
 #import <dispatch/dispatch.h>
+#import <errno.h>
 #import <fcntl.h>
 #import <pthread.h>
 #import <stdatomic.h>
@@ -18,6 +19,7 @@
 #import <stdio.h>
 #import <stdlib.h>
 #import <string.h>
+#import <signal.h>
 #import <sys/mman.h>
 #import <sys/stat.h>
 #import <unistd.h>
@@ -1018,6 +1020,26 @@ static NSDictionary *StatusPayload(SimDeckCameraContext *context, BOOL ok, NSStr
     if (context->sourceArgument.length > 0) payload[@"arg"] = context->sourceArgument;
     if (context->header) payload[@"sourceLabel"] = StringFromCString(context->header->sourceLabel);
     if (context->header) {
+        uint32_t activeConsumers = 0;
+        NSMutableArray *consumerProcesses = [NSMutableArray array];
+        for (uint32_t index = 0; index < SIMDECK_CAMERA_CONSUMER_SLOT_COUNT; index += 1) {
+            SimDeckCameraConsumerSlot *slot = &context->header->consumers[index];
+            uint32_t pid = __atomic_load_n(&slot->pid, __ATOMIC_ACQUIRE);
+            uint32_t count = __atomic_load_n(&slot->count, __ATOMIC_ACQUIRE);
+            if (pid == 0 || count == 0) continue;
+            errno = 0;
+            if (kill((pid_t)pid, 0) != 0 && errno == ESRCH) {
+                __atomic_store_n(&slot->count, 0, __ATOMIC_RELEASE);
+                __sync_bool_compare_and_swap(&slot->pid, pid, 0);
+                __sync_fetch_and_add(&context->header->consumerRevision, 1);
+                continue;
+            }
+            activeConsumers += count;
+            [consumerProcesses addObject:@{ @"pid": @(pid), @"count": @(count) }];
+        }
+        payload[@"activeConsumers"] = @(activeConsumers);
+        payload[@"consumerRevision"] = @(context->header->consumerRevision);
+        payload[@"consumerProcesses"] = consumerProcesses;
         payload[@"surfaceGeneration"] = @(context->header->generation);
         payload[@"surfaceSlot"] = @(context->header->ringSlot);
         payload[@"surfaceId"] = @(context->header->surfaceIds[context->header->ringSlot]);

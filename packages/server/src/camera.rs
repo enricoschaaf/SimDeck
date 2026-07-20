@@ -1,6 +1,5 @@
 use crate::error::AppError;
 use crate::native::ffi;
-use anyhow::{anyhow, Context};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -8,18 +7,8 @@ use sha2::{Digest, Sha256};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 pub mod webrtc;
-
-const INJECTOR_NAME: &str = "libSimDeckCameraInjector.dylib";
-const CAMERA_DYLD_ENV: &str = "DYLD_INSERT_LIBRARIES";
-const CAMERA_SHM_ENV: &str = "SIMDECK_CAMERA_SHM_NAME";
-const CAMERA_MIRROR_ENV: &str = "SIMDECK_CAMERA_MIRROR";
-const CAMERA_TARGETS_ENV: &str = "SIMDECK_CAMERA_TARGET_BUNDLE_IDS";
-const BROWSER_CAMERA_TARGETS: &str = "com.apple.SafariViewService,com.apple.mobilesafari";
-const BROWSER_BUNDLE_IDS: [&str; 2] = ["com.apple.SafariViewService", "com.apple.mobilesafari"];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -78,7 +67,6 @@ pub struct CameraSwitchRequest {
 #[derive(Clone, Debug)]
 pub struct CameraStartOptions {
     pub udid: String,
-    pub bundle_id: String,
     pub source: CameraSource,
     pub mirror: Option<String>,
 }
@@ -87,28 +75,30 @@ pub fn start_camera(options: CameraStartOptions) -> Result<Value, AppError> {
     validate_udid(&options.udid)?;
     let source = normalize_source(options.source)?;
     let mirror = normalize_mirror(options.mirror.as_deref())?;
-    let bundle_id = options.bundle_id.trim();
-    validate_bundle_id(bundle_id)?;
     fs::create_dir_all(camera_state_dir()).map_err(app_internal)?;
 
     let shm_name = shm_name_for_udid(&options.udid);
-    let dylib = camera_injector_path().map_err(app_internal)?;
     native_start_camera(&options.udid, &shm_name, &source, &mirror)?;
-
-    if let Err(error) = configure_browser_injector(&options.udid, &dylib, &shm_name, &mirror) {
-        let _ = native_stop_camera(&options.udid);
-        return Err(error);
-    }
-    if let Err(error) = launch_with_injector(&options.udid, bundle_id, &dylib, &shm_name, &mirror) {
-        let _ = clear_browser_injector(&options.udid);
-        let _ = native_stop_camera(&options.udid);
-        return Err(error);
-    }
-    record_injected_bundle(&options.udid, bundle_id)?;
 
     let mut status = native_status(&options.udid)?;
     enrich_status(&options.udid, &mut status);
     Ok(status)
+}
+
+pub fn ensure_idle_camera(udid: &str) -> Result<Value, AppError> {
+    validate_udid(udid)?;
+    let status = native_status(udid)?;
+    if status.get("alive").and_then(Value::as_bool) == Some(true) {
+        return Ok(status);
+    }
+    start_camera(CameraStartOptions {
+        udid: udid.to_owned(),
+        source: CameraSource {
+            kind: CameraSourceKind::Camera,
+            arg: None,
+        },
+        mirror: Some("on".to_owned()),
+    })
 }
 
 pub fn switch_camera(
@@ -136,10 +126,18 @@ pub fn camera_status(udid: &str) -> Result<Value, AppError> {
 
 pub fn stop_camera(udid: &str) -> Result<Value, AppError> {
     validate_udid(udid)?;
-    native_stop_camera(udid)?;
-    clear_browser_injector(udid)?;
-    let _ = fs::remove_file(injected_bundles_file(udid));
-    Ok(json!({ "ok": true, "udid": udid, "alive": false }))
+    let status = native_status(udid)?;
+    if status.get("alive").and_then(Value::as_bool) != Some(true) {
+        return Ok(status);
+    }
+    native_switch_camera(
+        udid,
+        &CameraSource {
+            kind: CameraSourceKind::Camera,
+            arg: None,
+        },
+        None,
+    )
 }
 
 pub fn configure_camera_decoder(udid: &str, configuration: &[u8]) -> Result<(), AppError> {
@@ -284,20 +282,6 @@ fn native_switch_camera(
     native_json(raw, error_message, "Unable to switch camera source.")
 }
 
-fn native_stop_camera(udid: &str) -> Result<(), AppError> {
-    let udid = cstring("simulator UDID", udid)?;
-    let mut error_message = std::ptr::null_mut();
-    let ok = unsafe { ffi::simdeck_camera_stop(udid.as_ptr(), &mut error_message) };
-    if ok {
-        Ok(())
-    } else {
-        Err(native_error(
-            error_message,
-            "Unable to stop the camera daemon.",
-        ))
-    }
-}
-
 fn native_json(
     raw: *mut c_char,
     error_message: *mut c_char,
@@ -331,144 +315,6 @@ fn take_native_string(raw: *mut c_char) -> String {
 
 fn cstring(name: &str, value: &str) -> Result<CString, AppError> {
     CString::new(value).map_err(|_| AppError::bad_request(format!("{name} contains NUL byte.")))
-}
-
-fn launch_with_injector(
-    udid: &str,
-    bundle_id: &str,
-    dylib: &Path,
-    shm_name: &str,
-    mirror: &str,
-) -> Result<(), AppError> {
-    let _ = Command::new("/usr/bin/xcrun")
-        .args(["simctl", "terminate", udid, bundle_id])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let app_log = camera_app_log_file(udid);
-    let mut child = Command::new("/usr/bin/xcrun")
-        .arg("simctl")
-        .arg("launch")
-        .arg(format!("--stdout={}", app_log.display()))
-        .arg(format!("--stderr={}", app_log.display()))
-        .arg(udid)
-        .arg(bundle_id)
-        .env(format!("SIMCTL_CHILD_{CAMERA_DYLD_ENV}"), dylib)
-        .env(format!("SIMCTL_CHILD_{CAMERA_SHM_ENV}"), shm_name)
-        .env(format!("SIMCTL_CHILD_{CAMERA_MIRROR_ENV}"), mirror)
-        .env(format!("SIMCTL_CHILD_{CAMERA_TARGETS_ENV}"), bundle_id)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| AppError::native(format!("Unable to launch camera app. {error}")))?;
-    let start = Instant::now();
-    let output = loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break child.wait_with_output().map_err(app_internal)?,
-            Ok(None) => {
-                if start.elapsed() > Duration::from_secs(180) {
-                    let _ = child.kill();
-                    let output = child.wait_with_output().map_err(app_internal)?;
-                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-                    return Err(AppError::native(if stderr.is_empty() {
-                        "xcrun simctl launch timed out after 180s.".to_owned()
-                    } else {
-                        format!("xcrun simctl launch timed out after 180s. {stderr}")
-                    }));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(error) => {
-                return Err(AppError::native(format!(
-                    "Unable to wait for camera app launch. {error}"
-                )))
-            }
-        }
-    };
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        Err(AppError::native(if stderr.is_empty() {
-            stdout
-        } else {
-            stderr
-        }))
-    }
-}
-
-fn configure_browser_injector(
-    udid: &str,
-    dylib: &Path,
-    shm_name: &str,
-    mirror: &str,
-) -> Result<(), AppError> {
-    let dylib = dylib
-        .to_str()
-        .ok_or_else(|| AppError::native("Camera injector path is not valid UTF-8."))?;
-    for (name, value) in [
-        (CAMERA_DYLD_ENV, dylib),
-        (CAMERA_SHM_ENV, shm_name),
-        (CAMERA_MIRROR_ENV, mirror),
-        (CAMERA_TARGETS_ENV, BROWSER_CAMERA_TARGETS),
-    ] {
-        let output = Command::new("/usr/bin/xcrun")
-            .args(["simctl", "spawn", udid, "launchctl", "setenv", name, value])
-            .output()
-            .map_err(|error| {
-                AppError::native(format!(
-                    "Unable to configure browser camera injection. {error}"
-                ))
-            })?;
-        if !output.status.success() {
-            let _ = clear_browser_injector(udid);
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(AppError::native(if stderr.is_empty() {
-                "Unable to configure browser camera injection.".to_owned()
-            } else {
-                format!("Unable to configure browser camera injection. {stderr}")
-            }));
-        }
-    }
-    terminate_browser_camera_processes(udid);
-    Ok(())
-}
-
-fn clear_browser_injector(udid: &str) -> Result<(), AppError> {
-    for name in [
-        CAMERA_DYLD_ENV,
-        CAMERA_SHM_ENV,
-        CAMERA_MIRROR_ENV,
-        CAMERA_TARGETS_ENV,
-    ] {
-        let output = Command::new("/usr/bin/xcrun")
-            .args(["simctl", "spawn", udid, "launchctl", "unsetenv", name])
-            .output()
-            .map_err(|error| {
-                AppError::native(format!("Unable to clear browser camera injection. {error}"))
-            })?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(AppError::native(if stderr.is_empty() {
-                "Unable to clear browser camera injection.".to_owned()
-            } else {
-                format!("Unable to clear browser camera injection. {stderr}")
-            }));
-        }
-    }
-    terminate_browser_camera_processes(udid);
-    Ok(())
-}
-
-fn terminate_browser_camera_processes(udid: &str) {
-    for bundle_id in BROWSER_BUNDLE_IDS {
-        let _ = Command::new("/usr/bin/xcrun")
-            .args(["simctl", "terminate", udid, bundle_id])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
 }
 
 fn normalize_source(mut source: CameraSource) -> Result<CameraSource, AppError> {
@@ -551,18 +397,6 @@ fn validate_udid(udid: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_bundle_id(bundle_id: &str) -> Result<(), AppError> {
-    let valid = !bundle_id.is_empty()
-        && bundle_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
-    if valid {
-        Ok(())
-    } else {
-        Err(AppError::bad_request("Invalid bundle identifier."))
-    }
-}
-
 fn enrich_status(udid: &str, status: &mut Value) {
     let Some(object) = status.as_object_mut() else {
         return;
@@ -575,50 +409,11 @@ fn enrich_status(udid: &str, status: &mut Value) {
     {
         object.insert("daemonPid".to_owned(), json!(pid));
     }
-    object.insert("bundleIds".to_owned(), json!(read_injected_bundles(udid)));
     object.insert(
         "appLogPath".to_owned(),
         Value::String(camera_app_log_file(udid).display().to_string()),
     );
     webrtc::enrich_status(udid, object);
-}
-
-fn record_injected_bundle(udid: &str, bundle_id: &str) -> Result<(), AppError> {
-    let mut bundle_ids = read_injected_bundles(udid);
-    if !bundle_ids.iter().any(|current| current == bundle_id) {
-        bundle_ids.push(bundle_id.to_owned());
-    }
-    let payload = json!({
-        "daemonPid": std::process::id(),
-        "bundleIds": bundle_ids,
-    });
-    fs::write(
-        injected_bundles_file(udid),
-        serde_json::to_vec(&payload).map_err(app_internal)?,
-    )
-    .map_err(app_internal)
-}
-
-fn read_injected_bundles(udid: &str) -> Vec<String> {
-    let path = injected_bundles_file(udid);
-    let Ok(data) = fs::read(path) else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_slice::<Value>(&data) else {
-        return Vec::new();
-    };
-    let stored_pid = value.get("daemonPid").and_then(Value::as_u64).unwrap_or(0) as u32;
-    if stored_pid != std::process::id() {
-        return Vec::new();
-    }
-    value
-        .get("bundleIds")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(ToOwned::to_owned)
-        .collect()
 }
 
 fn camera_state_dir() -> PathBuf {
@@ -629,10 +424,6 @@ fn camera_app_log_file(udid: &str) -> PathBuf {
     camera_state_dir().join(format!("{}.app.log", short_hash(udid)))
 }
 
-fn injected_bundles_file(udid: &str) -> PathBuf {
-    camera_state_dir().join(format!("{}.bundles.json", short_hash(udid)))
-}
-
 fn shm_name_for_udid(udid: &str) -> String {
     format!("/sd-cam-{}", short_hash(udid))
 }
@@ -640,33 +431,6 @@ fn shm_name_for_udid(udid: &str) -> String {
 fn short_hash(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
     hex::encode(&digest[..6])
-}
-
-fn camera_injector_path() -> anyhow::Result<PathBuf> {
-    camera_artifact_path(INJECTOR_NAME)
-}
-
-fn camera_artifact_path(name: &str) -> anyhow::Result<PathBuf> {
-    let exe = std::env::current_exe().context("resolve current executable")?;
-    let exe_dir = exe
-        .parent()
-        .ok_or_else(|| anyhow!("current executable has no parent directory"))?;
-    let cwd = std::env::current_dir().context("resolve current directory")?;
-    let candidates = [
-        exe_dir.join("camera").join(name),
-        exe_dir.join(name),
-        cwd.join("build").join("camera").join(name),
-        cwd.join("cli").join("camera").join("build").join(name),
-    ];
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .ok_or_else(|| {
-            anyhow!(
-                "Camera artifact `{}` is missing. Run `npm run build:cli` from the SimDeck checkout.",
-                name
-            )
-        })
 }
 
 fn app_internal(error: impl std::fmt::Display) -> AppError {

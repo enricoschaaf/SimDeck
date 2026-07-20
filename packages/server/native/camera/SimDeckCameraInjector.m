@@ -300,6 +300,12 @@ static BOOL ShouldInstallForCurrentProcess(void) {
     NSString *processName = NSProcessInfo.processInfo.processName ?: @"";
     for (NSString *rawTarget in [targets componentsSeparatedByString:@","]) {
         NSString *target = [rawTarget stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if ([target isEqualToString:@"__SIMDECK_USER_APPS__"] &&
+            bundleID.length > 0 &&
+            ![bundleID hasPrefix:@"com.apple."] &&
+            ![bundleID hasSuffix:@".xctrunner"]) {
+            return YES;
+        }
         if ([target isEqualToString:bundleID] || [target isEqualToString:processName]) return YES;
     }
     return NO;
@@ -342,6 +348,52 @@ static BOOL OpenSharedCamera(void) {
     __sync_lock_test_and_set(&gHeader->consumerPid, (uint32_t)getpid());
     DebugLog(@"attached surface feed %ux%u", header->width, header->height);
     return YES;
+}
+
+static NSInteger gConsumerSlot = -1;
+static uint32_t gProcessActiveConsumers = 0;
+
+static BOOL EnsureConsumerSlot(void) {
+    if (!OpenSharedCamera()) return NO;
+    uint32_t pid = (uint32_t)getpid();
+    if (gConsumerSlot >= 0 &&
+        gConsumerSlot < SIMDECK_CAMERA_CONSUMER_SLOT_COUNT &&
+        __atomic_load_n(&gHeader->consumers[gConsumerSlot].pid, __ATOMIC_ACQUIRE) == pid) {
+        return YES;
+    }
+    for (uint32_t index = 0; index < SIMDECK_CAMERA_CONSUMER_SLOT_COUNT; index += 1) {
+        uint32_t current = __atomic_load_n(&gHeader->consumers[index].pid, __ATOMIC_ACQUIRE);
+        if (current == pid ||
+            (current == 0 && __sync_bool_compare_and_swap(&gHeader->consumers[index].pid, 0, pid))) {
+            gConsumerSlot = (NSInteger)index;
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void RegisterCameraConsumer(void) {
+    if (!EnsureConsumerSlot()) return;
+    gProcessActiveConsumers += 1;
+    __atomic_store_n(&gHeader->consumers[gConsumerSlot].count,
+                     gProcessActiveConsumers,
+                     __ATOMIC_RELEASE);
+    __sync_fetch_and_add(&gHeader->consumerRevision, 1);
+}
+
+static void UnregisterCameraConsumer(void) {
+    if (!gHeader || gConsumerSlot < 0 || gProcessActiveConsumers == 0) return;
+    gProcessActiveConsumers -= 1;
+    __atomic_store_n(&gHeader->consumers[gConsumerSlot].count,
+                     gProcessActiveConsumers,
+                     __ATOMIC_RELEASE);
+    if (gProcessActiveConsumers == 0) {
+        __sync_bool_compare_and_swap(&gHeader->consumers[gConsumerSlot].pid,
+                                     (uint32_t)getpid(),
+                                     0);
+        gConsumerSlot = -1;
+    }
+    __sync_fetch_and_add(&gHeader->consumerRevision, 1);
 }
 
 static CVPixelBufferRef CurrentPixelBuffer(BOOL requireNewFrame,
@@ -1215,15 +1267,31 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
 }
 
 - (void)sd_startRunning {
-    objc_setAssociatedObject(self, &kSessionRunningKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!OpenSharedCamera()) {
+        [self sd_startRunning];
+        return;
+    }
     @synchronized(gSessions) {
+        NSNumber *running = objc_getAssociatedObject(self, &kSessionRunningKey);
+        if (running.boolValue) return;
+        objc_setAssociatedObject(self, &kSessionRunningKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         TrackPointer(gSessions, self);
+        RegisterCameraConsumer();
     }
     StartFrameTimer();
 }
 
 - (void)sd_stopRunning {
-    objc_setAssociatedObject(self, &kSessionRunningKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    @synchronized(gSessions) {
+        NSNumber *running = objc_getAssociatedObject(self, &kSessionRunningKey);
+        if (!running) {
+            [self sd_stopRunning];
+            return;
+        }
+        if (!running.boolValue) return;
+        objc_setAssociatedObject(self, &kSessionRunningKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        UnregisterCameraConsumer();
+    }
 }
 
 - (BOOL)sd_isRunning {

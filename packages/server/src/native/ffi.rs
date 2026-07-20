@@ -53,7 +53,6 @@ unsafe extern "C" {
         mirror: *const c_char,
         error_message: *mut *mut c_char,
     ) -> *mut c_char;
-    pub fn simdeck_camera_stop(udid: *const c_char, error_message: *mut *mut c_char) -> bool;
     pub fn simdeck_camera_configure_h264(
         udid: *const c_char,
         configuration: *const u8,

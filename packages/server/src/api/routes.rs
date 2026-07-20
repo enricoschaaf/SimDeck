@@ -3574,7 +3574,6 @@ async fn camera_status(Path(udid): Path<String>) -> Result<Json<Value>, AppError
 }
 
 async fn start_camera(
-    State(state): State<AppState>,
     Path(udid): Path<String>,
     Json(payload): Json<CameraStartRequest>,
 ) -> Result<Json<Value>, AppError> {
@@ -3583,25 +3582,10 @@ async fn start_camera(
             "Camera control is only supported for iOS simulators.",
         ));
     }
-    let bundle_id = foreground_app_for_simulator_with_cache_ttl(&state, &udid, Duration::ZERO)
-        .await
-        .map_err(|error| {
-            AppError::native(format!("Unable to resolve the foreground app. {error}"))
-        })?
-        .and_then(|app| app.bundle_identifier)
-        .ok_or_else(|| {
-            AppError::bad_request("Open the app that should receive the camera before starting it.")
-        })?;
-    if !is_camera_target_bundle_id(&bundle_id) {
-        return Err(AppError::bad_request(
-            "Open a user-installed app before starting the camera.",
-        ));
-    }
     camera::webrtc::stop(&udid).await;
     let status = task::spawn_blocking(move || {
         camera::start_camera(camera::CameraStartOptions {
             udid,
-            bundle_id,
             source: payload.source,
             mirror: payload.mirror,
         })
@@ -3609,10 +3593,6 @@ async fn start_camera(
     .await
     .map_err(|error| AppError::internal(format!("Camera task failed. {error}")))??;
     Ok(json(status))
-}
-
-fn is_camera_target_bundle_id(bundle_id: &str) -> bool {
-    !bundle_id.starts_with("com.apple.") && !bundle_id.ends_with(".xctrunner")
 }
 
 async fn switch_camera_source(
@@ -3852,7 +3832,23 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
     }
 
     let (mut sender, mut receiver) = socket.split();
+    if !android::is_android_id(&udid) {
+        let camera_udid = udid.clone();
+        if let Err(error) = task::spawn_blocking(move || camera::ensure_idle_camera(&camera_udid))
+            .await
+            .map_err(|error| AppError::internal(format!("Camera task failed. {error}")))
+            .and_then(|result| result)
+        {
+            tracing::warn!(?error, %udid, "Unable to prepare idle camera injection");
+        }
+    }
     let mut device_events = state.device_events.subscribe(&udid);
+    let mut camera_tick = tokio::time::interval(Duration::from_millis(500));
+    camera_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_camera_revision = None;
+    let mut last_active_consumers = None;
+    let mut last_camera_published_frames = None;
+    let mut last_camera_consumed_frames = None;
     state
         .system_surfaces
         .ensure_monitor(udid.clone(), state.device_events.clone());
@@ -3924,6 +3920,60 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
                     tracing::debug!("Control WebSocket for {udid} skipped {skipped} device events");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            },
+            _ = camera_tick.tick(), if !android::is_android_id(&udid) => {
+                let Ok(status) = camera::camera_status(&udid) else {
+                    continue;
+                };
+                let active_consumers = status
+                    .get("activeConsumers")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let revision = status
+                    .get("consumerRevision")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let published_frames = status
+                    .get("publishedFrames")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let consumed_frames = status
+                    .get("deliveredFrames")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if last_camera_revision == Some(revision) &&
+                    last_active_consumers == Some(active_consumers) &&
+                    last_camera_published_frames == Some(published_frames) &&
+                    last_camera_consumed_frames == Some(consumed_frames) {
+                    continue;
+                }
+                last_camera_revision = Some(revision);
+                last_active_consumers = Some(active_consumers);
+                last_camera_published_frames = Some(published_frames);
+                last_camera_consumed_frames = Some(consumed_frames);
+                let webcam_connected = status
+                    .get("webRtcCamera")
+                    .and_then(|value| value.get("connected"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let event = json_value!({
+                    "type": "camera.consumer-state",
+                    "udid": udid,
+                    "activeConsumers": active_consumers,
+                    "consumerRevision": revision,
+                    "webcamState": if webcam_connected {
+                        "streaming"
+                    } else if active_consumers > 0 {
+                        "requested"
+                    } else {
+                        "idle"
+                    },
+                    "framesPublished": published_frames,
+                    "framesConsumed": consumed_frames,
+                });
+                if sender.send(Message::Text(event.to_string().into())).await.is_err() {
+                    break;
+                }
             }
         }
     }
@@ -6611,7 +6661,7 @@ mod tests {
         client_stats_foreground, compact_accessibility_snapshot, content_disposition_header,
         decode_percent_encoded_utf8, element_matches_selector, first_matching_element,
         inspector_available_sources, inspector_metadata, inspector_session_from_published,
-        inspector_session_score, is_camera_target_bundle_id, is_inspector_agent_transport_path,
+        inspector_session_score, is_inspector_agent_transport_path,
         is_transient_native_ax_snapshot_error, logical_screen_size_from_display_pixels,
         normalize_inspector_node, normalize_screen_point_from_snapshot,
         normalized_gesture_coordinates, parse_lsof_tcp_listener,
@@ -6681,15 +6731,6 @@ mod tests {
 
         assert!(options.emulator_args.is_empty());
         assert!(options.disable_audio);
-    }
-
-    #[test]
-    fn camera_target_requires_a_user_app() {
-        assert!(is_camera_target_bundle_id("com.green-got.dev"));
-        assert!(!is_camera_target_bundle_id("com.apple.DocumentsApp"));
-        assert!(!is_camera_target_bundle_id(
-            "com.green-got.dev-tests.xctrunner"
-        ));
     }
 
     fn accessibility_snapshot() -> Value {

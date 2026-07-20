@@ -1,12 +1,15 @@
 #import "XCWPrivateSimulatorBooter.h"
 
+#import <CommonCrypto/CommonDigest.h>
 #import <dlfcn.h>
 #import <limits.h>
+#import <mach-o/dyld.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
 static NSString * const XCWPrivateSimulatorBooterErrorDomain = @"SimDeck.PrivateSimulatorBooter";
 static NSString * const XCWCoreSimulatorPath = @"/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator";
+static NSString * const XCWCameraInjectorName = @"libSimDeckCameraInjector.dylib";
 
 typedef NS_ENUM(NSInteger, XCWPrivateSimulatorBooterErrorCode) {
     XCWPrivateSimulatorBooterErrorCodeFrameworkLoadFailed = 1,
@@ -147,6 +150,75 @@ static BOOL XCWPrivateBootErrorMeansAlreadyBooted(NSError *error) {
     return [message containsString:@"already booted"] || [message containsString:@"current state: booted"];
 }
 
+static NSString *XCWCameraInjectorPath(void) {
+    uint32_t length = 0;
+    _NSGetExecutablePath(NULL, &length);
+    if (length == 0) return nil;
+    char *buffer = calloc(length, sizeof(char));
+    if (!buffer) return nil;
+    if (_NSGetExecutablePath(buffer, &length) != 0) {
+        free(buffer);
+        return nil;
+    }
+    NSString *executable = [[NSString stringWithUTF8String:buffer] stringByResolvingSymlinksInPath];
+    free(buffer);
+    NSString *path = [[[executable stringByDeletingLastPathComponent]
+        stringByAppendingPathComponent:@"camera"]
+        stringByAppendingPathComponent:XCWCameraInjectorName];
+    return [[NSFileManager defaultManager] isReadableFileAtPath:path] ? path : nil;
+}
+
+static NSString *XCWCameraSharedMemoryName(NSString *udid) {
+    NSData *data = [udid dataUsingEncoding:NSUTF8StringEncoding];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH] = {0};
+    CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+    NSMutableString *suffix = [NSMutableString stringWithCapacity:12];
+    for (NSUInteger index = 0; index < 6; index += 1) {
+        [suffix appendFormat:@"%02x", digest[index]];
+    }
+    return [@"/sd-cam-" stringByAppendingString:suffix];
+}
+
+static NSDictionary *XCWCameraBootEnvironment(NSString *udid, NSString *injector) {
+    return @{
+        @"DYLD_INSERT_LIBRARIES": injector,
+        @"SIMDECK_CAMERA_SHM_NAME": XCWCameraSharedMemoryName(udid),
+        @"SIMDECK_CAMERA_MIRROR": @"on",
+        @"SIMDECK_CAMERA_TARGET_BUNDLE_IDS": @"com.apple.WebKit.GPU,__SIMDECK_USER_APPS__",
+    };
+}
+
+static BOOL XCWConfigureCameraBootEnvironment(id device, NSString *udid, NSError **error) {
+    NSString *injector = XCWCameraInjectorPath();
+    if (!injector) {
+        if (error != NULL) {
+            *error = XCWPrivateSimulatorBooterMakeError(
+                XCWPrivateSimulatorBooterErrorCodeBootFailed,
+                @"The SimDeck camera injector is missing beside the server executable."
+            );
+        }
+        return NO;
+    }
+    SEL getter = sel_registerName("bootEnvironmentExtra");
+    SEL setter = sel_registerName("setBootEnvironmentExtra:");
+    if (![device respondsToSelector:setter]) {
+        if (error != NULL) {
+            *error = XCWPrivateSimulatorBooterMakeError(
+                XCWPrivateSimulatorBooterErrorCodeBootFailed,
+                @"CoreSimulator does not expose per-device boot environment configuration."
+            );
+        }
+        return NO;
+    }
+    NSDictionary *existing = [device respondsToSelector:getter]
+        ? ((id(*)(id, SEL))objc_msgSend)(device, getter)
+        : nil;
+    NSMutableDictionary *environment = [NSMutableDictionary dictionaryWithDictionary:existing ?: @{}];
+    [environment addEntriesFromDictionary:XCWCameraBootEnvironment(udid, injector)];
+    ((void(*)(id, SEL, id))objc_msgSend)(device, setter, environment);
+    return YES;
+}
+
 @implementation XCWPrivateSimulatorBooter
 
 + (BOOL)bootDeviceWithUDID:(NSString *)udid error:(NSError * _Nullable __autoreleasing *)error {
@@ -214,6 +286,10 @@ static BOOL XCWPrivateBootErrorMeansAlreadyBooted(NSError *error) {
 
     NSError *bootError = nil;
     BOOL booted = NO;
+    if (!XCWConfigureCameraBootEnvironment(targetDevice, udid, &bootError)) {
+        if (error != NULL) *error = bootError;
+        return NO;
+    }
     SEL bootWithOptionsSelector = sel_registerName("bootWithOptions:error:");
     if ([targetDevice respondsToSelector:bootWithOptionsSelector]) {
         booted = ((BOOL(*)(id, SEL, id, NSError **))objc_msgSend)(
