@@ -26,8 +26,11 @@ use webrtc::rtp_transceiver::rtp_codec::{
 use webrtc::track::track_remote::TrackRemote;
 
 const CAMERA_DATA_CHANNEL_LABEL: &str = "simdeck-camera";
-const H264_FMTP_LINE: &str =
-    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f";
+const H264_FMTP_LINES: [&str; 3] = [
+    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640c1f",
+    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d001f",
+    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+];
 const FAST_ICE_GATHER_TIMEOUT: Duration = Duration::from_millis(250);
 const FULL_ICE_GATHER_TIMEOUT: Duration = Duration::from_secs(3);
 const REORDER_WINDOW_PACKETS: usize = 8;
@@ -175,22 +178,24 @@ pub async fn create_answer(
     }
 
     let mut media_engine = MediaEngine::default();
-    media_engine
-        .register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: MIME_TYPE_H264.to_owned(),
-                    clock_rate: 90_000,
-                    channels: 0,
-                    sdp_fmtp_line: H264_FMTP_LINE.to_owned(),
-                    rtcp_feedback: crate::transport::webrtc::h264_rtcp_feedback(),
+    for (index, sdp_fmtp_line) in H264_FMTP_LINES.iter().enumerate() {
+        media_engine
+            .register_codec(
+                RTCRtpCodecParameters {
+                    capability: RTCRtpCodecCapability {
+                        mime_type: MIME_TYPE_H264.to_owned(),
+                        clock_rate: 90_000,
+                        channels: 0,
+                        sdp_fmtp_line: (*sdp_fmtp_line).to_owned(),
+                        rtcp_feedback: crate::transport::webrtc::h264_rtcp_feedback(),
+                    },
+                    payload_type: 96 + index as u8,
+                    ..Default::default()
                 },
-                payload_type: 96,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
-        )
-        .map_err(|err| AppError::internal(format!("register camera H.264 codec: {err}")))?;
+                RTPCodecType::Video,
+            )
+            .map_err(|err| AppError::internal(format!("register camera H.264 codec: {err}")))?;
+    }
     let mut interceptor_registry = Registry::new();
     interceptor_registry = register_default_interceptors(interceptor_registry, &mut media_engine)
         .map_err(|err| {

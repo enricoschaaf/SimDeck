@@ -79,9 +79,16 @@ export function cameraH264Codecs(
       /(?:^|;)\s*packetization-mode=1(?:;|$)/i.test(codec.sdpFmtpLine ?? ""),
   );
   return h264.sort((left, right) => {
-    const baseline = (codec: RtpCodecCapability) =>
-      /(?:^|;)\s*profile-level-id=42/i.test(codec.sdpFmtpLine ?? "") ? 1 : 0;
-    return baseline(right) - baseline(left);
+    const profileRank = (codec: RtpCodecCapability) => {
+      const profile = /(?:^|;)\s*profile-level-id=([0-9a-f]{2})/i
+        .exec(codec.sdpFmtpLine ?? "")?.[1]
+        ?.toLowerCase();
+      if (profile === "64") return 3;
+      if (profile === "4d") return 2;
+      if (profile === "42") return 1;
+      return 0;
+    };
+    return profileRank(right) - profileRank(left);
   });
 }
 
@@ -107,7 +114,7 @@ export async function startCameraFeed({
   const codecs = cameraH264Codecs(capabilities);
   if (codecs.length === 0) {
     throw new Error(
-      "This browser cannot negotiate H.264 Baseline camera video over WebRTC.",
+      "This browser cannot negotiate H.264 camera video over WebRTC.",
     );
   }
 
@@ -218,9 +225,9 @@ export async function startCameraFeed({
   };
 }
 
-function cameraMaxBitrate(width: number, height: number): number {
+export function cameraMaxBitrate(width: number, height: number): number {
   const pixels = Math.max(640 * 480, width * height);
-  return Math.max(2_500_000, Math.min(8_000_000, Math.round(pixels * 4.5)));
+  return Math.max(4_000_000, Math.min(20_000_000, Math.round(pixels * 8)));
 }
 
 async function waitForCameraReady(

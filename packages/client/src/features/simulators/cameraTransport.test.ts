@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   cameraH264Codecs,
+  cameraMaxBitrate,
   cameraVideoConstraints,
   videoDevices,
 } from "./cameraTransport";
@@ -29,7 +30,7 @@ describe("camera", () => {
     ]);
   });
 
-  it("keeps only packetization-mode 1 H.264 and prefers Baseline", () => {
+  it("keeps only packetization-mode 1 H.264 and prefers efficient profiles", () => {
     const codecs = cameraH264Codecs([
       {
         clockRate: 90_000,
@@ -53,7 +54,13 @@ describe("camera", () => {
     ]);
 
     expect(codecs).toHaveLength(2);
-    expect(codecs[0]?.sdpFmtpLine).toContain("profile-level-id=42");
-    expect(codecs[1]?.sdpFmtpLine).toContain("profile-level-id=64");
+    expect(codecs[0]?.sdpFmtpLine).toContain("profile-level-id=64");
+    expect(codecs[1]?.sdpFmtpLine).toContain("profile-level-id=42");
+  });
+
+  it("allocates enough bitrate for noisy full-HD camera frames", () => {
+    expect(cameraMaxBitrate(640, 480)).toBe(4_000_000);
+    expect(cameraMaxBitrate(1_920, 1_080)).toBe(16_588_800);
+    expect(cameraMaxBitrate(3_840, 2_160)).toBe(20_000_000);
   });
 });
