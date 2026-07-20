@@ -27,6 +27,7 @@ mod uikit_services;
 #[cfg(target_os = "macos")]
 mod webkit;
 
+#[allow(clippy::result_large_err)]
 pub(crate) mod android_emulation_control {
     tonic::include_proto!("android.emulation.control");
 }
