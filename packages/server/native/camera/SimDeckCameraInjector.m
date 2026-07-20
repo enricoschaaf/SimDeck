@@ -48,6 +48,7 @@ static char kOutputQueueKey;
 static char kOutputVideoSettingsKey;
 static char kOutputDiscardsLateFramesKey;
 static char kOutputDeliveryPendingKey;
+static char kOutputConnectionKey;
 static char kPreviewOverlayKey;
 static char kPreviewHostKey;
 static char kPreviewSessionKey;
@@ -65,6 +66,7 @@ static void TrackPointer(NSMutableArray<NSValue *> *pointers, id object);
 static void RegisterOutputLayer(CALayer *layer);
 static void RegisterPreviewLayer(CALayer *layer);
 static void SendPickerCapture(UIImagePickerController *picker);
+static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output);
 
 static CFStringRef ColorPrimariesAttachment(uint32_t value) {
     switch (value) {
@@ -172,7 +174,7 @@ static void RegisterOutputLayer(CALayer *host) {
     }
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    [layer setAffineTransform:gHeader && gHeader->sourceKind != SIMDECK_CAMERA_SOURCE_CAMERA &&
+    [layer setAffineTransform:gHeader &&
                                         SimDeckCameraLoadMirrorMode(gHeader) == SIMDECK_CAMERA_MIRROR_ON
         ? CGAffineTransformMakeScale(-1, 1)
         : CGAffineTransformIdentity];
@@ -269,7 +271,6 @@ typedef struct {
     uint64_t generation;
     uint64_t sequence;
     uint64_t timestampNs;
-    uint32_t sourceKind;
     uint32_t mirrorMode;
     uint32_t ringSlot;
     uint32_t surfaceID;
@@ -341,7 +342,6 @@ static CVPixelBufferRef CurrentPixelBuffer(BOOL requireNewFrame,
         descriptor.generation = gHeader->generation;
         descriptor.sequence = before;
         descriptor.timestampNs = gHeader->timestampNs;
-        descriptor.sourceKind = gHeader->sourceKind;
         descriptor.mirrorMode = SimDeckCameraLoadMirrorMode(gHeader);
         descriptor.ringSlot = slot;
         descriptor.surfaceID = gHeader->surfaceIds[slot];
@@ -497,6 +497,10 @@ static UIImage *CurrentFrameImage(void) {
         gImageContext = [[CIContext contextWithOptions:@{ kCIContextWorkingColorSpace: [NSNull null] }] retain];
     }
     CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+    if (ciImage && descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON) {
+        CGFloat width = (CGFloat)CVPixelBufferGetWidth(pixelBuffer);
+        ciImage = [ciImage imageByApplyingTransform:CGAffineTransformMake(-1, 0, 0, 1, width, 0)];
+    }
     CGImageRef image = ciImage
         ? [gImageContext createCGImage:ciImage fromRect:CGRectMake(0, 0,
                                                                   CVPixelBufferGetWidth(pixelBuffer),
@@ -534,13 +538,14 @@ static void DeliverSample(CMSampleBufferRef sample, AVCaptureVideoDataOutput *ou
         objc_setAssociatedObject(output, &kOutputDeliveryPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     CFRetain(sample);
+    AVCaptureConnection *connection = CameraConnectionForOutput(output);
     dispatch_async(queue ?: dispatch_get_main_queue(), ^{
         ((void (*)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *))objc_msgSend)(
             delegate,
             @selector(captureOutput:didOutputSampleBuffer:fromConnection:),
             output,
             sample,
-            nil);
+            connection);
         @synchronized(output) {
             objc_setAssociatedObject(output, &kOutputDeliveryPendingKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
@@ -605,8 +610,7 @@ static void DeliverFrame(void) {
                 if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
                     [layer flush];
                 }
-                [layer setAffineTransform:descriptor.sourceKind != SIMDECK_CAMERA_SOURCE_CAMERA &&
-                                            descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON
+                [layer setAffineTransform:descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON
                     ? CGAffineTransformMakeScale(-1, 1)
                     : CGAffineTransformIdentity];
                 [layer enqueueSampleBuffer:sourceSample];
@@ -747,7 +751,7 @@ static void InstallVideoOutputAllocationHook(void) {
 
 - (NSString *)localizedName { return @"SimDeck Camera"; }
 - (NSString *)uniqueID { return @"dev.nativescript.simdeck.camera"; }
-- (AVCaptureDevicePosition)position { return AVCaptureDevicePositionBack; }
+- (AVCaptureDevicePosition)position { return AVCaptureDevicePositionFront; }
 - (BOOL)hasMediaType:(AVMediaType)mediaType { return IsVideoMediaType(mediaType); }
 - (BOOL)isConnected { return YES; }
 - (BOOL)isSuspended { return NO; }
@@ -765,6 +769,77 @@ static void InstallVideoOutputAllocationHook(void) {
 }
 
 @end
+
+@interface SimDeckCameraConnection : AVCaptureConnection
++ (instancetype)connectionForOutput:(AVCaptureOutput *)output;
+@end
+
+@implementation SimDeckCameraConnection {
+    __unsafe_unretained AVCaptureOutput *_output;
+    AVCaptureVideoOrientation _orientation;
+    BOOL _automaticallyAdjustsVideoMirroring;
+    BOOL _videoMirrored;
+    BOOL _enabled;
+}
+
++ (instancetype)allocWithZone:(NSZone *)zone {
+    (void)zone;
+    return class_createInstance(self, 0);
+}
+
++ (instancetype)connectionForOutput:(AVCaptureOutput *)output {
+    SimDeckCameraConnection *connection = [self alloc];
+    connection->_output = output;
+    connection->_orientation = AVCaptureVideoOrientationPortrait;
+    connection->_automaticallyAdjustsVideoMirroring = YES;
+    connection->_videoMirrored = YES;
+    connection->_enabled = YES;
+    return [connection autorelease];
+}
+
+- (AVCaptureOutput *)output { return _output; }
+- (NSArray<AVCaptureInputPort *> *)inputPorts { return @[]; }
+- (NSArray<AVCaptureAudioChannel *> *)audioChannels { return @[]; }
+- (AVMediaType)mediaType { return AVMediaTypeVideo; }
+- (AVCaptureDevice *)sourceDevice { return (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice]; }
+- (AVCaptureDeviceType)sourceDeviceType { return AVCaptureDeviceTypeBuiltInWideAngleCamera; }
+- (AVCaptureDevicePosition)sourceDevicePosition { return AVCaptureDevicePositionFront; }
+- (BOOL)isActive { return YES; }
+- (BOOL)isEnabled { return _enabled; }
+- (void)setEnabled:(BOOL)enabled { _enabled = enabled; }
+- (BOOL)isVideoOrientationSupported { return YES; }
+- (AVCaptureVideoOrientation)videoOrientation { return _orientation; }
+- (void)setVideoOrientation:(AVCaptureVideoOrientation)orientation { _orientation = orientation; }
+- (BOOL)isVideoMirroringSupported { return YES; }
+- (BOOL)isVideoMirrored {
+    if (_automaticallyAdjustsVideoMirroring && gHeader) {
+        return SimDeckCameraLoadMirrorMode(gHeader) == SIMDECK_CAMERA_MIRROR_ON;
+    }
+    return _videoMirrored;
+}
+- (void)setVideoMirrored:(BOOL)mirrored {
+    _videoMirrored = mirrored;
+    _automaticallyAdjustsVideoMirroring = NO;
+}
+- (BOOL)automaticallyAdjustsVideoMirroring { return _automaticallyAdjustsVideoMirroring; }
+- (void)setAutomaticallyAdjustsVideoMirroring:(BOOL)automaticallyAdjustsVideoMirroring {
+    _automaticallyAdjustsVideoMirroring = automaticallyAdjustsVideoMirroring;
+}
+
+@end
+
+static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
+    if (!output) return nil;
+    AVCaptureConnection *connection = objc_getAssociatedObject(output, &kOutputConnectionKey);
+    if (!connection) {
+        connection = [SimDeckCameraConnection connectionForOutput:output];
+        objc_setAssociatedObject(output,
+                                 &kOutputConnectionKey,
+                                 connection,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return connection;
+}
 
 @interface SimDeckCameraVideoDataOutput : AVCaptureVideoDataOutput
 @end
@@ -799,6 +874,15 @@ static void InstallVideoOutputAllocationHook(void) {
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate queue:(dispatch_queue_t)sampleBufferCallbackQueue {
     DebugLog(@"fake video output delegate set");
     SimDeckSetSampleBufferDelegate(self, _cmd, delegate, sampleBufferCallbackQueue);
+}
+
+- (AVCaptureConnection *)connectionWithMediaType:(AVMediaType)mediaType {
+    return IsVideoMediaType(mediaType) ? CameraConnectionForOutput(self) : nil;
+}
+
+- (NSArray<AVCaptureConnection *> *)connections {
+    AVCaptureConnection *connection = CameraConnectionForOutput(self);
+    return connection ? @[ connection ] : @[];
 }
 
 @end

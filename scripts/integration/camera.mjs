@@ -515,6 +515,7 @@ async function runBrowserBenchmark() {
       ? await verifySimultaneousBrowserCameras()
       : null;
     const recovery = await verifyCameraRecovery(cdp);
+    const mirroring = await verifyBrowserCameraMirroring();
     const stopped = await cdp.evaluate(
       "window.__simdeckCameraBenchmark.stop()",
       true,
@@ -550,6 +551,7 @@ async function runBrowserBenchmark() {
       processStats,
       isolation,
       recovery,
+      mirroring,
       firstMarker,
       finalMarker,
       cameraStatus,
@@ -674,6 +676,43 @@ async function waitForCameraStatus(udid, predicate, timeoutMs) {
   );
 }
 
+async function verifyBrowserCameraMirroring() {
+  const before = readMarker();
+  if (before?.mirrored !== false) {
+    throw new Error(
+      `browser camera started with unexpected connection mirroring: ${JSON.stringify(before)}`,
+    );
+  }
+  const enabledStatus = await switchBrowserCameraMirror("on");
+  const enabledMarker = await waitForMarker(
+    "mirrored browser camera connection",
+    (marker) =>
+      marker.frames > (before?.frames ?? 0) && marker.mirrored === true,
+  );
+  const disabledStatus = await switchBrowserCameraMirror("off");
+  const disabledMarker = await waitForMarker(
+    "unmirrored browser camera connection",
+    (marker) =>
+      marker.frames > enabledMarker.frames && marker.mirrored === false,
+  );
+  if (
+    enabledStatus.geometryConversions !== 0 ||
+    disabledStatus.geometryConversions !== 0
+  ) {
+    throw new Error(
+      `browser camera mirroring modified decoded surfaces: ${JSON.stringify({ enabledStatus, disabledStatus })}`,
+    );
+  }
+  return {
+    enabledFrame: enabledMarker.frames,
+    disabledFrame: disabledMarker.frames,
+  };
+}
+
+async function switchBrowserCameraMirror(mirror) {
+  return simdeckJson(["camera", "switch", simulatorUDID, "--mirror", mirror]);
+}
+
 async function verifyCameraRecovery(cdp) {
   const beforePause = readMarker();
   await cdp.evaluate("window.__simdeckCameraBenchmark.pause()");
@@ -763,12 +802,12 @@ async function verifyBgraCameraOutput(cdp) {
     const status = simdeckJson(["camera", "status", simulatorUDID]);
     if (
       status.pixelConversions <= 0 ||
-      status.geometryConversions !== status.decodedFrames ||
+      status.geometryConversions !== 0 ||
       status.fullFrameCopies !== 0 ||
       status.surfaceLookupFailures !== 0
     ) {
       throw new Error(
-        `explicit BGRA camera output added work beyond the required browser mirror and pixel conversion: ${JSON.stringify(status)}`,
+        `explicit BGRA camera output performed work beyond its requested pixel conversion: ${JSON.stringify(status)}`,
       );
     }
   } finally {
@@ -1315,6 +1354,7 @@ function fixtureSource() {
 @property (nonatomic, strong) AVCaptureVideoPreviewLayer *previewLayer;
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic) NSInteger frames;
+@property (nonatomic) BOOL mirrored;
 @end
 
 @implementation CameraViewController
@@ -1415,7 +1455,7 @@ function fixtureSource() {
  didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
        fromConnection:(AVCaptureConnection *)connection {
   (void)output;
-  (void)connection;
+  self.mirrored = connection.isVideoMirrored;
   CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
   if (!pixelBuffer) return;
   CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
@@ -1464,7 +1504,7 @@ function fixtureSource() {
   [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
   NSString *path = [directory stringByAppendingPathComponent:@"camera-frame.json"];
   NSString *payload = [NSString stringWithFormat:
-    @"{\\"status\\":\\"%@\\",\\"frames\\":%ld,\\"width\\":%zu,\\"height\\":%zu,\\"avgRed\\":%.3f,\\"avgGreen\\":%.3f,\\"avgBlue\\":%.3f,\\"receivedAtMs\\":%.0f}",
+    @"{\\"status\\":\\"%@\\",\\"frames\\":%ld,\\"width\\":%zu,\\"height\\":%zu,\\"avgRed\\":%.3f,\\"avgGreen\\":%.3f,\\"avgBlue\\":%.3f,\\"mirrored\\":%@,\\"receivedAtMs\\":%.0f}",
     status ?: @"unknown",
     (long)self.frames,
     width,
@@ -1472,6 +1512,7 @@ function fixtureSource() {
     red,
     green,
     blue,
+    self.mirrored ? @"true" : @"false",
     NSDate.date.timeIntervalSince1970 * 1000.0];
   [payload writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
@@ -1621,7 +1662,7 @@ function assertOptimizedCameraStatus(status) {
     status.pixelFormat !== "420v" ||
     status.surfaceLookupFailures !== 0 ||
     status.surfacePublicationFailures !== 0 ||
-    status.geometryConversions !== status.decodedFrames ||
+    status.geometryConversions !== 0 ||
     status.pixelConversions !== 0 ||
     status.fullFrameCopies !== 0 ||
     status.sampleBufferFailures !== 0 ||
