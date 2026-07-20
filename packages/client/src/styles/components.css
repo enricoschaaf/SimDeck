@@ -752,6 +752,7 @@
 .deep-link-window {
   width: min(920px, calc(100vw - 32px));
   height: min(780px, calc(100dvh - 48px));
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
 .deep-link-tools {
