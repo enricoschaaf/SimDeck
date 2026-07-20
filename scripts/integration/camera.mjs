@@ -64,6 +64,10 @@ async function main() {
   if (process.platform !== "darwin") {
     throw new Error("SimDeck camera integration tests require macOS.");
   }
+  if (process.env.SIMDECK_CAMERA_BUILD_FIXTURE_ONLY === "1") {
+    console.log(buildCameraFixtureApp());
+    return;
+  }
   if (!fs.existsSync(simdeck)) {
     throw new Error(`Missing ${simdeck}. Run npm run build:cli first.`);
   }
@@ -292,6 +296,55 @@ async function main() {
     (marker) => marker.frames > restoredPlaceholder.frames,
   );
 
+  step("verify demand-driven camera consumer lifecycle");
+  const lifecyclePid = cameraFixturePid();
+  simdeckJson([
+    "tap",
+    simulatorUDID,
+    "--label",
+    "Stop Camera",
+    "--wait-timeout-ms",
+    "5000",
+  ]);
+  const stoppedConsumer = await waitForCameraStatus(
+    simulatorUDID,
+    (status) => status.activeConsumers === 0,
+    10_000,
+  );
+  await waitForMarker(
+    "stopped camera consumer",
+    (marker) => marker.status === "stopped",
+  );
+  const stoppedPid = cameraFixturePid();
+  if (stoppedPid !== lifecyclePid || stoppedConsumer.alive !== true) {
+    throw new Error(
+      `stopping camera consumer disturbed the app or idle service: ${JSON.stringify({ lifecyclePid, stoppedPid, stoppedConsumer })}`,
+    );
+  }
+  simdeckJson([
+    "tap",
+    simulatorUDID,
+    "--label",
+    "Start Camera",
+    "--wait-timeout-ms",
+    "5000",
+  ]);
+  const restartedConsumer = await waitForCameraStatus(
+    simulatorUDID,
+    (status) => status.activeConsumers === 1,
+    10_000,
+  );
+  await waitForMarker(
+    "restarted camera consumer",
+    (marker) => marker.status === "frame" && marker.frames > 0,
+  );
+  const restartedPid = cameraFixturePid();
+  if (restartedPid !== lifecyclePid || restartedConsumer.alive !== true) {
+    throw new Error(
+      `restarting camera consumer disturbed the app or idle service: ${JSON.stringify({ lifecyclePid, restartedPid, restartedConsumer })}`,
+    );
+  }
+
   if (verifyCameraIsolation) {
     await verifyIndependentCameraContexts(
       runtime,
@@ -301,11 +354,11 @@ async function main() {
     );
   }
 
-  step("stop daemon camera feed");
+  step("leave camera service idle");
   const stopStatus = simdeckJson(["camera", "stop", simulatorUDID]);
-  if (stopStatus.alive !== false) {
+  if (stopStatus.alive !== true) {
     throw new Error(
-      `camera stop did not report alive=false: ${JSON.stringify(stopStatus)}`,
+      `camera service did not remain available while idle: ${JSON.stringify(stopStatus)}`,
     );
   }
 
@@ -674,6 +727,13 @@ async function waitForCameraStatus(udid, predicate, timeoutMs) {
   throw new Error(
     `Timed out waiting for camera status on ${udid}: ${JSON.stringify(status)}`,
   );
+}
+
+function cameraFixturePid() {
+  return runText("pgrep", [
+    "-f",
+    `${simulatorUDID}.*${executable}\\.app/${executable}`,
+  ]).trim();
 }
 
 async function verifyBrowserCameraMirroring() {
@@ -1222,6 +1282,8 @@ function buildCameraFixtureApp() {
     "-framework",
     "CoreGraphics",
     "-framework",
+    "CoreImage",
+    "-framework",
     "CoreMedia",
     "-framework",
     "CoreVideo",
@@ -1375,6 +1437,7 @@ function fixtureInfoPlist() {
 
 function fixtureSource() {
   return `#import <AVFoundation/AVFoundation.h>
+#import <CoreImage/CoreImage.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <UIKit/UIKit.h>
@@ -1383,8 +1446,12 @@ function fixtureSource() {
 @interface CameraViewController : UIViewController <AVCaptureVideoDataOutputSampleBufferDelegate>
 @property (nonatomic, strong) AVCaptureSession *session;
 @property (nonatomic, strong) AVCaptureVideoPreviewLayer *previewLayer;
+@property (nonatomic, strong) UIImageView *imageView;
+@property (nonatomic, strong) CIContext *imageContext;
 @property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UIButton *toggleButton;
 @property (nonatomic) NSInteger frames;
+@property (nonatomic) BOOL cameraRunning;
 @property (nonatomic) BOOL mirrored;
 @property (nonatomic) double leftRed;
 @property (nonatomic) double leftGreen;
@@ -1399,6 +1466,12 @@ function fixtureSource() {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.view.backgroundColor = UIColor.systemBackgroundColor;
+  self.imageView = [[UIImageView alloc] initWithFrame:self.view.bounds];
+  self.imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  self.imageView.backgroundColor = UIColor.blackColor;
+  self.imageView.contentMode = UIViewContentModeScaleAspectFit;
+  [self.view addSubview:self.imageView];
+  self.imageContext = [CIContext contextWithOptions:nil];
   self.statusLabel = [[UILabel alloc] init];
   self.statusLabel.text = @"Camera Starting";
   self.statusLabel.textAlignment = NSTextAlignmentCenter;
@@ -1407,11 +1480,22 @@ function fixtureSource() {
   self.statusLabel.accessibilityIdentifier = @"camera.status";
   self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
   [self.view addSubview:self.statusLabel];
+  self.toggleButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  self.toggleButton.translatesAutoresizingMaskIntoConstraints = NO;
+  self.toggleButton.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.7];
+  self.toggleButton.layer.cornerRadius = 12.0;
+  self.toggleButton.contentEdgeInsets = UIEdgeInsetsMake(12.0, 20.0, 12.0, 20.0);
+  [self.toggleButton setTitle:@"Stop Camera" forState:UIControlStateNormal];
+  [self.toggleButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+  [self.toggleButton addTarget:self action:@selector(toggleCamera) forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:self.toggleButton];
   [NSLayoutConstraint activateConstraints:@[
     [self.statusLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
     [self.statusLabel.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
     [self.statusLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:24.0],
     [self.statusLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-24.0],
+    [self.toggleButton.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+    [self.toggleButton.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
   ]];
   [self writeMarkerWithStatus:@"view-loaded" width:0 height:0 red:0 green:0 blue:0];
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1427,6 +1511,13 @@ function fixtureSource() {
 }
 
 - (void)startCamera {
+  if (self.cameraRunning) return;
+  if (self.session) {
+    [self.session startRunning];
+    self.cameraRunning = YES;
+    [self writeMarkerWithStatus:@"restarted" width:0 height:0 red:0 green:0 blue:0];
+    return;
+  }
   [self writeMarkerWithStatus:@"camera-enter" width:0 height:0 red:0 green:0 blue:0];
   const char *shmName = getenv("SIMDECK_CAMERA_SHM_NAME");
   [self writeMarkerWithStatus:(shmName && shmName[0] != '\\0') ? @"env-present" : @"env-missing" width:0 height:0 red:0 green:0 blue:0];
@@ -1483,6 +1574,7 @@ function fixtureSource() {
   });
   [self writeMarkerWithStatus:@"starting" width:0 height:0 red:0 green:0 blue:0];
   [self.session startRunning];
+  self.cameraRunning = YES;
   if (self.frames == 0) {
     [self writeMarkerWithStatus:@"started" width:0 height:0 red:0 green:0 blue:0];
   }
@@ -1501,6 +1593,15 @@ function fixtureSource() {
   size_t height = CVPixelBufferGetHeight(pixelBuffer);
   size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
   OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+  UIImage *displayImage = nil;
+  if (self.frames % 2 == 0) {
+    CIImage *cameraImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+    CGImageRef cameraCGImage = [self.imageContext createCGImage:cameraImage fromRect:cameraImage.extent];
+    if (cameraCGImage) {
+      displayImage = [UIImage imageWithCGImage:cameraCGImage];
+      CGImageRelease(cameraCGImage);
+    }
+  }
   if (pixelFormat == kCVPixelFormatType_32BGRA) {
     size_t sampleY = MIN(height - 1, height / 16);
     size_t leftX = MIN(width - 1, width / 16);
@@ -1550,11 +1651,34 @@ function fixtureSource() {
   }
   self.frames += 1;
   [self writeMarkerWithStatus:@"frame" width:width height:height red:red green:green blue:blue];
-  if (self.frames % 10 == 0) {
+  if (displayImage) {
     dispatch_async(dispatch_get_main_queue(), ^{
-      self.statusLabel.text = [NSString stringWithFormat:@"Camera Frame %ld", (long)self.frames];
+      self.imageView.image = displayImage;
     });
   }
+}
+
+- (void)stopCamera {
+  if (!self.cameraRunning) return;
+  [self.session stopRunning];
+  self.cameraRunning = NO;
+  [self writeMarkerWithStatus:@"stopped" width:0 height:0 red:0 green:0 blue:0];
+}
+
+- (void)toggleCamera {
+  self.toggleButton.enabled = NO;
+  BOOL shouldStop = self.cameraRunning;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    if (shouldStop) {
+      [self stopCamera];
+    } else {
+      [self startCamera];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self.toggleButton setTitle:self.cameraRunning ? @"Stop Camera" : @"Start Camera" forState:UIControlStateNormal];
+      self.toggleButton.enabled = YES;
+    });
+  });
 }
 
 - (void)writeMarkerWithStatus:(NSString *)status
