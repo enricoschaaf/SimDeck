@@ -2305,6 +2305,10 @@ async fn boot_ios_device(state: AppState, udid: String) -> Result<(), AppError> 
         bridge.boot_simulator(&action_udid)
     })
     .await?;
+    let camera_udid = udid.clone();
+    task::spawn_blocking(move || camera::prepare_camera_runtime(&camera_udid))
+        .await
+        .map_err(|error| AppError::internal(format!("Camera task failed. {error}")))??;
     let generation = state.accessibility_cache.generation(&udid);
     warm_accessibility_cache(state, udid, generation).await;
     Ok(())
@@ -3834,10 +3838,11 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
     let (mut sender, mut receiver) = socket.split();
     if !android::is_android_id(&udid) {
         let camera_udid = udid.clone();
-        if let Err(error) = task::spawn_blocking(move || camera::ensure_idle_camera(&camera_udid))
-            .await
-            .map_err(|error| AppError::internal(format!("Camera task failed. {error}")))
-            .and_then(|result| result)
+        if let Err(error) =
+            task::spawn_blocking(move || camera::prepare_camera_runtime(&camera_udid))
+                .await
+                .map_err(|error| AppError::internal(format!("Camera task failed. {error}")))
+                .and_then(|result| result)
         {
             tracing::warn!(?error, %udid, "Unable to prepare idle camera injection");
         }

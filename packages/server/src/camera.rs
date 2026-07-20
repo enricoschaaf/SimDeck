@@ -7,8 +7,12 @@ use sha2::{Digest, Sha256};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub mod webrtc;
+
+const CAMERA_INJECTOR_NAME: &str = "libSimDeckCameraInjector.dylib";
+const CAMERA_TARGETS: &str = "com.apple.WebKit.GPU,__SIMDECK_USER_APPS__";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -99,6 +103,38 @@ pub fn ensure_idle_camera(udid: &str) -> Result<Value, AppError> {
         },
         mirror: Some("on".to_owned()),
     })
+}
+
+pub fn prepare_camera_runtime(udid: &str) -> Result<Value, AppError> {
+    validate_udid(udid)?;
+    let injector = camera_injector_path()?;
+    let status = ensure_idle_camera(udid)?;
+    let injector = injector
+        .to_str()
+        .ok_or_else(|| AppError::native("Camera injector path is not valid UTF-8."))?;
+    let shared_memory_name = shm_name_for_udid(udid);
+    for (name, value) in [
+        ("DYLD_INSERT_LIBRARIES", injector),
+        ("SIMDECK_CAMERA_SHM_NAME", shared_memory_name.as_str()),
+        ("SIMDECK_CAMERA_MIRROR", "on"),
+        ("SIMDECK_CAMERA_TARGET_BUNDLE_IDS", CAMERA_TARGETS),
+    ] {
+        let output = Command::new("/usr/bin/xcrun")
+            .args(["simctl", "spawn", udid, "launchctl", "setenv", name, value])
+            .output()
+            .map_err(|error| {
+                AppError::native(format!("Unable to configure camera injection. {error}"))
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(AppError::native(if stderr.is_empty() {
+                "Unable to configure camera injection.".to_owned()
+            } else {
+                format!("Unable to configure camera injection. {stderr}")
+            }));
+        }
+    }
+    Ok(status)
 }
 
 pub fn switch_camera(
@@ -418,6 +454,25 @@ fn enrich_status(udid: &str, status: &mut Value) {
 
 fn camera_state_dir() -> PathBuf {
     std::env::temp_dir().join("simdeck-camera")
+}
+
+fn camera_injector_path() -> Result<PathBuf, AppError> {
+    let executable = std::env::current_exe()
+        .map_err(|error| AppError::internal(format!("Unable to resolve SimDeck. {error}")))?;
+    let executable_directory = executable
+        .parent()
+        .ok_or_else(|| AppError::internal("The SimDeck executable has no containing directory."))?;
+    let path = executable_directory
+        .join("camera")
+        .join(CAMERA_INJECTOR_NAME);
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(AppError::native(format!(
+            "Camera injector is missing at {}.",
+            path.display()
+        )))
+    }
 }
 
 fn camera_app_log_file(udid: &str) -> PathBuf {
