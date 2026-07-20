@@ -678,39 +678,70 @@ async function waitForCameraStatus(udid, predicate, timeoutMs) {
 
 async function verifyBrowserCameraMirroring() {
   const before = readMarker();
+  const beforeStatus = simdeckJson(["camera", "status", simulatorUDID]);
   if (before?.mirrored !== false) {
     throw new Error(
       `browser camera started with unexpected connection mirroring: ${JSON.stringify(before)}`,
     );
   }
-  const enabledStatus = await switchBrowserCameraMirror("on");
+  if (!markerHasExpectedMirroring(before, false)) {
+    throw new Error(
+      `browser camera started with unexpected pixel orientation: ${JSON.stringify(before)}`,
+    );
+  }
+  await switchBrowserCameraMirror("on");
   const enabledMarker = await waitForMarker(
-    "mirrored browser camera connection",
+    "mirrored browser camera pixels",
     (marker) =>
-      marker.frames > (before?.frames ?? 0) && marker.mirrored === true,
+      marker.frames > (before?.frames ?? 0) &&
+      marker.mirrored === true &&
+      markerHasExpectedMirroring(marker, true),
   );
-  const disabledStatus = await switchBrowserCameraMirror("off");
+  const enabledStatus = simdeckJson(["camera", "status", simulatorUDID]);
+  await switchBrowserCameraMirror("off");
   const disabledMarker = await waitForMarker(
-    "unmirrored browser camera connection",
+    "unmirrored browser camera pixels",
     (marker) =>
-      marker.frames > enabledMarker.frames && marker.mirrored === false,
+      marker.frames > enabledMarker.frames &&
+      marker.mirrored === false &&
+      markerHasExpectedMirroring(marker, false),
   );
+  const disabledStatus = simdeckJson(["camera", "status", simulatorUDID]);
   if (
-    enabledStatus.geometryConversions !== 0 ||
-    disabledStatus.geometryConversions !== 0
+    enabledStatus.geometryConversions <= beforeStatus.geometryConversions ||
+    enabledStatus.fullFrameCopies <= beforeStatus.fullFrameCopies ||
+    enabledStatus.decodeErrors !== 0 ||
+    disabledStatus.decodeErrors !== 0
   ) {
     throw new Error(
-      `browser camera mirroring modified decoded surfaces: ${JSON.stringify({ enabledStatus, disabledStatus })}`,
+      `browser camera pixels were not mirrored through an isolated output buffer: ${JSON.stringify({ beforeStatus, enabledStatus, disabledStatus })}`,
     );
   }
   return {
     enabledFrame: enabledMarker.frames,
     disabledFrame: disabledMarker.frames,
+    geometryConversions:
+      enabledStatus.geometryConversions - beforeStatus.geometryConversions,
+    fullFrameCopies:
+      enabledStatus.fullFrameCopies - beforeStatus.fullFrameCopies,
   };
 }
 
+function markerHasExpectedMirroring(marker, mirrored) {
+  return mirrored
+    ? marker.leftLuma > marker.rightLuma + 20
+    : marker.rightLuma > marker.leftLuma + 20;
+}
+
 async function switchBrowserCameraMirror(mirror) {
-  return simdeckJson(["camera", "switch", simulatorUDID, "--mirror", mirror]);
+  return simdeckJson([
+    "camera",
+    "switch",
+    simulatorUDID,
+    "--camera",
+    "--mirror",
+    mirror,
+  ]);
 }
 
 async function verifyCameraRecovery(cdp) {
@@ -1355,6 +1386,12 @@ function fixtureSource() {
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic) NSInteger frames;
 @property (nonatomic) BOOL mirrored;
+@property (nonatomic) double leftRed;
+@property (nonatomic) double leftGreen;
+@property (nonatomic) double rightRed;
+@property (nonatomic) double rightGreen;
+@property (nonatomic) double leftLuma;
+@property (nonatomic) double rightLuma;
 @end
 
 @implementation CameraViewController
@@ -1463,20 +1500,46 @@ function fixtureSource() {
   size_t width = CVPixelBufferGetWidth(pixelBuffer);
   size_t height = CVPixelBufferGetHeight(pixelBuffer);
   size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+  OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+  if (pixelFormat == kCVPixelFormatType_32BGRA) {
+    size_t sampleY = MIN(height - 1, height / 16);
+    size_t leftX = MIN(width - 1, width / 16);
+    size_t rightX = MIN(width - 1, width - 1 - width / 16);
+    uint8_t *leftPixel = base + sampleY * bytesPerRow + leftX * 4;
+    uint8_t *rightPixel = base + sampleY * bytesPerRow + rightX * 4;
+    self.leftRed = leftPixel[2];
+    self.leftGreen = leftPixel[1];
+    self.rightRed = rightPixel[2];
+    self.rightGreen = rightPixel[1];
+    self.leftLuma = 0.2126 * leftPixel[2] + 0.7152 * leftPixel[1] + 0.0722 * leftPixel[0];
+    self.rightLuma = 0.2126 * rightPixel[2] + 0.7152 * rightPixel[1] + 0.0722 * rightPixel[0];
+  } else if (CVPixelBufferGetPlaneCount(pixelBuffer) > 0) {
+    size_t planeWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0);
+    size_t planeHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0);
+    size_t planeBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
+    uint8_t *luma = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+    size_t sampleY = MIN(planeHeight - 1, planeHeight / 16);
+    size_t leftX = MIN(planeWidth - 1, planeWidth / 16);
+    size_t rightX = MIN(planeWidth - 1, planeWidth - 1 - planeWidth / 16);
+    self.leftLuma = luma[sampleY * planeBytesPerRow + leftX];
+    self.rightLuma = luma[sampleY * planeBytesPerRow + rightX];
+  }
   double red = 0;
   double green = 0;
   double blue = 0;
   NSInteger samples = 0;
   size_t yStep = MAX((size_t)1, height / 24);
   size_t xStep = MAX((size_t)1, width / 24);
-  for (size_t y = 0; y < height; y += yStep) {
-    uint8_t *row = base + y * bytesPerRow;
-    for (size_t x = 0; x < width; x += xStep) {
-      uint8_t *pixel = row + x * 4;
-      blue += pixel[0];
-      green += pixel[1];
-      red += pixel[2];
-      samples += 1;
+  if (pixelFormat == kCVPixelFormatType_32BGRA) {
+    for (size_t y = 0; y < height; y += yStep) {
+      uint8_t *row = base + y * bytesPerRow;
+      for (size_t x = 0; x < width; x += xStep) {
+        uint8_t *pixel = row + x * 4;
+        blue += pixel[0];
+        green += pixel[1];
+        red += pixel[2];
+        samples += 1;
+      }
     }
   }
   CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
@@ -1504,7 +1567,7 @@ function fixtureSource() {
   [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
   NSString *path = [directory stringByAppendingPathComponent:@"camera-frame.json"];
   NSString *payload = [NSString stringWithFormat:
-    @"{\\"status\\":\\"%@\\",\\"frames\\":%ld,\\"width\\":%zu,\\"height\\":%zu,\\"avgRed\\":%.3f,\\"avgGreen\\":%.3f,\\"avgBlue\\":%.3f,\\"mirrored\\":%@,\\"receivedAtMs\\":%.0f}",
+    @"{\\"status\\":\\"%@\\",\\"frames\\":%ld,\\"width\\":%zu,\\"height\\":%zu,\\"avgRed\\":%.3f,\\"avgGreen\\":%.3f,\\"avgBlue\\":%.3f,\\"leftRed\\":%.3f,\\"leftGreen\\":%.3f,\\"rightRed\\":%.3f,\\"rightGreen\\":%.3f,\\"leftLuma\\":%.3f,\\"rightLuma\\":%.3f,\\"mirrored\\":%@,\\"receivedAtMs\\":%.0f}",
     status ?: @"unknown",
     (long)self.frames,
     width,
@@ -1512,6 +1575,12 @@ function fixtureSource() {
     red,
     green,
     blue,
+    self.leftRed,
+    self.leftGreen,
+    self.rightRed,
+    self.rightGreen,
+    self.leftLuma,
+    self.rightLuma,
     self.mirrored ? @"true" : @"false",
     NSDate.date.timeIntervalSince1970 * 1000.0];
   [payload writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];

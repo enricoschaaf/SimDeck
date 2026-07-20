@@ -832,6 +832,8 @@ enum CameraCommand {
         #[arg(long)]
         placeholder: bool,
         #[arg(long)]
+        camera: bool,
+        #[arg(long)]
         mirror: Option<String>,
     },
     Status {
@@ -4217,7 +4219,7 @@ fn main() -> anyhow::Result<()> {
             CameraCommand::Start { udid, file, mirror } => {
                 let udid = resolve_device_udid(udid.as_deref())?;
                 let service_url = command_service_url(explicit_server_url.as_deref())?;
-                let source = camera_source_from_args(file, false)?;
+                let source = camera_source_from_args(file, false, false)?;
                 let status = service_camera_request_json(
                     &service_url,
                     "POST",
@@ -4234,11 +4236,12 @@ fn main() -> anyhow::Result<()> {
                 udid,
                 file,
                 placeholder,
+                camera,
                 mirror,
             } => {
                 let udid = resolve_device_udid(udid.as_deref())?;
                 let service_url = command_service_url(explicit_server_url.as_deref())?;
-                let source = camera_source_from_args(file, placeholder)?;
+                let source = camera_source_from_args(file, placeholder, camera)?;
                 let status = service_camera_request_json(
                     &service_url,
                     "POST",
@@ -5706,16 +5709,24 @@ fn read_text_input(
 fn camera_source_from_args(
     file: Option<String>,
     placeholder: bool,
+    browser_camera: bool,
 ) -> anyhow::Result<camera::CameraSource> {
-    let source_count = usize::from(file.is_some()) + usize::from(placeholder);
+    let source_count =
+        usize::from(file.is_some()) + usize::from(placeholder) + usize::from(browser_camera);
     if source_count > 1 {
         return Err(crate::error::AppError::bad_request(
-            "Choose only one camera source: --file or --placeholder.",
+            "Choose only one camera source: --camera, --file, or --placeholder.",
         )
         .into());
     }
     if let Some(file) = file {
         return Ok(camera::file_source(file.trim()));
+    }
+    if browser_camera {
+        return Ok(camera::CameraSource {
+            kind: camera::CameraSourceKind::Camera,
+            arg: None,
+        });
     }
     Ok(camera::CameraSource::default())
 }
@@ -7297,6 +7308,18 @@ mod tests {
         };
         assert_eq!(udid, None);
         assert_eq!(mirror, "off");
+
+        let parsed =
+            Cli::try_parse_from(["simdeck", "camera", "switch", "--camera", "--mirror", "on"])
+                .unwrap();
+        let Command::Camera {
+            command: CameraCommand::Switch { camera, mirror, .. },
+        } = parsed.command
+        else {
+            panic!("expected camera switch command");
+        };
+        assert!(camera);
+        assert_eq!(mirror.as_deref(), Some("on"));
     }
 
     #[test]

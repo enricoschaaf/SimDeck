@@ -23,6 +23,7 @@ xcrun --sdk iphonesimulator clang \
   -mios-simulator-version-min=15.0 \
   -Wall \
   -Wextra \
+  -framework Accelerate \
   -framework Foundation \
   -framework AVFoundation \
   -framework CoreGraphics \

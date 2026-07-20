@@ -1,4 +1,5 @@
 #import <AVFoundation/AVFoundation.h>
+#import <Accelerate/Accelerate.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreImage/CoreImage.h>
 #import <CoreMedia/CoreMedia.h>
@@ -29,6 +30,10 @@ static uint64_t gLastDeliveredSequence;
 static CVPixelBufferPoolRef gBGRAPool;
 static size_t gBGRAPoolWidth;
 static size_t gBGRAPoolHeight;
+static CVPixelBufferPoolRef gMirrorPool;
+static size_t gMirrorPoolWidth;
+static size_t gMirrorPoolHeight;
+static OSType gMirrorPoolPixelFormat;
 static CIContext *gImageContext;
 static dispatch_source_t gFrameTimer;
 static dispatch_queue_t gFrameQueue;
@@ -489,6 +494,114 @@ static CVPixelBufferRef ConvertToBGRA(CVPixelBufferRef source) {
     return output;
 }
 
+static CVPixelBufferRef MirrorPixelBuffer(CVPixelBufferRef source) {
+    size_t width = CVPixelBufferGetWidth(source);
+    size_t height = CVPixelBufferGetHeight(source);
+    OSType pixelFormat = CVPixelBufferGetPixelFormatType(source);
+    BOOL isNV12 = pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+                  pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+    if (!isNV12 && pixelFormat != kCVPixelFormatType_32BGRA) return NULL;
+
+    if (!gMirrorPool || gMirrorPoolWidth != width || gMirrorPoolHeight != height ||
+        gMirrorPoolPixelFormat != pixelFormat) {
+        if (gMirrorPool) CVPixelBufferPoolRelease(gMirrorPool);
+        gMirrorPool = NULL;
+        NSDictionary *poolAttributes = @{
+            (id)kCVPixelBufferPoolMinimumBufferCountKey: @3,
+        };
+        NSDictionary *pixelBufferAttributes = @{
+            (id)kCVPixelBufferWidthKey: @(width),
+            (id)kCVPixelBufferHeightKey: @(height),
+            (id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat),
+            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        };
+        CVPixelBufferPoolCreate(kCFAllocatorDefault,
+                                (__bridge CFDictionaryRef)poolAttributes,
+                                (__bridge CFDictionaryRef)pixelBufferAttributes,
+                                &gMirrorPool);
+        gMirrorPoolWidth = width;
+        gMirrorPoolHeight = height;
+        gMirrorPoolPixelFormat = pixelFormat;
+    }
+    if (!gMirrorPool) return NULL;
+
+    CVPixelBufferRef output = NULL;
+    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, gMirrorPool, &output) != kCVReturnSuccess) {
+        return NULL;
+    }
+    if (CVPixelBufferLockBaseAddress(source, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
+        CVPixelBufferRelease(output);
+        return NULL;
+    }
+    if (CVPixelBufferLockBaseAddress(output, 0) != kCVReturnSuccess) {
+        CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+        CVPixelBufferRelease(output);
+        return NULL;
+    }
+
+    vImage_Error result = kvImageNoError;
+    if (isNV12 && CVPixelBufferGetPlaneCount(source) == 2 && CVPixelBufferGetPlaneCount(output) == 2) {
+        vImage_Buffer sourceY = {
+            .data = CVPixelBufferGetBaseAddressOfPlane(source, 0),
+            .height = CVPixelBufferGetHeightOfPlane(source, 0),
+            .width = CVPixelBufferGetWidthOfPlane(source, 0),
+            .rowBytes = CVPixelBufferGetBytesPerRowOfPlane(source, 0),
+        };
+        vImage_Buffer outputY = {
+            .data = CVPixelBufferGetBaseAddressOfPlane(output, 0),
+            .height = CVPixelBufferGetHeightOfPlane(output, 0),
+            .width = CVPixelBufferGetWidthOfPlane(output, 0),
+            .rowBytes = CVPixelBufferGetBytesPerRowOfPlane(output, 0),
+        };
+        vImage_Buffer sourceUV = {
+            .data = CVPixelBufferGetBaseAddressOfPlane(source, 1),
+            .height = CVPixelBufferGetHeightOfPlane(source, 1),
+            .width = CVPixelBufferGetWidthOfPlane(source, 1),
+            .rowBytes = CVPixelBufferGetBytesPerRowOfPlane(source, 1),
+        };
+        vImage_Buffer outputUV = {
+            .data = CVPixelBufferGetBaseAddressOfPlane(output, 1),
+            .height = CVPixelBufferGetHeightOfPlane(output, 1),
+            .width = CVPixelBufferGetWidthOfPlane(output, 1),
+            .rowBytes = CVPixelBufferGetBytesPerRowOfPlane(output, 1),
+        };
+        result = vImageHorizontalReflect_Planar8(&sourceY, &outputY, kvImageNoFlags);
+        if (result == kvImageNoError) {
+            result = vImageHorizontalReflect_Planar16U(&sourceUV, &outputUV, kvImageNoFlags);
+        }
+    } else if (pixelFormat == kCVPixelFormatType_32BGRA) {
+        vImage_Buffer sourceBGRA = {
+            .data = CVPixelBufferGetBaseAddress(source),
+            .height = height,
+            .width = width,
+            .rowBytes = CVPixelBufferGetBytesPerRow(source),
+        };
+        vImage_Buffer outputBGRA = {
+            .data = CVPixelBufferGetBaseAddress(output),
+            .height = height,
+            .width = width,
+            .rowBytes = CVPixelBufferGetBytesPerRow(output),
+        };
+        result = vImageHorizontalReflect_ARGB8888(&sourceBGRA, &outputBGRA, kvImageNoFlags);
+    } else {
+        result = kvImageInvalidParameter;
+    }
+
+    CVPixelBufferUnlockBaseAddress(output, 0);
+    CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+    if (result != kvImageNoError) {
+        CVPixelBufferRelease(output);
+        return NULL;
+    }
+    CVBufferPropagateAttachments(source, output);
+    ApplyColorAttachments(output);
+    if (gHeader) {
+        __sync_fetch_and_add(&gHeader->geometryConversions, 1);
+        __sync_fetch_and_add(&gHeader->fullFrameCopies, 1);
+    }
+    return output;
+}
+
 static UIImage *CurrentFrameImage(void) {
     SimDeckFrameDescriptor descriptor = {0};
     CVPixelBufferRef pixelBuffer = CurrentPixelBuffer(NO, &descriptor);
@@ -565,10 +678,27 @@ static void DeliverFrame(void) {
     if (!pixelBuffer) return;
     OSType sourceFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
     uint64_t presentationTimestampNs = (uint64_t)(CACurrentMediaTime() * 1000000000.0);
-    CMSampleBufferRef sourceSample = CreateSampleBuffer(pixelBuffer,
-                                                        descriptor.generation,
-                                                        presentationTimestampNs,
-                                                        0);
+    CVPixelBufferRef mirroredBuffer = NULL;
+    CVPixelBufferRef deliveryBuffer = pixelBuffer;
+    if (descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON) {
+        mirroredBuffer = MirrorPixelBuffer(pixelBuffer);
+        if (!mirroredBuffer) {
+            CVPixelBufferRelease(pixelBuffer);
+            return;
+        }
+        deliveryBuffer = mirroredBuffer;
+    }
+    CMSampleBufferRef deliverySample = CreateSampleBuffer(deliveryBuffer,
+                                                          descriptor.generation,
+                                                          presentationTimestampNs,
+                                                          0);
+    CMSampleBufferRef previewSample = deliverySample;
+    if (mirroredBuffer) {
+        previewSample = CreateSampleBuffer(pixelBuffer,
+                                           descriptor.generation,
+                                           presentationTimestampNs,
+                                           0);
+    }
     CVPixelBufferRef bgraBuffer = NULL;
     CMSampleBufferRef bgraSample = NULL;
     NSArray *outputs = nil;
@@ -580,7 +710,7 @@ static void DeliverFrame(void) {
         OSType requested = RequestedPixelFormat(output, sourceFormat);
         if (requested == kCVPixelFormatType_32BGRA && sourceFormat != kCVPixelFormatType_32BGRA) {
             if (!bgraBuffer) {
-                bgraBuffer = ConvertToBGRA(pixelBuffer);
+                bgraBuffer = ConvertToBGRA(deliveryBuffer);
                 if (bgraBuffer) {
                     bgraSample = CreateSampleBuffer(bgraBuffer,
                                                     descriptor.generation,
@@ -590,17 +720,17 @@ static void DeliverFrame(void) {
             }
             DeliverSample(bgraSample, output);
         } else {
-            DeliverSample(sourceSample, output);
+            DeliverSample(deliverySample, output);
         }
     }
     [outputs release];
 
-    if (sourceSample) {
+    if (previewSample) {
         NSArray<AVSampleBufferDisplayLayer *> *layers = nil;
         @synchronized(gPreviewLayers) {
             layers = gPreviewLayers.allObjects;
         }
-        CFRetain(sourceSample);
+        CFRetain(previewSample);
         dispatch_async(dispatch_get_main_queue(), ^{
             for (AVSampleBufferDisplayLayer *layer in layers) {
                 CALayer *host = objc_getAssociatedObject(layer, &kPreviewHostKey);
@@ -613,15 +743,17 @@ static void DeliverFrame(void) {
                 [layer setAffineTransform:descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON
                     ? CGAffineTransformMakeScale(-1, 1)
                     : CGAffineTransformIdentity];
-                [layer enqueueSampleBuffer:sourceSample];
+                [layer enqueueSampleBuffer:previewSample];
                 [CATransaction commit];
             }
-            CFRelease(sourceSample);
+            CFRelease(previewSample);
         });
     }
     if (bgraSample) CFRelease(bgraSample);
-    if (sourceSample) CFRelease(sourceSample);
+    if (mirroredBuffer && previewSample) CFRelease(previewSample);
+    if (deliverySample) CFRelease(deliverySample);
     if (bgraBuffer) CVPixelBufferRelease(bgraBuffer);
+    if (mirroredBuffer) CVPixelBufferRelease(mirroredBuffer);
     CVPixelBufferRelease(pixelBuffer);
     if (gHeader) __sync_fetch_and_add(&gHeader->deliveredFrames, 1);
 }
