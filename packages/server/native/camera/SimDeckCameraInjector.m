@@ -291,6 +291,20 @@ typedef struct {
 
 static SimDeckFormatCache gFormatCaches[2];
 
+static BOOL ShouldInstallForCurrentProcess(void) {
+    const char *rawTargets = getenv("SIMDECK_CAMERA_TARGET_BUNDLE_IDS");
+    if (!rawTargets || rawTargets[0] == '\0') return YES;
+
+    NSString *targets = [NSString stringWithUTF8String:rawTargets];
+    NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"";
+    NSString *processName = NSProcessInfo.processInfo.processName ?: @"";
+    for (NSString *rawTarget in [targets componentsSeparatedByString:@","]) {
+        NSString *target = [rawTarget stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if ([target isEqualToString:bundleID] || [target isEqualToString:processName]) return YES;
+    }
+    return NO;
+}
+
 static BOOL OpenSharedCamera(void) {
     if (gHeader) return YES;
     const char *name = getenv("SIMDECK_CAMERA_SHM_NAME");
@@ -322,12 +336,10 @@ static BOOL OpenSharedCamera(void) {
     }
     gHeader = header;
     gFrameMapSize = (size_t)st.st_size;
-    uint32_t previousConsumer = __sync_lock_test_and_set(&gHeader->consumerPid, (uint32_t)getpid());
-    if (previousConsumer != (uint32_t)getpid()) {
-        for (uint32_t slot = 0; slot < SIMDECK_CAMERA_SURFACE_RING_SIZE; slot += 1) {
-            gHeader->surfaceUseCounts[slot] = 0;
-        }
-    }
+    // Surface use counts are shared atomic references across the app and browser
+    // camera processes. consumerPid is observability only; resetting counts here
+    // would let a later Safari consumer reuse a surface still retained by the app.
+    __sync_lock_test_and_set(&gHeader->consumerPid, (uint32_t)getpid());
     DebugLog(@"attached surface feed %ux%u", header->width, header->height);
     return YES;
 }
@@ -1505,6 +1517,7 @@ static void ExchangeClass(Class cls, SEL original, SEL replacement) {
 __attribute__((constructor))
 static void SimDeckCameraInstall(void) {
     @autoreleasepool {
+        if (!ShouldInstallForCurrentProcess()) return;
         gSessions = [[NSMutableArray alloc] init];
         gVideoOutputs = [[NSMutableArray alloc] init];
         gPreviewLayers = [[NSHashTable weakObjectsHashTable] retain];

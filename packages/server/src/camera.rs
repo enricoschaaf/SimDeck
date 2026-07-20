@@ -14,6 +14,12 @@ use std::time::{Duration, Instant};
 pub mod webrtc;
 
 const INJECTOR_NAME: &str = "libSimDeckCameraInjector.dylib";
+const CAMERA_DYLD_ENV: &str = "DYLD_INSERT_LIBRARIES";
+const CAMERA_SHM_ENV: &str = "SIMDECK_CAMERA_SHM_NAME";
+const CAMERA_MIRROR_ENV: &str = "SIMDECK_CAMERA_MIRROR";
+const CAMERA_TARGETS_ENV: &str = "SIMDECK_CAMERA_TARGET_BUNDLE_IDS";
+const BROWSER_CAMERA_TARGETS: &str = "com.apple.SafariViewService,com.apple.mobilesafari";
+const BROWSER_BUNDLE_IDS: [&str; 2] = ["com.apple.SafariViewService", "com.apple.mobilesafari"];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -86,9 +92,15 @@ pub fn start_camera(options: CameraStartOptions) -> Result<Value, AppError> {
     fs::create_dir_all(camera_state_dir()).map_err(app_internal)?;
 
     let shm_name = shm_name_for_udid(&options.udid);
+    let dylib = camera_injector_path().map_err(app_internal)?;
     native_start_camera(&options.udid, &shm_name, &source, &mirror)?;
 
-    if let Err(error) = launch_with_injector(&options.udid, bundle_id, &shm_name, &mirror) {
+    if let Err(error) = configure_browser_injector(&options.udid, &dylib, &shm_name, &mirror) {
+        let _ = native_stop_camera(&options.udid);
+        return Err(error);
+    }
+    if let Err(error) = launch_with_injector(&options.udid, bundle_id, &dylib, &shm_name, &mirror) {
+        let _ = clear_browser_injector(&options.udid);
         let _ = native_stop_camera(&options.udid);
         return Err(error);
     }
@@ -125,6 +137,7 @@ pub fn camera_status(udid: &str) -> Result<Value, AppError> {
 pub fn stop_camera(udid: &str) -> Result<Value, AppError> {
     validate_udid(udid)?;
     native_stop_camera(udid)?;
+    clear_browser_injector(udid)?;
     let _ = fs::remove_file(injected_bundles_file(udid));
     Ok(json!({ "ok": true, "udid": udid, "alive": false }))
 }
@@ -323,10 +336,10 @@ fn cstring(name: &str, value: &str) -> Result<CString, AppError> {
 fn launch_with_injector(
     udid: &str,
     bundle_id: &str,
+    dylib: &Path,
     shm_name: &str,
     mirror: &str,
 ) -> Result<(), AppError> {
-    let dylib = camera_injector_path().map_err(app_internal)?;
     let _ = Command::new("/usr/bin/xcrun")
         .args(["simctl", "terminate", udid, bundle_id])
         .stdout(Stdio::null())
@@ -340,9 +353,10 @@ fn launch_with_injector(
         .arg(format!("--stderr={}", app_log.display()))
         .arg(udid)
         .arg(bundle_id)
-        .env("SIMCTL_CHILD_DYLD_INSERT_LIBRARIES", dylib)
-        .env("SIMCTL_CHILD_SIMDECK_CAMERA_SHM_NAME", shm_name)
-        .env("SIMCTL_CHILD_SIMDECK_CAMERA_MIRROR", mirror)
+        .env(format!("SIMCTL_CHILD_{CAMERA_DYLD_ENV}"), dylib)
+        .env(format!("SIMCTL_CHILD_{CAMERA_SHM_ENV}"), shm_name)
+        .env(format!("SIMCTL_CHILD_{CAMERA_MIRROR_ENV}"), mirror)
+        .env(format!("SIMCTL_CHILD_{CAMERA_TARGETS_ENV}"), bundle_id)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -381,6 +395,79 @@ fn launch_with_injector(
         } else {
             stderr
         }))
+    }
+}
+
+fn configure_browser_injector(
+    udid: &str,
+    dylib: &Path,
+    shm_name: &str,
+    mirror: &str,
+) -> Result<(), AppError> {
+    let dylib = dylib
+        .to_str()
+        .ok_or_else(|| AppError::native("Camera injector path is not valid UTF-8."))?;
+    for (name, value) in [
+        (CAMERA_DYLD_ENV, dylib),
+        (CAMERA_SHM_ENV, shm_name),
+        (CAMERA_MIRROR_ENV, mirror),
+        (CAMERA_TARGETS_ENV, BROWSER_CAMERA_TARGETS),
+    ] {
+        let output = Command::new("/usr/bin/xcrun")
+            .args(["simctl", "spawn", udid, "launchctl", "setenv", name, value])
+            .output()
+            .map_err(|error| {
+                AppError::native(format!(
+                    "Unable to configure browser camera injection. {error}"
+                ))
+            })?;
+        if !output.status.success() {
+            let _ = clear_browser_injector(udid);
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(AppError::native(if stderr.is_empty() {
+                "Unable to configure browser camera injection.".to_owned()
+            } else {
+                format!("Unable to configure browser camera injection. {stderr}")
+            }));
+        }
+    }
+    terminate_browser_camera_processes(udid);
+    Ok(())
+}
+
+fn clear_browser_injector(udid: &str) -> Result<(), AppError> {
+    for name in [
+        CAMERA_DYLD_ENV,
+        CAMERA_SHM_ENV,
+        CAMERA_MIRROR_ENV,
+        CAMERA_TARGETS_ENV,
+    ] {
+        let output = Command::new("/usr/bin/xcrun")
+            .args(["simctl", "spawn", udid, "launchctl", "unsetenv", name])
+            .output()
+            .map_err(|error| {
+                AppError::native(format!("Unable to clear browser camera injection. {error}"))
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(AppError::native(if stderr.is_empty() {
+                "Unable to clear browser camera injection.".to_owned()
+            } else {
+                format!("Unable to clear browser camera injection. {stderr}")
+            }));
+        }
+    }
+    terminate_browser_camera_processes(udid);
+    Ok(())
+}
+
+fn terminate_browser_camera_processes(udid: &str) {
+    for bundle_id in BROWSER_BUNDLE_IDS {
+        let _ = Command::new("/usr/bin/xcrun")
+            .args(["simctl", "terminate", udid, bundle_id])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
