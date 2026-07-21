@@ -311,6 +311,25 @@ static BOOL ShouldInstallForCurrentProcess(void) {
     return NO;
 }
 
+static BOOL IsBrowserCameraProcess(void) {
+    NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"";
+    NSString *processName = NSProcessInfo.processInfo.processName ?: @"";
+    return [bundleID isEqualToString:@"com.apple.mobilesafari"] ||
+           [bundleID isEqualToString:@"com.apple.SafariViewService"] ||
+           [processName isEqualToString:@"MobileSafari"] ||
+           [processName isEqualToString:@"SafariViewService"] ||
+           [processName isEqualToString:@"com.apple.WebKit.GPU"];
+}
+
+static BOOL IsBrowserCameraHostProcess(void) {
+    NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"";
+    NSString *processName = NSProcessInfo.processInfo.processName ?: @"";
+    return [bundleID isEqualToString:@"com.apple.mobilesafari"] ||
+           [bundleID isEqualToString:@"com.apple.SafariViewService"] ||
+           [processName isEqualToString:@"MobileSafari"] ||
+           [processName isEqualToString:@"SafariViewService"];
+}
+
 static BOOL OpenSharedCamera(void) {
     if (gHeader) return YES;
     const char *name = getenv("SIMDECK_CAMERA_SHM_NAME");
@@ -1097,6 +1116,26 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
 
 @implementation AVCaptureDevice (SimDeckCamera)
 
+- (NSString *)sd_browserLocalizedName {
+    NSString *value = [self sd_browserLocalizedName];
+    return value.length > 0 ? value : @"SimDeck Camera";
+}
+
+- (NSString *)sd_browserUniqueID {
+    NSString *value = [self sd_browserUniqueID];
+    return value.length > 0 ? value : @"dev.nativescript.simdeck.camera";
+}
+
+- (NSString *)sd_browserModelID {
+    NSString *value = [self sd_browserModelID];
+    return value.length > 0 ? value : @"SimDeck Camera";
+}
+
+- (NSString *)sd_browserManufacturer {
+    NSString *value = [self sd_browserManufacturer];
+    return value.length > 0 ? value : @"SimDeck";
+}
+
 + (AVCaptureDevice *)sd_defaultDeviceWithMediaType:(AVMediaType)mediaType {
     AVCaptureDevice *device = [self sd_defaultDeviceWithMediaType:mediaType];
     if (device || !IsVideoMediaType(mediaType) || !OpenSharedCamera()) return device;
@@ -1582,6 +1621,35 @@ static void ExchangeClass(Class cls, SEL original, SEL replacement) {
     method_exchangeImplementations(a, b);
 }
 
+static void InstallSubclassFallback(Class cls, SEL original, SEL replacement) {
+    Method originalMethod = class_getInstanceMethod(cls, original);
+    Method replacementMethod = class_getInstanceMethod(AVCaptureDevice.class, replacement);
+    if (!originalMethod || !replacementMethod) {
+        Log(@"missing browser camera method %@ on %@", NSStringFromSelector(original), NSStringFromClass(cls));
+        return;
+    }
+    class_addMethod(cls,
+                    replacement,
+                    method_getImplementation(originalMethod),
+                    method_getTypeEncoding(originalMethod));
+    class_replaceMethod(cls,
+                        original,
+                        method_getImplementation(replacementMethod),
+                        method_getTypeEncoding(replacementMethod));
+}
+
+static void InstallBrowserCameraDeviceMetadataHooks(void) {
+    Class cls = NSClassFromString(@"AVCaptureFigVideoDevice");
+    if (!cls) {
+        Log(@"missing AVCaptureFigVideoDevice");
+        return;
+    }
+    InstallSubclassFallback(cls, @selector(localizedName), @selector(sd_browserLocalizedName));
+    InstallSubclassFallback(cls, @selector(uniqueID), @selector(sd_browserUniqueID));
+    InstallSubclassFallback(cls, @selector(modelID), @selector(sd_browserModelID));
+    InstallSubclassFallback(cls, @selector(manufacturer), @selector(sd_browserManufacturer));
+}
+
 __attribute__((constructor))
 static void SimDeckCameraInstall(void) {
     @autoreleasepool {
@@ -1591,6 +1659,7 @@ static void SimDeckCameraInstall(void) {
         gPreviewLayers = [[NSHashTable weakObjectsHashTable] retain];
         gHookedVideoOutputClasses = [[NSMutableSet alloc] init];
         OpenSharedCamera();
+        if (IsBrowserCameraHostProcess()) InstallBrowserCameraDeviceMetadataHooks();
 
         ExchangeClass(AVCaptureDevice.class, @selector(defaultDeviceWithMediaType:), @selector(sd_defaultDeviceWithMediaType:));
         ExchangeClass(AVCaptureDevice.class, @selector(defaultDeviceWithDeviceType:mediaType:position:), @selector(sd_defaultDeviceWithDeviceType:mediaType:position:));
@@ -1618,13 +1687,15 @@ static void SimDeckCameraInstall(void) {
         ExchangeInstance(AVCaptureSession.class, @selector(stopRunning), @selector(sd_stopRunning));
         ExchangeInstance(AVCaptureSession.class, @selector(isRunning), @selector(sd_isRunning));
 
-        ExchangeInstance(UIViewController.class, @selector(viewDidAppear:), @selector(sd_viewDidAppear:));
-        ExchangeInstance(UIViewController.class, @selector(viewDidLayoutSubviews), @selector(sd_viewDidLayoutSubviews));
-        ExchangeInstance(UIViewController.class, @selector(viewDidDisappear:), @selector(sd_viewDidDisappear:));
-        ExchangeClass(AVCaptureVideoPreviewLayer.class, @selector(layerWithSession:), @selector(sd_layerWithSession:));
-        ExchangeInstance(AVCaptureVideoPreviewLayer.class, @selector(initWithSession:), @selector(sd_initWithSession:));
-        ExchangeInstance(AVCaptureVideoPreviewLayer.class, @selector(setSession:), @selector(sd_setSession:));
-        ExchangeInstance(AVCaptureVideoPreviewLayer.class, @selector(session), @selector(sd_session));
+        if (!IsBrowserCameraProcess()) {
+            ExchangeInstance(UIViewController.class, @selector(viewDidAppear:), @selector(sd_viewDidAppear:));
+            ExchangeInstance(UIViewController.class, @selector(viewDidLayoutSubviews), @selector(sd_viewDidLayoutSubviews));
+            ExchangeInstance(UIViewController.class, @selector(viewDidDisappear:), @selector(sd_viewDidDisappear:));
+            ExchangeClass(AVCaptureVideoPreviewLayer.class, @selector(layerWithSession:), @selector(sd_layerWithSession:));
+            ExchangeInstance(AVCaptureVideoPreviewLayer.class, @selector(initWithSession:), @selector(sd_initWithSession:));
+            ExchangeInstance(AVCaptureVideoPreviewLayer.class, @selector(setSession:), @selector(sd_setSession:));
+            ExchangeInstance(AVCaptureVideoPreviewLayer.class, @selector(session), @selector(sd_session));
+        }
         DebugLog(@"installed");
     }
 }

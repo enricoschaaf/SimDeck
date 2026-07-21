@@ -12,6 +12,10 @@ static int IsCameraProcess(const char *executable) {
     if (strcmp(name, "com.apple.WebKit.GPU") == 0) {
         return 1;
     }
+    if (strcmp(name, "MobileSafari") == 0 ||
+        strcmp(name, "SafariViewService") == 0) {
+        return 1;
+    }
     return strstr(executable, "/Containers/Bundle/Application/") != NULL;
 }
 

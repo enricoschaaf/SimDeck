@@ -12,7 +12,8 @@ use std::process::Command;
 pub mod webrtc;
 
 const CAMERA_BOOTSTRAP_NAME: &str = "libSimDeckCameraBootstrap.dylib";
-const CAMERA_TARGETS: &str = "com.apple.WebKit.GPU,__SIMDECK_USER_APPS__";
+const CAMERA_TARGETS: &str =
+    "com.apple.mobilesafari,com.apple.SafariViewService,com.apple.WebKit.GPU,__SIMDECK_USER_APPS__";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
