@@ -243,36 +243,6 @@ static void DebugLog(NSString *format, ...) {
     fprintf(stderr, "[simdeck-camera] %s\n", message.UTF8String ?: "");
 }
 
-@interface SimDeckSurfaceLease : NSObject {
-    IOSurfaceRef _surface;
-    volatile uint32_t *_useCount;
-}
-- (instancetype)initWithSurface:(IOSurfaceRef)surface useCount:(volatile uint32_t *)useCount;
-@end
-
-@implementation SimDeckSurfaceLease
-
-- (instancetype)initWithSurface:(IOSurfaceRef)surface useCount:(volatile uint32_t *)useCount {
-    self = [super init];
-    if (self) {
-        _surface = surface ? (IOSurfaceRef)CFRetain(surface) : NULL;
-        _useCount = useCount;
-        if (_surface) IOSurfaceIncrementUseCount(_surface);
-    }
-    return self;
-}
-
-- (void)dealloc {
-    if (_surface) {
-        IOSurfaceDecrementUseCount(_surface);
-        CFRelease(_surface);
-    }
-    if (_useCount) __sync_fetch_and_sub(_useCount, 1);
-    [super dealloc];
-}
-
-@end
-
 typedef struct {
     uint64_t generation;
     uint64_t sequence;
@@ -458,23 +428,12 @@ static CVPixelBufferRef CurrentPixelBuffer(BOOL requireNewFrame,
         return NULL;
     }
     CVPixelBufferRef pixelBuffer = NULL;
-    CVReturn result = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault,
-                                                       surface,
-                                                       NULL,
-                                                       &pixelBuffer);
-    if (result == kCVReturnSuccess && pixelBuffer) {
-        SimDeckSurfaceLease *lease = [[SimDeckSurfaceLease alloc]
-            initWithSurface:surface
-                   useCount:&gHeader->surfaceUseCounts[descriptor.ringSlot]];
-        CVBufferSetAttachment(pixelBuffer,
-                              CFSTR("dev.nativescript.simdeck.camera.surface-lease"),
-                              (CFTypeRef)lease,
-                              kCVAttachmentMode_ShouldNotPropagate);
-        [lease release];
-    }
+    CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, NULL, &pixelBuffer);
+    // The shared count only closes the descriptor-to-IOSurfaceLookup race. The
+    // returned pixel buffer retains the IOSurface for its downstream lifetime.
+    __sync_fetch_and_sub(&gHeader->surfaceUseCounts[descriptor.ringSlot], 1);
     CFRelease(surface);
     if (!pixelBuffer) {
-        __sync_fetch_and_sub(&gHeader->surfaceUseCounts[descriptor.ringSlot], 1);
         __sync_fetch_and_add(&gHeader->surfaceLookupFailures, 1);
         return NULL;
     }
