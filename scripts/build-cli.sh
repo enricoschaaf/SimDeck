@@ -72,4 +72,5 @@ echo "Built $OUTPUT"
 if [[ "$(uname -s)" == "Darwin" ]]; then
   "$CAMERA_SOURCE_DIR/build-injector.sh" "$CAMERA_DIR" >/dev/null
   echo "Built $CAMERA_DIR/libSimDeckCameraInjector.dylib"
+  echo "Built $CAMERA_DIR/libSimDeckCameraBootstrap.dylib"
 fi

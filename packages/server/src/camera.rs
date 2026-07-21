@@ -11,7 +11,7 @@ use std::process::Command;
 
 pub mod webrtc;
 
-const CAMERA_INJECTOR_NAME: &str = "libSimDeckCameraInjector.dylib";
+const CAMERA_BOOTSTRAP_NAME: &str = "libSimDeckCameraBootstrap.dylib";
 const CAMERA_TARGETS: &str = "com.apple.WebKit.GPU,__SIMDECK_USER_APPS__";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -107,18 +107,13 @@ pub fn ensure_idle_camera(udid: &str) -> Result<Value, AppError> {
 
 pub fn prepare_camera_runtime(udid: &str) -> Result<Value, AppError> {
     validate_udid(udid)?;
-    let injector = camera_injector_path()?;
+    let bootstrap = camera_artifact_path(CAMERA_BOOTSTRAP_NAME)?;
     let status = ensure_idle_camera(udid)?;
-    let injector = injector
+    let bootstrap = bootstrap
         .to_str()
-        .ok_or_else(|| AppError::native("Camera injector path is not valid UTF-8."))?;
+        .ok_or_else(|| AppError::native("Camera bootstrap path is not valid UTF-8."))?;
     let shared_memory_name = shm_name_for_udid(udid);
-    for (name, value) in [
-        ("DYLD_INSERT_LIBRARIES", injector),
-        ("SIMDECK_CAMERA_SHM_NAME", shared_memory_name.as_str()),
-        ("SIMDECK_CAMERA_MIRROR", "on"),
-        ("SIMDECK_CAMERA_TARGET_BUNDLE_IDS", CAMERA_TARGETS),
-    ] {
+    for (name, value) in camera_runtime_environment(bootstrap, &shared_memory_name) {
         let output = Command::new("/usr/bin/xcrun")
             .args(["simctl", "spawn", udid, "launchctl", "setenv", name, value])
             .output()
@@ -135,6 +130,22 @@ pub fn prepare_camera_runtime(udid: &str) -> Result<Value, AppError> {
         }
     }
     Ok(status)
+}
+
+fn camera_runtime_environment<'a>(
+    bootstrap: &'a str,
+    shared_memory_name: &'a str,
+) -> [(&'static str, &'a str); 8] {
+    [
+        ("DYLD_INSERT_LIBRARIES", bootstrap),
+        ("SIMDECK_CAMERA_SHM_NAME", shared_memory_name),
+        ("SIMDECK_CAMERA_MIRROR", "on"),
+        ("SIMDECK_CAMERA_TARGET_BUNDLE_IDS", CAMERA_TARGETS),
+        ("__XPC_DYLD_INSERT_LIBRARIES", bootstrap),
+        ("__XPC_SIMDECK_CAMERA_SHM_NAME", shared_memory_name),
+        ("__XPC_SIMDECK_CAMERA_MIRROR", "on"),
+        ("__XPC_SIMDECK_CAMERA_TARGET_BUNDLE_IDS", CAMERA_TARGETS),
+    ]
 }
 
 pub fn switch_camera(
@@ -456,20 +467,18 @@ fn camera_state_dir() -> PathBuf {
     std::env::temp_dir().join("simdeck-camera")
 }
 
-fn camera_injector_path() -> Result<PathBuf, AppError> {
+fn camera_artifact_path(name: &str) -> Result<PathBuf, AppError> {
     let executable = std::env::current_exe()
         .map_err(|error| AppError::internal(format!("Unable to resolve SimDeck. {error}")))?;
     let executable_directory = executable
         .parent()
         .ok_or_else(|| AppError::internal("The SimDeck executable has no containing directory."))?;
-    let path = executable_directory
-        .join("camera")
-        .join(CAMERA_INJECTOR_NAME);
+    let path = executable_directory.join("camera").join(name);
     if path.is_file() {
         Ok(path)
     } else {
         Err(AppError::native(format!(
-            "Camera injector is missing at {}.",
+            "Camera runtime is missing at {}.",
             path.display()
         )))
     }
@@ -490,4 +499,30 @@ fn short_hash(value: &str) -> String {
 
 fn app_internal(error: impl std::fmt::Display) -> AppError {
     AppError::internal(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camera_runtime_reaches_direct_and_xpc_processes_through_the_bootstrap() {
+        let environment = camera_runtime_environment("/camera/bootstrap.dylib", "/camera/shm");
+        let value = |name| {
+            environment
+                .iter()
+                .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
+        };
+
+        assert_eq!(
+            value("DYLD_INSERT_LIBRARIES"),
+            Some("/camera/bootstrap.dylib")
+        );
+        assert_eq!(
+            value("__XPC_DYLD_INSERT_LIBRARIES"),
+            Some("/camera/bootstrap.dylib")
+        );
+        assert_eq!(value("SIMDECK_CAMERA_SHM_NAME"), Some("/camera/shm"));
+        assert_eq!(value("__XPC_SIMDECK_CAMERA_SHM_NAME"), Some("/camera/shm"));
+    }
 }

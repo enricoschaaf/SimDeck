@@ -7,6 +7,7 @@ mkdir -p "$OUT_DIR"
 
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 OUT="$OUT_DIR/libSimDeckCameraInjector.dylib"
+BOOTSTRAP_OUT="$OUT_DIR/libSimDeckCameraBootstrap.dylib"
 ARCHES=()
 HOST_ARCH="$(uname -m)"
 if [[ "$HOST_ARCH" == "arm64" ]]; then
@@ -38,4 +39,17 @@ xcrun --sdk iphonesimulator clang \
   -o "$OUT"
 
 codesign --force --sign - "$OUT" >/dev/null 2>&1 || true
-echo "$OUT"
+
+xcrun --sdk iphonesimulator clang \
+  "${ARCHES[@]}" \
+  -dynamiclib \
+  -isysroot "$SDK" \
+  -mios-simulator-version-min=15.0 \
+  -Wall \
+  -Wextra \
+  -install_name "@rpath/libSimDeckCameraBootstrap.dylib" \
+  "$SCRIPT_DIR/SimDeckCameraBootstrap.c" \
+  -o "$BOOTSTRAP_OUT"
+
+codesign --force --sign - "$BOOTSTRAP_OUT" >/dev/null 2>&1 || true
+printf '%s\n%s\n' "$OUT" "$BOOTSTRAP_OUT"
