@@ -179,6 +179,7 @@ jobs:
           path: |
             build/simdeck
             build/simdeck-bin
+            build/text-runner
             packages/client/dist
             packages/simdeck-test/dist
             .cache/simdeck/fixture

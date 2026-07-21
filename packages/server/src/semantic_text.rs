@@ -280,24 +280,33 @@ async fn build_or_reuse_artifact() -> Result<Artifact, String> {
 }
 
 fn runner_project_path() -> Result<PathBuf, String> {
-    let relative = Path::new("packages/server/native/text-runner/SimDeckTextRunner.xcodeproj");
+    runner_project_candidates(
+        env::current_dir().ok().as_deref(),
+        env::current_exe().ok().as_deref(),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    )
+    .into_iter()
+    .find(|candidate| candidate.is_dir())
+    .ok_or_else(|| "SimDeck XCTest text runner project is missing".to_string())
+}
+
+fn runner_project_candidates(
+    current_directory: Option<&Path>,
+    executable: Option<&Path>,
+    manifest_directory: &Path,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Ok(directory) = env::current_dir() {
-        candidates.push(directory.join(relative));
+    if let Some(executable_directory) = executable.and_then(Path::parent) {
+        candidates.push(executable_directory.join("text-runner/SimDeckTextRunner.xcodeproj"));
     }
-    if let Ok(executable) = env::current_exe() {
-        if let Some(release_root) = executable.parent().and_then(Path::parent) {
-            candidates.push(release_root.join(relative));
-        }
+    if let Some(current_directory) = current_directory {
+        candidates.push(
+            current_directory
+                .join("packages/server/native/text-runner/SimDeckTextRunner.xcodeproj"),
+        );
     }
-    candidates.push(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("native/text-runner/SimDeckTextRunner.xcodeproj"),
-    );
+    candidates.push(manifest_directory.join("native/text-runner/SimDeckTextRunner.xcodeproj"));
     candidates
-        .into_iter()
-        .find(|candidate| candidate.is_dir())
-        .ok_or_else(|| "SimDeck XCTest text runner project is missing".to_string())
 }
 
 fn hash_directory(root: &Path, hasher: &mut Sha256) -> Result<(), String> {
@@ -527,6 +536,22 @@ mod tests {
                 .get("SIMDECK_XCTEST_PORT")
                 .and_then(PlistValue::as_string),
             Some("43123")
+        );
+    }
+
+    #[test]
+    fn installed_text_runner_is_resolved_next_to_the_executable() {
+        let candidates = runner_project_candidates(
+            Some(Path::new("/workspace")),
+            Some(Path::new("/release/build/simdeck-bin")),
+            Path::new("/workspace/packages/server"),
+        );
+
+        assert_eq!(
+            candidates.first().map(PathBuf::as_path),
+            Some(Path::new(
+                "/release/build/text-runner/SimDeckTextRunner.xcodeproj"
+            ))
         );
     }
 }

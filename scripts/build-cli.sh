@@ -17,6 +17,7 @@ CAMERA_SOURCE_DIR="$ROOT_DIR/packages/server/native/camera"
 # unset we use the host triple so local dev stays fast.
 
 mkdir -p "$BUILD_DIR"
+node "$ROOT_DIR/scripts/stage-runtime-artifacts.mjs" "$BUILD_DIR"
 
 TMP_OUTPUT_BIN="$OUTPUT_BIN.tmp.$$"
 trap 'rm -f "$TMP_OUTPUT_BIN"' EXIT

@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import { stageRuntimeArtifacts } from "./stage-runtime-artifacts.mjs";
 
 const iosAction = readFileSync(
   new URL("../actions/run-ios-comment-session/action.yml", import.meta.url),
@@ -58,6 +59,43 @@ test("npm package declares Windows Android host support", () => {
   assert.ok(packageJson.os.includes("linux"));
   assert.ok(packageJson.os.includes("win32"));
   assert.ok(packageJson.files.includes("build/simdeck-bin-win32-x64.exe"));
+});
+
+test("runtime package stages the semantic text runner beside the binary", () => {
+  const root = mkdtempSync(join(tmpdir(), "simdeck-runtime-artifacts-"));
+  try {
+    const source = join(root, "packages/server/native/text-runner");
+    mkdirSync(join(source, "SimDeckTextRunner.xcodeproj"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(source, "SimDeckTextRunner.xcodeproj/project.pbxproj"),
+      "project",
+    );
+    writeFileSync(join(source, "RunnerTests.swift"), "runner");
+    const build = join(root, "build");
+
+    const { textRunnerOutput } = stageRuntimeArtifacts(root, build);
+
+    assert.equal(
+      readFileSync(
+        join(textRunnerOutput, "SimDeckTextRunner.xcodeproj/project.pbxproj"),
+        "utf8",
+      ),
+      "project",
+    );
+    assert.equal(
+      readFileSync(join(textRunnerOutput, "RunnerTests.swift"), "utf8"),
+      "runner",
+    );
+    assert.ok(packageJson.files.includes("build/text-runner/"));
+    assert.ok(
+      !packageJson.files.includes("packages/server/native/text-runner/"),
+    );
+    assert.match(ciWorkflow, /build\/text-runner/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("npm CLI wrapper resolves Windows x64 native binary", () => {

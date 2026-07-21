@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stageRuntimeArtifacts } from "./stage-runtime-artifacts.mjs";
 
 const rootDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -21,6 +22,7 @@ const outputBin = path.join(
 const hostPlatformBin = target ? null : hostPlatformBinaryPath();
 
 fs.mkdirSync(buildDir, { recursive: true });
+stageRuntimeArtifacts(rootDir, buildDir);
 
 if (process.platform === "darwin" && !target) {
   run("bash", [

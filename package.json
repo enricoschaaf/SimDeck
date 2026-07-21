@@ -20,7 +20,7 @@
     "scripts/postinstall.mjs",
     "build/simdeck-bin",
     "build/camera/",
-    "packages/server/native/text-runner/",
+    "build/text-runner/",
     "build/simdeck-bin-darwin-arm64",
     "build/simdeck-bin-darwin-x64",
     "build/simdeck-bin-linux-arm64",
