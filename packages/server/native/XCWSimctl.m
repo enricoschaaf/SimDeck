@@ -154,6 +154,16 @@ static BOOL XCWStopRecordingTask(XCWScreenRecordingSession *session, NSTimeInter
     return !task.running;
 }
 
+static BOOL XCWFinishedQuickTimeData(NSData *data) {
+    if (data.length < 12) {
+        return NO;
+    }
+    NSData *fileTypeAtom = [@"ftyp" dataUsingEncoding:NSASCIIStringEncoding];
+    NSData *movieAtom = [@"moov" dataUsingEncoding:NSASCIIStringEncoding];
+    return [data rangeOfData:fileTypeAtom options:0 range:NSMakeRange(0, MIN(data.length, 32))].location != NSNotFound
+        && [data rangeOfData:movieAtom options:0 range:NSMakeRange(0, data.length)].location != NSNotFound;
+}
+
 static void XCWCloseRecordingPipes(XCWScreenRecordingSession *session) {
     session.stdoutHandle.readabilityHandler = nil;
     session.stderrHandle.readabilityHandler = nil;
@@ -1097,21 +1107,29 @@ static NSString *XCWRuntimeDisplayName(NSDictionary *runtime, NSString *runtimeI
         return nil;
     }
 
-    XCWStopRecordingTask(session, 10.0);
+    BOOL stoppedCleanly = XCWStopRecordingTask(session, 60.0);
     XCWCloseRecordingPipes(session);
+
+    if (!stoppedCleanly) {
+        [[NSFileManager defaultManager] removeItemAtPath:session.path error:nil];
+        if (error != NULL) {
+            *error = [self.class errorWithDescription:@"Simulator screen recording did not finish finalizing." code:34];
+        }
+        return nil;
+    }
 
     NSError *readError = nil;
     NSData *data = nil;
     NSDate *fileDeadline = [NSDate dateWithTimeIntervalSinceNow:2.0];
     do {
         data = [NSData dataWithContentsOfFile:session.path options:0 error:&readError];
-        if (data.length > 0) {
+        if (XCWFinishedQuickTimeData(data)) {
             break;
         }
         usleep(50 * 1000);
     } while ([fileDeadline timeIntervalSinceNow] > 0);
     [[NSFileManager defaultManager] removeItemAtPath:session.path error:nil];
-    if (data.length > 0) {
+    if (XCWFinishedQuickTimeData(data)) {
         return data;
     }
 
@@ -1122,7 +1140,7 @@ static NSString *XCWRuntimeDisplayName(NSDictionary *runtime, NSString *runtimeI
         if (details.length == 0 && readError.localizedDescription.length > 0) {
             details = readError.localizedDescription;
         } else if (details.length == 0) {
-            details = @"Simulator screen recording command produced an empty MP4.";
+            details = @"Simulator screen recording command did not produce a finalized MP4.";
         }
         *error = [self.class errorWithDescription:details code:34];
     }
