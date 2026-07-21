@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { shouldReconnectControlSocket } from "./controlSocketLifecycle";
+import {
+  clearRecoveredControlSocketError,
+  CONTROL_SOCKET_DISCONNECTED_ERROR,
+  shouldReconnectControlSocket,
+} from "./controlSocketLifecycle";
 
 describe("control socket lifecycle", () => {
   it("reconnects the active simulator after an interrupted connection", () => {
@@ -13,5 +17,14 @@ describe("control socket lifecycle", () => {
 
   it("does not reconnect after an intentional close", () => {
     expect(shouldReconnectControlSocket("", "sim-1", true)).toBe(false);
+  });
+
+  it("clears only the recovered control connection error", () => {
+    expect(
+      clearRecoveredControlSocketError(CONTROL_SOCKET_DISCONNECTED_ERROR),
+    ).toBe("");
+    expect(clearRecoveredControlSocketError("Install failed.")).toBe(
+      "Install failed.",
+    );
   });
 });

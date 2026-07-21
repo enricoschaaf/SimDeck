@@ -139,6 +139,8 @@ import {
   type ControlServerEvent,
 } from "./controlMessages";
 import {
+  clearRecoveredControlSocketError,
+  CONTROL_SOCKET_DISCONNECTED_ERROR,
   CONTROL_SOCKET_RECONNECT_DELAY_MS,
   shouldReconnectControlSocket,
 } from "./controlSocketLifecycle";
@@ -2622,6 +2624,7 @@ export function AppShell({
     controlSocketRef.current = state;
 
     socket.addEventListener("open", () => {
+      setLocalError(clearRecoveredControlSocketError);
       if (controlReconnectTimeoutRef.current) {
         window.clearTimeout(controlReconnectTimeoutRef.current);
         controlReconnectTimeoutRef.current = 0;
@@ -2650,7 +2653,7 @@ export function AppShell({
       }
     });
     socket.addEventListener("error", () => {
-      setLocalError("Simulator control stream disconnected.");
+      setLocalError(CONTROL_SOCKET_DISCONNECTED_ERROR);
     });
     socket.addEventListener("message", (event) => {
       const message = parseControlServerEvent(event.data);
