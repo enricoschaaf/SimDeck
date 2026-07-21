@@ -30,6 +30,7 @@ interface ToolbarProps {
   deviceChromeAvailable: boolean;
   deviceChromeVisible: boolean;
   devToolsVisible: boolean;
+  embedded?: boolean;
   error: string;
   filteredSimulators: SimulatorMetadata[];
   hierarchyVisible: boolean;
@@ -97,6 +98,7 @@ export function Toolbar({
   deviceChromeAvailable,
   deviceChromeVisible,
   devToolsVisible,
+  embedded = false,
   error,
   filteredSimulators,
   hierarchyVisible,
@@ -230,21 +232,23 @@ export function Toolbar({
           deviceChromeVisible={deviceChromeVisible}
           touchOverlayVisible={touchOverlayVisible}
         />
-        <SimulatorPickerMenu
-          filteredSimulators={filteredSimulators}
-          hideSimulatorSelection={hideSimulatorSelection}
-          isLoading={isLoading}
-          menuOpen={simulatorMenuOpen}
-          menuRef={simulatorMenuRef}
-          onChangeSearch={onChangeSearch}
-          onCloseMenu={closeSimulatorMenu}
-          onOpenNewSimulator={onOpenNewSimulator}
-          onToggleMenu={onToggleSimulatorMenu}
-          search={search}
-          selectedSimulator={selectedSimulator}
-          selectedSimulatorIdentifier={selectedSimulatorIdentifier}
-          setSelectedUDID={setSelectedUDID}
-        />
+        {!embedded ? (
+          <SimulatorPickerMenu
+            filteredSimulators={filteredSimulators}
+            hideSimulatorSelection={hideSimulatorSelection}
+            isLoading={isLoading}
+            menuOpen={simulatorMenuOpen}
+            menuRef={simulatorMenuRef}
+            onChangeSearch={onChangeSearch}
+            onCloseMenu={closeSimulatorMenu}
+            onOpenNewSimulator={onOpenNewSimulator}
+            onToggleMenu={onToggleSimulatorMenu}
+            search={search}
+            selectedSimulator={selectedSimulator}
+            selectedSimulatorIdentifier={selectedSimulatorIdentifier}
+            setSelectedUDID={setSelectedUDID}
+          />
+        ) : null}
       </div>
 
       <div className="toolbar-right">

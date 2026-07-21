@@ -4027,6 +4027,7 @@ export function AppShell({
         streamTransport={streamTransport}
         deviceChromeAvailable={selectedSupportsChrome}
         deviceChromeVisible={deviceChromeToggleActive}
+        embedded={embedded}
         simulatorMenuOpen={simulatorMenuOpen}
         simulatorMenuRef={simulatorMenuRef}
         showStopButton={Boolean(
