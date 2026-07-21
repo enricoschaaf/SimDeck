@@ -8,28 +8,76 @@
 
 .app-embedded {
   position: relative;
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
 }
 
 .app-embedded .toolbar {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  width: max-content;
-  max-width: calc(100% - 24px);
+  position: relative;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  justify-self: end;
+  flex-direction: column;
+  width: 44px;
+  max-width: none;
+  height: auto;
+  max-height: calc(100dvh - 24px);
+  padding: 6px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--toolbar-bg) 92%, transparent);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 24%);
-  backdrop-filter: blur(14px);
-  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--toolbar-bg) 96%, transparent);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 22%);
+  backdrop-filter: blur(12px);
 }
 
-.app-embedded .toolbar-left {
+.app-embedded .toolbar-left,
+.app-embedded .toolbar-right,
+.app-embedded .toolbar-actions {
+  flex-direction: column;
+  width: 100%;
+  gap: 3px;
+}
+
+.app-embedded .toolbar-left,
+.app-embedded .toolbar-right {
   flex: 0 0 auto;
 }
 
+.app-embedded .toolbar-right {
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.app-embedded .toolbar .tbtn {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 7px;
+}
+
+.app-embedded .toolbar .menu-popover {
+  top: 0;
+  right: calc(100% + 10px);
+  left: auto;
+  max-height: calc(100dvh - 24px);
+}
+
+.app-embedded .error-msg {
+  width: 30px;
+  max-width: 30px;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
 .app-embedded .main {
+  grid-column: 1;
+  grid-row: 1;
   height: 100%;
 }
 
@@ -192,11 +240,6 @@
     padding: 6px;
   }
 
-  .app-embedded .toolbar {
-    top: 8px;
-    max-width: calc(100% - 16px);
-  }
-
   .toolbar-left {
     flex: 1 1 auto;
     min-width: 0;
@@ -320,5 +363,56 @@
 
   .toolbar-sim-detail {
     display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-embedded {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 44px;
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .app-embedded .main {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .app-embedded .toolbar {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: end;
+    justify-self: center;
+    flex-direction: row;
+    width: max-content;
+    max-width: 100%;
+    height: 44px;
+    max-height: none;
+    padding: 6px;
+  }
+
+  .app-embedded .toolbar-left,
+  .app-embedded .toolbar-right,
+  .app-embedded .toolbar-actions {
+    flex-direction: row;
+    width: auto;
+  }
+
+  .app-embedded .toolbar-right {
+    padding-top: 0;
+    padding-left: 4px;
+    border-top: 0;
+    border-left: 1px solid var(--border-subtle);
+  }
+
+  .app-embedded .toolbar .menu-popover {
+    position: fixed;
+    top: auto;
+    right: 8px;
+    bottom: 60px;
+    left: 8px;
+    width: auto;
+    max-height: calc(100dvh - 68px);
   }
 }

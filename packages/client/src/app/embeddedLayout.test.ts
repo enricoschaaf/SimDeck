@@ -1,0 +1,38 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+
+const layoutCss = readFileSync(
+  new URL("../styles/layout.css", import.meta.url),
+  "utf8",
+);
+
+describe("embedded viewer layout", () => {
+  it("reserves a right-side column for controls outside the viewport", () => {
+    expect(layoutCss).toMatch(
+      /\.app-embedded\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 44px;/s,
+    );
+    expect(layoutCss).toMatch(
+      /\.app-embedded \.main\s*{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;/s,
+    );
+    expect(layoutCss).toMatch(
+      /\.app-embedded \.toolbar\s*{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;/s,
+    );
+  });
+
+  it("moves controls below the viewport at narrow widths", () => {
+    expect(layoutCss).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*\.app-embedded\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*grid-template-rows:\s*minmax\(0, 1fr\) 44px;/,
+    );
+    expect(layoutCss).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*\.app-embedded \.toolbar\s*{[^}]*grid-column:\s*1;[^}]*grid-row:\s*2;/,
+    );
+  });
+
+  it("keeps WebKit and accessibility panels inside the reserved viewport column", () => {
+    expect(layoutCss).toMatch(
+      /\.app-embedded \.main\s*{[^}]*grid-column:\s*1;/s,
+    );
+    expect(layoutCss).toContain(".webkit-panel {");
+    expect(layoutCss).toContain(".hierarchy-panel {");
+  });
+});

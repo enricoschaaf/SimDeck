@@ -176,7 +176,10 @@ export function Toolbar({
   }
 
   return (
-    <header className="toolbar">
+    <header
+      aria-label="Simulator controls"
+      className={`toolbar ${embedded ? "toolbar-embedded" : ""}`}
+    >
       <div className="toolbar-left">
         <button
           aria-label="Toggle View Hierarchy"

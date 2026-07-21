@@ -93,6 +93,7 @@ import { useAutomaticCamera } from "../features/simulators/automaticCamera";
 import { DeepLinkModal } from "../features/simulators/DeepLinkModal";
 import { NewSimulatorModal } from "../features/simulators/NewSimulatorModal";
 import { nextViewportWheelPanState } from "../features/viewport/viewportWheel";
+import { shouldWarmAccessibilityAfterFirstFrame } from "./viewerStartup";
 import {
   buildShellRotationTransform,
   clampPan,
@@ -149,7 +150,6 @@ const ACCESSIBILITY_REFRESH_MS = 1500;
 const ACCESSIBILITY_SKELETON_REFRESH_MS = 500;
 const REACT_NATIVE_ACCESSIBILITY_REFRESH_MS = 500;
 const FLUTTER_ACCESSIBILITY_REFRESH_MS = 1000;
-const ACCESSIBILITY_BACKGROUND_REFRESH_MS = 3000;
 const ANDROID_METADATA_REFRESH_MS = 1000;
 const BROWSER_EDGE_GESTURE_WIDTH = 32;
 const BROWSER_EDGE_GESTURE_MIN_DELTA = 8;
@@ -670,7 +670,6 @@ export function AppShell({
     initialStreamTransportRef.current,
   );
   const [streamConfigApplyKey, setStreamConfigApplyKey] = useState(0);
-  const [streamConfigReady, setStreamConfigReady] = useState(false);
   const [touchIndicators, setTouchIndicators] = useState<TouchIndicator[]>([]);
   const [selectedSimulatorState, setSelectedSimulatorState] =
     useState<SimulatorStateResponse | null>(null);
@@ -751,6 +750,7 @@ export function AppShell({
   >(() => {});
   const accessibilityRequestIdRef = useRef(0);
   const accessibilityLoadingRef = useRef(false);
+  const accessibilityWarmupUDIDRef = useRef("");
   const accessibilityRootsRef = useRef<AccessibilityNode[]>([]);
   const streamConfigRequestIdRef = useRef(0);
   const streamConfigUserChangeAtRef = useRef(0);
@@ -981,13 +981,10 @@ export function AppShell({
             preserveAutoQuality: false,
           }),
         );
+        setStreamConfigApplyKey((current) => current + 1);
       } catch {
         // Keep the existing local/default selection; the stream path will surface
         // provider reachability errors separately.
-      } finally {
-        if (requestId === streamConfigRequestIdRef.current) {
-          setStreamConfigReady(true);
-        }
       }
     },
     [streamTransport],
@@ -995,7 +992,6 @@ export function AppShell({
 
   useEffect(() => {
     let cancelled = false;
-    setStreamConfigReady(false);
 
     const run = () => {
       if (!cancelled) {
@@ -1052,7 +1048,6 @@ export function AppShell({
     streamCanvasKey,
   } = useLiveStream({
     canvasElement: streamCanvasElement,
-    paused: !streamConfigReady,
     remote: remoteStream,
     simulator: selectedSimulator,
     streamConfig: effectiveStreamConfig,
@@ -1067,7 +1062,6 @@ export function AppShell({
     ) {
       return;
     }
-    setStreamConfigReady(false);
     void syncStreamConfig({ ignoreUserGrace: true });
     void refreshRef.current();
   }, [streamStatus.error, streamStatus.state, syncStreamConfig]);
@@ -1076,7 +1070,6 @@ export function AppShell({
     (encoder: StreamEncoder) => {
       streamConfigUserTouchedRef.current = true;
       streamConfigUserChangeAtRef.current = Date.now();
-      setStreamConfigReady(true);
       setStreamConfigApplyKey((current) => current + 1);
       setStreamConfig({ ...effectiveStreamConfig, encoder });
     },
@@ -1087,7 +1080,6 @@ export function AppShell({
     (fps: StreamFps) => {
       streamConfigUserTouchedRef.current = true;
       streamConfigUserChangeAtRef.current = Date.now();
-      setStreamConfigReady(true);
       setStreamConfigApplyKey((current) => current + 1);
       setStreamConfig({ ...effectiveStreamConfig, fps });
     },
@@ -1098,7 +1090,6 @@ export function AppShell({
     (quality: StreamQualityPreset) => {
       streamConfigUserTouchedRef.current = true;
       streamConfigUserChangeAtRef.current = Date.now();
-      setStreamConfigReady(true);
       setStreamConfigApplyKey((current) => current + 1);
       setStreamConfig({
         ...effectiveStreamConfig,
@@ -1479,6 +1470,7 @@ export function AppShell({
 
   useEffect(() => {
     if (!selectedSimulator) {
+      accessibilityWarmupUDIDRef.current = "";
       setStreamStamp(Date.now());
       setChromeProfile(null);
       setChromeProfileReady(false);
@@ -1497,6 +1489,7 @@ export function AppShell({
     }
 
     const persistedState = readPersistedUiState();
+    accessibilityWarmupUDIDRef.current = "";
     const nextViewportState = viewportStateForUDID(
       persistedState,
       selectedSimulator.udid,
@@ -1548,6 +1541,9 @@ export function AppShell({
     setAccessibilityLoading(false);
   }, [selectedSimulator?.udid]);
 
+  const selectedAccessibilityUDID = selectedSimulator?.udid ?? "";
+  const selectedAccessibilityIsBooted = Boolean(selectedSimulator?.isBooted);
+
   const loadAccessibilityTree = useCallback(async () => {
     if (accessibilityLoadingRef.current) {
       return;
@@ -1564,13 +1560,13 @@ export function AppShell({
       return;
     }
 
-    if (!selectedSimulator?.isBooted) {
+    if (!selectedAccessibilityIsBooted) {
       updateAccessibilityRoots([]);
       setAccessibilitySelectedId("");
       setAccessibilityAvailableSources([]);
       setAccessibilitySource("");
       setAccessibilityError(
-        selectedSimulator ? "Boot the simulator to inspect UI." : "",
+        selectedAccessibilityUDID ? "Boot the simulator to inspect UI." : "",
       );
       return;
     }
@@ -1585,7 +1581,7 @@ export function AppShell({
 
     try {
       const snapshot = await fetchAccessibilityTree(
-        selectedSimulator.udid,
+        selectedAccessibilityUDID,
         accessibilityPreferredSource,
         {
           maxDepth:
@@ -1687,7 +1683,8 @@ export function AppShell({
     accessibilityPreferredSource,
     accessibilitySource,
     providerDisconnected,
-    selectedSimulator,
+    selectedAccessibilityIsBooted,
+    selectedAccessibilityUDID,
     updateAccessibilityRoots,
   ]);
 
@@ -1715,17 +1712,45 @@ export function AppShell({
       (accessibilitySkeletonMode === "auto" && hierarchyVisible));
 
   useEffect(() => {
+    if (
+      hierarchyVisible ||
+      !shouldWarmAccessibilityAfterFirstFrame({
+        hasFrame,
+        hierarchyVisible,
+        isBooted: selectedAccessibilityIsBooted,
+      }) ||
+      !selectedAccessibilityUDID ||
+      accessibilityWarmupUDIDRef.current === selectedAccessibilityUDID
+    ) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      accessibilityWarmupUDIDRef.current = selectedAccessibilityUDID;
+      void loadAccessibilityTree();
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [
+    hasFrame,
+    hierarchyVisible,
+    loadAccessibilityTree,
+    selectedAccessibilityIsBooted,
+    selectedAccessibilityUDID,
+  ]);
+
+  useEffect(() => {
+    if (!hierarchyVisible) {
+      return;
+    }
     const refreshMs = accessibilitySkeletonVisible
       ? ACCESSIBILITY_SKELETON_REFRESH_MS
-      : hierarchyVisible
-        ? accessibilityPreferredSource === "react-native" ||
+      : accessibilityPreferredSource === "react-native" ||
           accessibilitySource === "react-native"
-          ? REACT_NATIVE_ACCESSIBILITY_REFRESH_MS
-          : accessibilityPreferredSource === "flutter" ||
-              accessibilitySource === "flutter"
-            ? FLUTTER_ACCESSIBILITY_REFRESH_MS
-            : ACCESSIBILITY_REFRESH_MS
-        : ACCESSIBILITY_BACKGROUND_REFRESH_MS;
+        ? REACT_NATIVE_ACCESSIBILITY_REFRESH_MS
+        : accessibilityPreferredSource === "flutter" ||
+            accessibilitySource === "flutter"
+          ? FLUTTER_ACCESSIBILITY_REFRESH_MS
+          : ACCESSIBILITY_REFRESH_MS;
     let disposed = false;
     let timeout: number | null = null;
     const refreshLoop = async () => {
