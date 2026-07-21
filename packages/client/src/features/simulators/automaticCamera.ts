@@ -59,6 +59,20 @@ export function cameraLifecycleAction(
   return "none";
 }
 
+export function shouldReconnectCameraFeed(
+  previousConsumers: number | null,
+  activeConsumers: number,
+  previousRevision: number | null,
+  consumerRevision: number,
+): boolean {
+  return (
+    activeConsumers > 0 &&
+    previousConsumers === activeConsumers &&
+    previousRevision !== null &&
+    previousRevision !== consumerRevision
+  );
+}
+
 export function useAutomaticCamera({
   consumerState,
   enabled,
@@ -76,6 +90,7 @@ export function useAutomaticCamera({
   const feedRef = useRef<CameraFeed | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const consumerCountRef = useRef<number | null>(null);
+  const consumerRevisionRef = useRef<number | null>(null);
   const activeConsumerCountRef = useRef(0);
   const requestGenerationRef = useRef(0);
   const selectedUdidRef = useRef(udid);
@@ -188,6 +203,7 @@ export function useAutomaticCamera({
     stopLocalCamera();
     selectedUdidRef.current = udid;
     consumerCountRef.current = null;
+    consumerRevisionRef.current = null;
     activeConsumerCountRef.current = 0;
     setError("");
     setPhase("idle");
@@ -198,8 +214,14 @@ export function useAutomaticCamera({
       enabled && consumerState?.udid === udid
         ? consumerState.activeConsumers
         : 0;
+    const nextRevision =
+      enabled && consumerState?.udid === udid
+        ? consumerState.consumerRevision
+        : 0;
     const previousCount = consumerCountRef.current;
+    const previousRevision = consumerRevisionRef.current;
     consumerCountRef.current = nextCount;
+    consumerRevisionRef.current = nextRevision;
     activeConsumerCountRef.current = nextCount;
 
     if (nextCount === 0) {
@@ -214,9 +236,22 @@ export function useAutomaticCamera({
     }
     if (previousCount === 0) {
       void startLocalCamera(true);
+      return;
+    }
+    if (
+      shouldReconnectCameraFeed(
+        previousCount,
+        nextCount,
+        previousRevision,
+        nextRevision,
+      )
+    ) {
+      stopLocalCamera();
+      void startLocalCamera(true);
     }
   }, [
     consumerState?.activeConsumers,
+    consumerState?.consumerRevision,
     consumerState?.udid,
     enabled,
     startLocalCamera,

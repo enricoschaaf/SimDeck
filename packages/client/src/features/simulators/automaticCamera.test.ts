@@ -4,6 +4,7 @@ import {
   cameraLifecycleAction,
   cameraPolicyAllowsCapture,
   queryCameraPermission,
+  shouldReconnectCameraFeed,
 } from "./automaticCamera";
 
 describe("automatic camera lifecycle", () => {
@@ -22,6 +23,13 @@ describe("automatic camera lifecycle", () => {
 
   it("reports denied permission without trying capture again", () => {
     expect(cameraLifecycleAction(0, 1, "denied")).toBe("blocked");
+  });
+
+  it("reconnects a demanded feed when the camera service generation changes", () => {
+    expect(shouldReconnectCameraFeed(1, 1, 8, 9)).toBe(true);
+    expect(shouldReconnectCameraFeed(1, 2, 8, 9)).toBe(false);
+    expect(shouldReconnectCameraFeed(null, 1, null, 9)).toBe(false);
+    expect(shouldReconnectCameraFeed(1, 1, 9, 9)).toBe(false);
   });
 });
 
