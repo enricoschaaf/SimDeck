@@ -20,6 +20,7 @@ const serverUrl = new URL(
 const commandTimeoutMs = Number(
   process.env.SIMDECK_INTEGRATION_SIMCTL_TIMEOUT_MS ?? "300000",
 );
+const externalCameraOverrideResponseId = 8_000_000_000_000_000;
 const keepSimulator = process.env.SIMDECK_INTEGRATION_KEEP_SIMULATOR === "1";
 const verbose = process.env.SIMDECK_INTEGRATION_VERBOSE === "1";
 
@@ -298,12 +299,18 @@ async function attachInspector(webSocketUrl) {
     const onMessage = (event) => {
       const message = JSON.parse(event.data);
       receivedMethods.push(message.method ?? `response:${message.id}`);
-      if (message.method !== "Target.targetCreated") {
+      const targetId =
+        message.method === "Target.targetCreated"
+          ? message.params.targetInfo.targetId
+          : message.id === externalCameraOverrideResponseId && !message.error
+            ? null
+            : undefined;
+      if (targetId === undefined) {
         return;
       }
       clearTimeout(timeout);
       socket.removeEventListener("message", onMessage);
-      resolve(message.params.targetInfo.targetId);
+      resolve(targetId);
     };
     socket.addEventListener("message", onMessage);
   });
@@ -319,24 +326,29 @@ async function attachInspector(webSocketUrl) {
 }
 
 function startBrowserCapture(inspector) {
+  const evaluation = {
+    id: 2,
+    method: "Runtime.evaluate",
+    params: {
+      expression: "document.querySelector('#start').click()",
+      emulateUserGesture: true,
+      awaitPromise: true,
+      returnByValue: true,
+    },
+  };
   inspector.socket.send(
-    JSON.stringify({
-      id: 1,
-      method: "Target.sendMessageToTarget",
-      params: {
-        targetId: inspector.targetId,
-        message: JSON.stringify({
-          id: 2,
-          method: "Runtime.evaluate",
-          params: {
-            expression: "document.querySelector('#start').click()",
-            emulateUserGesture: true,
-            awaitPromise: true,
-            returnByValue: true,
-          },
-        }),
-      },
-    }),
+    JSON.stringify(
+      inspector.targetId
+        ? {
+            id: 1,
+            method: "Target.sendMessageToTarget",
+            params: {
+              targetId: inspector.targetId,
+              message: JSON.stringify(evaluation),
+            },
+          }
+        : evaluation,
+    ),
   );
 }
 

@@ -584,7 +584,7 @@ async fn hold_camera_override_session(udid: &str, target_id: &str) -> Result<(),
     )
     .await?;
     let mut outer_id = 1;
-    send_target_enable(
+    send_direct_mock_capture_override(
         &mut inspector_writer,
         &connection_id,
         &app_id,
@@ -674,7 +674,7 @@ async fn hold_camera_override_session(udid: &str, target_id: &str) -> Result<(),
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn send_target_enable<W: AsyncWrite + Unpin>(
+async fn send_direct_mock_capture_override<W: AsyncWrite + Unpin>(
     inspector_writer: &mut W,
     connection_id: &str,
     app_id: &str,
@@ -684,7 +684,11 @@ async fn send_target_enable<W: AsyncWrite + Unpin>(
 ) -> Result<(), AppError> {
     let payload = serde_json::json!({
         "id": *outer_id,
-        "method": "Target.enable",
+        "method": "Page.overrideSetting",
+        "params": {
+            "setting": "MockCaptureDevicesEnabled",
+            "value": false,
+        },
     })
     .to_string();
     *outer_id += 1;
@@ -937,7 +941,7 @@ async fn attach_websocket_inner(
     )
     .await?;
     let mut outer_id = WEBKIT_EXTERNAL_CAMERA_OVERRIDE_OUTER_ID_START;
-    send_target_enable(
+    send_direct_mock_capture_override(
         &mut inspector_writer,
         &connection_id,
         &app_id,
@@ -2324,7 +2328,7 @@ mod tests {
         let created =
             r#"{"method":"Target.targetCreated","params":{"targetInfo":{"targetId":"page-2"}}}"#;
 
-        send_target_enable(
+        send_direct_mock_capture_override(
             &mut inspector_writer,
             "connection",
             "application",
@@ -2338,7 +2342,9 @@ mod tests {
         let message = parse_rpc_message(&packet).unwrap();
         let payload = data_value(&message.args, "WIRSocketDataKey").unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-        assert_eq!(payload["method"], "Target.enable");
+        assert_eq!(payload["method"], "Page.overrideSetting");
+        assert_eq!(payload["params"]["setting"], "MockCaptureDevicesEnabled");
+        assert_eq!(payload["params"]["value"], false);
 
         apply_camera_override_protocol_message(
             &mut inspector_writer,
