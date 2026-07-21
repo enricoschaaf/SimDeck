@@ -1088,13 +1088,15 @@ static NSDictionary *StatusPayload(SimDeckCameraContext *context, BOOL ok, NSStr
 
 static int OpenSharedMemory(SimDeckCameraContext *context) {
     if (!context->shmName) return -1;
-    shm_unlink(context->shmName);
     context->mappedSize = (size_t)SimDeckCameraBufferSize();
     int fd = shm_open(context->shmName, O_CREAT | O_RDWR, 0644);
     if (fd < 0) {
         perror("shm_open");
         return -1;
     }
+    struct stat existing = {0};
+    BOOL reuseConsumerState = fstat(fd, &existing) == 0 &&
+                              existing.st_size >= (off_t)SIMDECK_CAMERA_HEADER_SIZE;
     if (ftruncate(fd, (off_t)context->mappedSize) != 0) {
         perror("ftruncate");
         close(fd);
@@ -1107,12 +1109,25 @@ static int OpenSharedMemory(SimDeckCameraContext *context) {
         return -1;
     }
     context->header = (SimDeckCameraHeader *)mapped;
+    reuseConsumerState = reuseConsumerState &&
+                         context->header->magic == SIMDECK_CAMERA_MAGIC &&
+                         context->header->version == SIMDECK_CAMERA_VERSION &&
+                         context->header->headerSize == SIMDECK_CAMERA_HEADER_SIZE;
+    uint64_t generation = reuseConsumerState ? context->header->generation + 1 : 1;
+    uint64_t consumerRevision = reuseConsumerState ? context->header->consumerRevision + 1 : 0;
+    SimDeckCameraConsumerSlot consumers[SIMDECK_CAMERA_CONSUMER_SLOT_COUNT] = {0};
+    if (reuseConsumerState) {
+        memcpy(consumers, context->header->consumers, sizeof(consumers));
+    }
     memset(context->header, 0, SIMDECK_CAMERA_HEADER_SIZE);
+    if (reuseConsumerState) {
+        memcpy(context->header->consumers, consumers, sizeof(consumers));
+    }
     context->header->magic = SIMDECK_CAMERA_MAGIC;
     context->header->version = SIMDECK_CAMERA_VERSION;
     context->header->headerSize = SIMDECK_CAMERA_HEADER_SIZE;
     context->header->descriptorSize = sizeof(SimDeckCameraHeader);
-    context->header->generation = 1;
+    context->header->generation = generation;
     context->header->width = context->width;
     context->header->height = context->height;
     context->header->pixelFormat = kCVPixelFormatType_32BGRA;
@@ -1120,7 +1135,8 @@ static int OpenSharedMemory(SimDeckCameraContext *context) {
     context->header->orientation = SIMDECK_CAMERA_ORIENTATION_UP;
     SimDeckCameraStoreMirrorMode(context->header, SIMDECK_CAMERA_MIRROR_AUTO);
     context->header->ringSize = SIMDECK_CAMERA_SURFACE_RING_SIZE;
-    context->surfaceGeneration = 1;
+    context->header->consumerRevision = consumerRevision;
+    context->surfaceGeneration = generation;
     context->nextSurfaceSlot = 0;
     return 0;
 }
@@ -1152,7 +1168,8 @@ static void Cleanup(SimDeckCameraContext *context) {
         }
     }
     if (context->shmName) {
-        shm_unlink(context->shmName);
+        // Capture processes keep this mapping across a SimDeck service restart.
+        // The next service process reuses their consumer slots and publishes new surfaces.
         free(context->shmName);
         context->shmName = NULL;
     }
