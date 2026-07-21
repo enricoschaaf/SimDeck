@@ -395,6 +395,7 @@ static CVPixelBufferRef CurrentPixelBuffer(BOOL requireNewFrame,
     if (!OpenSharedCamera()) return NULL;
     if (gFrameMapSize < SIMDECK_CAMERA_HEADER_SIZE) return NULL;
     SimDeckFrameDescriptor descriptor = {0};
+    BOOL acquired = NO;
     for (int attempt = 0; attempt < 4; attempt += 1) {
         uint64_t before = gHeader->sequence;
         if ((before & 1u) != 0) {
@@ -411,16 +412,18 @@ static CVPixelBufferRef CurrentPixelBuffer(BOOL requireNewFrame,
         uint64_t after = gHeader->sequence;
         if (before == after && (after & 1u) == 0) {
             if (requireNewFrame && before == gLastDeliveredSequence) return NULL;
+            if (descriptor.surfaceID == 0 || descriptor.sequence == 0) return NULL;
             __sync_fetch_and_add(&gHeader->surfaceUseCounts[slot], 1);
             if (gHeader->sequence != before || gHeader->surfaceIds[slot] != descriptor.surfaceID) {
                 __sync_fetch_and_sub(&gHeader->surfaceUseCounts[slot], 1);
                 descriptor.surfaceID = 0;
                 continue;
             }
+            acquired = YES;
             break;
         }
     }
-    if (descriptor.surfaceID == 0 || descriptor.sequence == 0) return NULL;
+    if (!acquired) return NULL;
     IOSurfaceRef surface = IOSurfaceLookup(descriptor.surfaceID);
     if (!surface) {
         __sync_fetch_and_sub(&gHeader->surfaceUseCounts[descriptor.ringSlot], 1);
