@@ -13,6 +13,7 @@ import type {
   SimulatorMetadata,
   SimulatorRuntimeOption,
 } from "../../api/types";
+import { DialogHeader } from "./DialogHeader";
 
 interface NewSimulatorModalProps {
   onClose: () => void;
@@ -411,14 +412,9 @@ export function NewSimulatorModal({
         onSubmit={handleSubmit}
         role="dialog"
       >
-        <div className="new-sim-titlebar">
-          <span className="new-sim-window-controls" aria-hidden="true">
-            <span className="new-sim-window-dot close" />
-            <span className="new-sim-window-dot minimize" />
-            <span className="new-sim-window-dot zoom" />
-          </span>
-          <h2 id="new-sim-title">New Simulator</h2>
-        </div>
+        <DialogHeader id="new-sim-title" onClose={onClose}>
+          New Simulator
+        </DialogHeader>
 
         <div className="new-sim-body">
           <div className="new-sim-platform-switcher" aria-label="Platform">

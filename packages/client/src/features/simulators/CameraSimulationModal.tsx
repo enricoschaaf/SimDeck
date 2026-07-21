@@ -30,6 +30,7 @@ import {
   createCameraBenchmarkSource,
   type CameraBenchmarkSource,
 } from "./cameraBenchmark";
+import { DialogHeader } from "./DialogHeader";
 
 interface CameraSimulationModalProps {
   onClose: () => void;
@@ -562,14 +563,9 @@ export function CameraSimulationModal({
         onSubmit={apply}
         role="dialog"
       >
-        <div className="new-sim-titlebar">
-          <span className="new-sim-window-controls" aria-hidden="true">
-            <span className="new-sim-window-dot close" />
-            <span className="new-sim-window-dot minimize" />
-            <span className="new-sim-window-dot zoom" />
-          </span>
-          <h2 id="camera-sim-title">Camera</h2>
-        </div>
+        <DialogHeader id="camera-sim-title" onClose={close}>
+          Camera
+        </DialogHeader>
 
         <div className="new-sim-body">
           <div

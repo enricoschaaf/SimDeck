@@ -13,6 +13,7 @@ import {
   groupedDeepLinks,
   resolveDeepLink,
 } from "./deepLinks";
+import { DialogHeader } from "./DialogHeader";
 
 interface DeepLinkModalProps {
   onClose: () => void;
@@ -174,16 +175,9 @@ export function DeepLinkModal({
         className="new-sim-window deep-link-window"
         role="dialog"
       >
-        <div className="new-sim-titlebar">
-          <span className="new-sim-window-controls" aria-hidden="true">
-            <span className="new-sim-window-dot close" />
-            <span className="new-sim-window-dot minimize" />
-            <span className="new-sim-window-dot zoom" />
-          </span>
-          <h2 id="deep-link-title">
-            Deep Links{manifest ? ` · ${manifest.links.length}` : ""}
-          </h2>
-        </div>
+        <DialogHeader id="deep-link-title" onClose={onClose}>
+          Deep Links{manifest ? ` · ${manifest.links.length}` : ""}
+        </DialogHeader>
         <div className="deep-link-tools">
           <input
             aria-label="Search deep links"

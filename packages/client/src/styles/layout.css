@@ -6,6 +6,33 @@
   overflow: hidden;
 }
 
+.app-embedded {
+  position: relative;
+  display: block;
+}
+
+.app-embedded .toolbar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--toolbar-bg) 92%, transparent);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 24%);
+  backdrop-filter: blur(14px);
+  transform: translateX(-50%);
+}
+
+.app-embedded .toolbar-left {
+  flex: 0 0 auto;
+}
+
+.app-embedded .main {
+  height: 100%;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -163,6 +190,11 @@
     align-items: center;
     gap: 6px;
     padding: 6px;
+  }
+
+  .app-embedded .toolbar {
+    top: 8px;
+    max-width: calc(100% - 16px);
   }
 
   .toolbar-left {

@@ -3832,7 +3832,7 @@ export function AppShell({
   }
 
   return (
-    <div className="app">
+    <div className={`app ${embedded ? "app-embedded" : ""}`}>
       <textarea
         aria-hidden="true"
         autoCapitalize="none"

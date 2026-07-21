@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import type { AutomaticCamera } from "./automaticCamera";
+import { DialogHeader } from "./DialogHeader";
 
 export function CameraSettingsModal({
   camera,
@@ -43,14 +44,9 @@ export function CameraSettingsModal({
         className="new-sim-window camera-settings-window"
         role="dialog"
       >
-        <div className="new-sim-titlebar">
-          <span className="new-sim-window-controls" aria-hidden="true">
-            <span className="new-sim-window-dot close" />
-            <span className="new-sim-window-dot minimize" />
-            <span className="new-sim-window-dot zoom" />
-          </span>
-          <h2 id="camera-settings-title">Camera settings</h2>
-        </div>
+        <DialogHeader id="camera-settings-title" onClose={onClose}>
+          Camera settings
+        </DialogHeader>
         <div className="new-sim-body camera-settings-body">
           <label className="new-sim-field">
             <span>Camera:</span>
