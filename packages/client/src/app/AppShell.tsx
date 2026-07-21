@@ -138,6 +138,10 @@ import {
   type CameraConsumerStateEvent,
   type ControlServerEvent,
 } from "./controlMessages";
+import {
+  CONTROL_SOCKET_RECONNECT_DELAY_MS,
+  shouldReconnectControlSocket,
+} from "./controlSocketLifecycle";
 
 const ACCESSIBILITY_REFRESH_MS = 1500;
 const ACCESSIBILITY_SKELETON_REFRESH_MS = 500;
@@ -580,6 +584,7 @@ export function AppShell({
     useState<CameraStatusResponse | null>(null);
   const [cameraConsumerState, setCameraConsumerState] =
     useState<CameraConsumerStateEvent | null>(null);
+  const [controlReconnectAttempt, setControlReconnectAttempt] = useState(0);
   const [deepLinkOpen, setDeepLinkOpen] = useState(false);
   const [filesMediaVisible, setFilesMediaVisible] = useState(false);
   const [filesMediaTab, setFilesMediaTab] = useState<FilesMediaTab>("files");
@@ -752,6 +757,8 @@ export function AppShell({
     socket: WebSocket;
     pending: string[];
   } | null>(null);
+  const desiredControlSocketUDIDRef = useRef("");
+  const controlReconnectTimeoutRef = useRef(0);
   const pendingControlMoveRef = useRef<{
     message: ControlMessage;
     udid: string;
@@ -2588,12 +2595,18 @@ export function AppShell({
   }
 
   const closeControlSocket = useCallback(() => {
+    desiredControlSocketUDIDRef.current = "";
+    if (controlReconnectTimeoutRef.current) {
+      window.clearTimeout(controlReconnectTimeoutRef.current);
+      controlReconnectTimeoutRef.current = 0;
+    }
     const current = controlSocketRef.current;
     controlSocketRef.current = null;
     current?.socket.close();
   }, []);
 
   const ensureControlSocket = useCallback((udid: string) => {
+    desiredControlSocketUDIDRef.current = udid;
     const current = controlSocketRef.current;
     if (
       current?.udid === udid &&
@@ -2609,13 +2622,31 @@ export function AppShell({
     controlSocketRef.current = state;
 
     socket.addEventListener("open", () => {
+      if (controlReconnectTimeoutRef.current) {
+        window.clearTimeout(controlReconnectTimeoutRef.current);
+        controlReconnectTimeoutRef.current = 0;
+      }
       for (const message of state.pending.splice(0)) {
         socket.send(message);
       }
     });
     socket.addEventListener("close", () => {
-      if (controlSocketRef.current === state) {
+      const wasCurrent = controlSocketRef.current === state;
+      if (wasCurrent) {
         controlSocketRef.current = null;
+      }
+      if (
+        shouldReconnectControlSocket(
+          desiredControlSocketUDIDRef.current,
+          udid,
+          wasCurrent,
+        ) &&
+        !controlReconnectTimeoutRef.current
+      ) {
+        controlReconnectTimeoutRef.current = window.setTimeout(() => {
+          controlReconnectTimeoutRef.current = 0;
+          setControlReconnectAttempt((attempt) => attempt + 1);
+        }, CONTROL_SOCKET_RECONNECT_DELAY_MS);
       }
     });
     socket.addEventListener("error", () => {
@@ -2664,6 +2695,7 @@ export function AppShell({
     ensureControlSocket,
     selectedSimulator?.isBooted,
     selectedSimulator?.udid,
+    controlReconnectAttempt,
   ]);
 
   function sendControl(udid: string, message: ControlMessage): boolean {
