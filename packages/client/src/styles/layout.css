@@ -7,12 +7,14 @@
 }
 
 .app-embedded {
+  --canvas-bg: #000000;
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 44px;
   grid-template-rows: minmax(0, 1fr);
   gap: 12px;
-  padding: 12px;
+  padding: 0;
+  background: var(--canvas-bg);
 }
 
 .app-embedded .toolbar {
@@ -371,7 +373,7 @@
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) 44px;
     gap: 8px;
-    padding: 8px;
+    padding: 0;
   }
 
   .app-embedded .main {
