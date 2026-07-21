@@ -25,10 +25,15 @@ const WEBKIT_TARGET_ATTACH_TIMEOUT: Duration = Duration::from_secs(8);
 const WEBKIT_IO_TIMEOUT: Duration = Duration::from_secs(4);
 const WEBKIT_SOCKET_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBKIT_DISCOVERY_RECONNECT_DELAY: Duration = Duration::from_millis(500);
+const WEBKIT_CAMERA_OVERRIDE_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 static WEBKIT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 static WEBKIT_DISCOVERY_MONITORS: OnceLock<Mutex<HashMap<String, Arc<WebKitDiscoveryMonitor>>>> =
     OnceLock::new();
+static WEBKIT_CAMERA_OVERRIDE_MONITORS: OnceLock<
+    Mutex<HashMap<String, Arc<WebKitCameraOverrideMonitor>>>,
+> = OnceLock::new();
+static WEBKIT_EXTERNAL_ATTACHMENTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +104,37 @@ struct WebKitDiscoveryMonitor {
     notify: Notify,
 }
 
+struct WebKitCameraOverrideMonitor {
+    udid: String,
+    running: AtomicBool,
+}
+
+struct ExternalWebKitAttachment {
+    key: String,
+}
+
+impl ExternalWebKitAttachment {
+    fn new(udid: &str, target_id: &str) -> Self {
+        let key = webkit_attachment_key(udid, target_id);
+        WEBKIT_EXTERNAL_ATTACHMENTS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .expect("WebKit external attachment lock poisoned")
+            .insert(key.clone());
+        Self { key }
+    }
+}
+
+impl Drop for ExternalWebKitAttachment {
+    fn drop(&mut self) {
+        WEBKIT_EXTERNAL_ATTACHMENTS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .expect("WebKit external attachment lock poisoned")
+            .remove(&self.key);
+    }
+}
+
 pub async fn discover_targets(
     udid: &str,
     http_origin: Option<&str>,
@@ -126,6 +162,17 @@ pub async fn discover_targets(
             continue;
         }
     }
+}
+
+pub fn ensure_camera_capture_overrides(udid: &str) {
+    let monitors = WEBKIT_CAMERA_OVERRIDE_MONITORS.get_or_init(|| Mutex::new(HashMap::new()));
+    let monitor = monitors
+        .lock()
+        .expect("WebKit camera override monitor lock poisoned")
+        .entry(udid.to_owned())
+        .or_insert_with(|| Arc::new(WebKitCameraOverrideMonitor::new(udid.to_owned())))
+        .clone();
+    monitor.ensure_started();
 }
 
 fn webkit_discovery_monitor(udid: &str) -> Arc<WebKitDiscoveryMonitor> {
@@ -398,6 +445,337 @@ impl WebKitDiscoveryMonitor {
     }
 }
 
+impl WebKitCameraOverrideMonitor {
+    fn new(udid: String) -> Self {
+        Self {
+            udid,
+            running: AtomicBool::new(false),
+        }
+    }
+
+    fn ensure_started(self: Arc<Self>) {
+        if self.running.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        tokio::spawn(async move {
+            self.run().await;
+        });
+    }
+
+    async fn run(&self) {
+        let mut sessions = HashMap::new();
+        loop {
+            match discover_targets(&self.udid, None).await {
+                Ok(discovery) => {
+                    let live_targets = discovery
+                        .targets
+                        .iter()
+                        .map(|target| target.id.clone())
+                        .collect::<HashSet<_>>();
+                    sessions.retain(|target_id, task: &mut tokio::task::JoinHandle<()>| {
+                        let keep = live_targets.contains(target_id) && !task.is_finished();
+                        if !keep {
+                            task.abort();
+                        }
+                        keep
+                    });
+                    for target in discovery.targets {
+                        if sessions.contains_key(&target.id) {
+                            continue;
+                        }
+                        let udid = self.udid.clone();
+                        let target_id = target.id.clone();
+                        let task_target_id = target_id.clone();
+                        sessions.insert(
+                            target_id,
+                            tokio::spawn(async move {
+                                run_camera_override_session(&udid, &task_target_id).await;
+                            }),
+                        );
+                    }
+                }
+                Err(error) => {
+                    debug!(
+                        udid = %self.udid,
+                        "Unable to discover WebKit targets for camera override: {error}"
+                    );
+                }
+            }
+            sleep(WEBKIT_DISCOVERY_RECONNECT_DELAY).await;
+        }
+    }
+}
+
+async fn run_camera_override_session(udid: &str, target_id: &str) {
+    loop {
+        if is_externally_attached(udid, target_id) {
+            sleep(WEBKIT_DISCOVERY_RECONNECT_DELAY).await;
+            continue;
+        }
+        if let Err(error) = hold_camera_override_session(udid, target_id).await {
+            debug!(
+                udid,
+                target_id, "WebKit camera override session ended: {error}"
+            );
+        }
+        sleep(WEBKIT_DISCOVERY_RECONNECT_DELAY).await;
+    }
+}
+
+async fn hold_camera_override_session(udid: &str, target_id: &str) -> Result<(), AppError> {
+    let (app_id, page_id) = decode_target_id(target_id)?;
+    let webkit_socket = discover_webinspector_socket(udid).await?.ok_or_else(|| {
+        AppError::not_found(format!(
+            "No WebKit Remote Inspector socket was found for simulator {udid}."
+        ))
+    })?;
+    let stream = timeout(WEBKIT_IO_TIMEOUT, UnixStream::connect(&webkit_socket.path))
+        .await
+        .map_err(|_| AppError::native("Timed out connecting to simulator webinspectord."))?
+        .map_err(|error| {
+            AppError::native(format!(
+                "Unable to connect to simulator webinspectord at {}: {error}",
+                webkit_socket.path
+            ))
+        })?;
+
+    let connection_id = new_remote_inspector_id();
+    let sender_id = connection_id.clone();
+    let (mut inspector_reader, mut inspector_writer) = stream.into_split();
+    send_rpc(
+        &mut inspector_writer,
+        "_rpc_reportIdentifier:",
+        rpc_args(&connection_id),
+    )
+    .await?;
+    sleep(WEBKIT_SOCKET_ACTIVATION_DELAY).await;
+    prepare_webkit_target_for_attach(
+        &mut inspector_reader,
+        &mut inspector_writer,
+        &connection_id,
+        &app_id,
+        page_id,
+    )
+    .await?;
+    send_forward_indicate_webview(
+        &mut inspector_writer,
+        &connection_id,
+        &app_id,
+        page_id,
+        true,
+    )
+    .await?;
+    send_forward_indicate_webview(
+        &mut inspector_writer,
+        &connection_id,
+        &app_id,
+        page_id,
+        false,
+    )
+    .await?;
+    send_forward_socket_setup(
+        &mut inspector_writer,
+        &connection_id,
+        &app_id,
+        page_id,
+        &sender_id,
+    )
+    .await?;
+    let initial_messages =
+        wait_for_webkit_socket_setup(&mut inspector_reader, &app_id, page_id, &sender_id).await?;
+
+    let mut protocol_target_ids = HashSet::new();
+    let mut outer_id = 1;
+    let mut inner_id = 1;
+    for message in initial_messages {
+        apply_camera_override_protocol_message(
+            &mut inspector_writer,
+            &connection_id,
+            &app_id,
+            page_id,
+            &sender_id,
+            &message,
+            &mut protocol_target_ids,
+            &mut outer_id,
+            &mut inner_id,
+        )
+        .await?;
+    }
+
+    let mut next_refresh = Instant::now() + WEBKIT_CAMERA_OVERRIDE_REFRESH_INTERVAL;
+    loop {
+        tokio::select! {
+            _ = sleep(Duration::from_millis(250)) => {
+                if is_externally_attached(udid, target_id) {
+                    break;
+                }
+                if Instant::now() >= next_refresh {
+                    for protocol_target_id in protocol_target_ids.clone() {
+                        send_mock_capture_override(
+                            &mut inspector_writer,
+                            &connection_id,
+                            &app_id,
+                            page_id,
+                            &sender_id,
+                            &protocol_target_id,
+                            &mut outer_id,
+                            &mut inner_id,
+                        ).await?;
+                    }
+                    next_refresh = Instant::now() + WEBKIT_CAMERA_OVERRIDE_REFRESH_INTERVAL;
+                }
+            }
+            packet = read_packet(&mut inspector_reader) => {
+                let message = parse_rpc_message(&packet?)?;
+                match message.selector.as_str() {
+                    "_rpc_applicationSentData:" => {
+                        if string_value(&message.args, "WIRDestinationKey").as_deref() == Some(sender_id.as_str()) {
+                            if let Some(data) = data_value(&message.args, "WIRMessageDataKey") {
+                                let text = String::from_utf8(data).unwrap_or_default();
+                                apply_camera_override_protocol_message(
+                                    &mut inspector_writer,
+                                    &connection_id,
+                                    &app_id,
+                                    page_id,
+                                    &sender_id,
+                                    &text,
+                                    &mut protocol_target_ids,
+                                    &mut outer_id,
+                                    &mut inner_id,
+                                ).await?;
+                            }
+                        }
+                    }
+                    "_rpc_applicationDisconnected:" => break,
+                    selector => debug!("Ignoring WebKit camera override selector {selector}."),
+                }
+            }
+        }
+    }
+
+    let _ = send_forward_did_close(
+        &mut inspector_writer,
+        &connection_id,
+        &app_id,
+        page_id,
+        &sender_id,
+    )
+    .await;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_camera_override_protocol_message<W: AsyncWrite + Unpin>(
+    inspector_writer: &mut W,
+    connection_id: &str,
+    app_id: &str,
+    page_id: u64,
+    sender_id: &str,
+    message: &str,
+    protocol_target_ids: &mut HashSet<String>,
+    outer_id: &mut u64,
+    inner_id: &mut u64,
+) -> Result<(), AppError> {
+    let Some((created, destroyed)) = camera_protocol_target_change(message) else {
+        return Ok(());
+    };
+    if let Some(target_id) = destroyed {
+        protocol_target_ids.remove(&target_id);
+    }
+    if let Some(target_id) = created {
+        protocol_target_ids.insert(target_id.clone());
+        send_mock_capture_override(
+            inspector_writer,
+            connection_id,
+            app_id,
+            page_id,
+            sender_id,
+            &target_id,
+            outer_id,
+            inner_id,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_mock_capture_override<W: AsyncWrite + Unpin>(
+    inspector_writer: &mut W,
+    connection_id: &str,
+    app_id: &str,
+    page_id: u64,
+    sender_id: &str,
+    protocol_target_id: &str,
+    outer_id: &mut u64,
+    inner_id: &mut u64,
+) -> Result<(), AppError> {
+    let payload = mock_capture_override_message(protocol_target_id, *outer_id, *inner_id);
+    *outer_id += 1;
+    *inner_id += 1;
+    send_forward_socket_data(
+        inspector_writer,
+        connection_id,
+        app_id,
+        page_id,
+        sender_id,
+        payload.as_bytes(),
+    )
+    .await
+}
+
+fn mock_capture_override_message(protocol_target_id: &str, outer_id: u64, inner_id: u64) -> String {
+    serde_json::json!({
+        "id": outer_id,
+        "method": "Target.sendMessageToTarget",
+        "params": {
+            "targetId": protocol_target_id,
+            "message": serde_json::json!({
+                "id": inner_id,
+                "method": "Page.overrideSetting",
+                "params": {
+                    "setting": "MockCaptureDevicesEnabled",
+                    "value": false,
+                },
+            }).to_string(),
+        },
+    })
+    .to_string()
+}
+
+fn camera_protocol_target_change(message: &str) -> Option<(Option<String>, Option<String>)> {
+    let message: serde_json::Value = serde_json::from_str(message).ok()?;
+    match message.get("method")?.as_str()? {
+        "Target.targetCreated" => Some((
+            message
+                .pointer("/params/targetInfo/targetId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            None,
+        )),
+        "Target.targetDestroyed" => Some((
+            None,
+            message
+                .pointer("/params/targetId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        )),
+        _ => None,
+    }
+}
+
+fn webkit_attachment_key(udid: &str, target_id: &str) -> String {
+    format!("{udid}/{target_id}")
+}
+
+fn is_externally_attached(udid: &str, target_id: &str) -> bool {
+    WEBKIT_EXTERNAL_ATTACHMENTS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .expect("WebKit external attachment lock poisoned")
+        .contains(&webkit_attachment_key(udid, target_id))
+}
+
 fn is_incomplete_or_transient_page(page: &WebKitPage) -> bool {
     let url = page.url.as_deref().map(str::trim).unwrap_or_default();
     if url.is_empty() {
@@ -427,6 +805,7 @@ fn is_inspectable_webkit_target(target: &WebKitTarget) -> bool {
 }
 
 pub async fn attach_websocket(udid: String, target_id: String, socket: WebSocket) {
+    let _attachment = ExternalWebKitAttachment::new(&udid, &target_id);
     if let Err(error) = attach_websocket_inner(&udid, &target_id, socket).await {
         warn!("WebKit inspector socket failed for {udid}/{target_id}: {error}");
     }
@@ -1787,6 +2166,42 @@ fn browser_frontend_host_script() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_override_disables_webkit_mock_capture_for_the_page_target() {
+        let message: serde_json::Value =
+            serde_json::from_str(&mock_capture_override_message("page-1", 7, 9)).unwrap();
+        assert_eq!(message["id"], 7);
+        assert_eq!(message["method"], "Target.sendMessageToTarget");
+        assert_eq!(message["params"]["targetId"], "page-1");
+
+        let inner: serde_json::Value =
+            serde_json::from_str(message["params"]["message"].as_str().unwrap()).unwrap();
+        assert_eq!(inner["id"], 9);
+        assert_eq!(inner["method"], "Page.overrideSetting");
+        assert_eq!(inner["params"]["setting"], "MockCaptureDevicesEnabled");
+        assert_eq!(inner["params"]["value"], false);
+    }
+
+    #[test]
+    fn camera_override_tracks_webkit_protocol_target_lifecycle() {
+        let created =
+            r#"{"method":"Target.targetCreated","params":{"targetInfo":{"targetId":"page-2"}}}"#;
+        assert_eq!(
+            camera_protocol_target_change(created),
+            Some((Some("page-2".to_owned()), None))
+        );
+
+        let destroyed = r#"{"method":"Target.targetDestroyed","params":{"targetId":"page-2"}}"#;
+        assert_eq!(
+            camera_protocol_target_change(destroyed),
+            Some((None, Some("page-2".to_owned())))
+        );
+        assert_eq!(
+            camera_protocol_target_change(r#"{"id":1,"result":{}}"#),
+            None
+        );
+    }
 
     #[test]
     fn target_id_round_trips_app_and_page() {

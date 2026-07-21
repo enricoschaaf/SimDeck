@@ -61,6 +61,7 @@ static char kPickerOverlayViewKey;
 static char kPickerCaptureControlKey;
 static char kPickerCameraOverlayKey;
 static char kPickerCaptureWindowKey;
+static char kBrowserActiveFormatKey;
 
 static void StartFrameTimer(void);
 static void InstallVideoOutputDelegateHook(Class cls);
@@ -321,7 +322,7 @@ static BOOL IsBrowserCameraProcess(void) {
            [processName isEqualToString:@"com.apple.WebKit.GPU"];
 }
 
-static BOOL IsBrowserCameraHostProcess(void) {
+static BOOL IsBrowserUIProcess(void) {
     NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"";
     NSString *processName = NSProcessInfo.processInfo.processName ?: @"";
     return [bundleID isEqualToString:@"com.apple.mobilesafari"] ||
@@ -367,6 +368,10 @@ static BOOL OpenSharedCamera(void) {
     __sync_lock_test_and_set(&gHeader->consumerPid, (uint32_t)getpid());
     DebugLog(@"attached surface feed %ux%u", header->width, header->height);
     return YES;
+}
+
+static BOOL BrowserCameraDeviceAvailable(void) {
+    return IsBrowserUIProcess() || OpenSharedCamera();
 }
 
 static NSInteger gConsumerSlot = -1;
@@ -763,7 +768,7 @@ static void DeliverFrame(void) {
     uint64_t presentationTimestampNs = (uint64_t)(CACurrentMediaTime() * 1000000000.0);
     CVPixelBufferRef mirroredBuffer = NULL;
     CVPixelBufferRef deliveryBuffer = pixelBuffer;
-    if (descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON) {
+    if (descriptor.mirrorMode == SIMDECK_CAMERA_MIRROR_ON && !IsBrowserCameraProcess()) {
         mirroredBuffer = MirrorPixelBuffer(pixelBuffer);
         if (!mirroredBuffer) {
             CVPixelBufferRelease(pixelBuffer);
@@ -875,6 +880,13 @@ static BOOL SimDeckIsFakeInput(id input) {
     return [objc_getAssociatedObject(input, &kInputFakeKey) boolValue];
 }
 
+static BOOL ShouldUseSimDeckInput(AVCaptureDevice *device) {
+    if (!device || !OpenSharedCamera()) return NO;
+    Class deviceClass = objc_getClass("SimDeckCameraDevice");
+    if (deviceClass && [device isKindOfClass:deviceClass]) return YES;
+    return IsBrowserCameraProcess() && [device hasMediaType:AVMediaTypeVideo];
+}
+
 static AVCaptureDeviceInput *SimDeckFakeInput(void) {
     static AVCaptureDeviceInput *input;
     static dispatch_once_t once;
@@ -953,6 +965,76 @@ static void InstallVideoOutputAllocationHook(void) {
 @interface SimDeckCameraDevice : AVCaptureDevice
 @end
 
+@interface SimDeckCameraDiscoverySession : AVCaptureDeviceDiscoverySession
++ (instancetype)sharedSession;
+@end
+
+@interface SimDeckCameraFrameRateRange : AVFrameRateRange
++ (instancetype)sharedRange;
+@end
+
+@implementation SimDeckCameraFrameRateRange
+
++ (instancetype)sharedRange {
+    static SimDeckCameraFrameRateRange *range;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        range = NSAllocateObject(self, 0, nil);
+    });
+    return range;
+}
+
+- (Float64)minFrameRate { return 1.0; }
+- (Float64)maxFrameRate { return 60.0; }
+- (CMTime)minFrameDuration { return CMTimeMake(1, 60); }
+- (CMTime)maxFrameDuration { return CMTimeMake(1, 1); }
+
+@end
+
+@interface SimDeckCameraFormat : AVCaptureDeviceFormat
++ (instancetype)sharedFormat;
+@end
+
+@implementation SimDeckCameraFormat
+
++ (instancetype)sharedFormat {
+    static SimDeckCameraFormat *format;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        format = NSAllocateObject(self, 0, nil);
+    });
+    return format;
+}
+
+- (AVMediaType)mediaType { return AVMediaTypeVideo; }
+
+- (CMFormatDescriptionRef)formatDescription {
+    DebugLog(@"providing SimDeck format description");
+    static CMVideoFormatDescriptionRef description;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        int32_t width = gHeader && gHeader->width > 0 ? (int32_t)gHeader->width : 1920;
+        int32_t height = gHeader && gHeader->height > 0 ? (int32_t)gHeader->height : 1080;
+        CMVideoFormatDescriptionCreate(kCFAllocatorDefault,
+                                       kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                       width,
+                                       height,
+                                       NULL,
+                                       &description);
+    });
+    return description;
+}
+
+- (NSArray<AVFrameRateRange *> *)videoSupportedFrameRateRanges {
+    return @[ [SimDeckCameraFrameRateRange sharedRange] ];
+}
+
+- (CGFloat)videoMaxZoomFactor { return 1.0; }
+- (BOOL)isVideoBinned { return NO; }
+- (NSArray<NSValue *> *)supportedMaxPhotoDimensions { return @[]; }
+
+@end
+
 @implementation SimDeckCameraDevice
 
 + (instancetype)sharedDevice {
@@ -966,11 +1048,49 @@ static void InstallVideoOutputAllocationHook(void) {
 
 - (NSString *)localizedName { return @"SimDeck Camera"; }
 - (NSString *)uniqueID { return @"dev.nativescript.simdeck.camera"; }
+- (NSString *)modelID { return @"SimDeck Camera"; }
+- (NSString *)manufacturer { return @"SimDeck"; }
 - (AVCaptureDevicePosition)position { return AVCaptureDevicePositionFront; }
 - (BOOL)hasMediaType:(AVMediaType)mediaType { return IsVideoMediaType(mediaType); }
 - (BOOL)isConnected { return YES; }
 - (BOOL)isSuspended { return NO; }
 - (AVCaptureDeviceType)deviceType { return AVCaptureDeviceTypeBuiltInWideAngleCamera; }
+- (NSArray<AVCaptureDeviceFormat *> *)formats { return @[ [SimDeckCameraFormat sharedFormat] ]; }
+- (AVCaptureDeviceFormat *)activeFormat { return [SimDeckCameraFormat sharedFormat]; }
+- (void)setActiveFormat:(AVCaptureDeviceFormat *)format { (void)format; }
+- (CMTime)activeVideoMinFrameDuration { return CMTimeMake(1, 30); }
+- (void)setActiveVideoMinFrameDuration:(CMTime)duration { (void)duration; }
+- (CMTime)activeVideoMaxFrameDuration { return CMTimeMake(1, 30); }
+- (void)setActiveVideoMaxFrameDuration:(CMTime)duration { (void)duration; }
+- (BOOL)lockForConfiguration:(NSError **)outError {
+    if (outError) *outError = nil;
+    return YES;
+}
+- (void)unlockForConfiguration {}
+- (CGFloat)videoZoomFactor { return 1.0; }
+- (void)setVideoZoomFactor:(CGFloat)factor { (void)factor; }
+- (BOOL)isWhiteBalanceModeSupported:(AVCaptureWhiteBalanceMode)mode { (void)mode; return NO; }
+- (BOOL)hasTorch { return NO; }
+- (AVCaptureTorchMode)torchMode { return AVCaptureTorchModeOff; }
+- (BOOL)portraitEffectActive { return NO; }
+- (NSInteger)minimumFocusDistance { return -1; }
+
+@end
+
+@implementation SimDeckCameraDiscoverySession
+
++ (instancetype)sharedSession {
+    static SimDeckCameraDiscoverySession *session;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        session = NSAllocateObject(self, 0, nil);
+    });
+    return session;
+}
+
+- (NSArray<AVCaptureDevice *> *)devices {
+    return @[ (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice] ];
+}
 
 @end
 
@@ -1005,7 +1125,9 @@ static void InstallVideoOutputAllocationHook(void) {
 + (instancetype)connectionForOutput:(AVCaptureOutput *)output {
     SimDeckCameraConnection *connection = [self alloc];
     connection->_output = output;
-    connection->_orientation = AVCaptureVideoOrientationPortrait;
+    connection->_orientation = IsBrowserCameraProcess()
+        ? AVCaptureVideoOrientationPortraitUpsideDown
+        : AVCaptureVideoOrientationPortrait;
     connection->_automaticallyAdjustsVideoMirroring = YES;
     connection->_videoMirrored = YES;
     connection->_enabled = YES;
@@ -1116,6 +1238,30 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
 
 @implementation AVCaptureDevice (SimDeckCamera)
 
++ (void)sd_setUserPreferredCamera:(AVCaptureDevice *)camera {
+    if (IsBrowserCameraProcess() && BrowserCameraDeviceAvailable()) return;
+    [self sd_setUserPreferredCamera:camera];
+}
+
++ (void)sd_setSystemPreferredCamera:(AVCaptureDevice *)camera {
+    if (IsBrowserCameraProcess() && BrowserCameraDeviceAvailable()) return;
+    [self sd_setSystemPreferredCamera:camera];
+}
+
++ (AVCaptureDevice *)sd_deviceWithUniqueID:(NSString *)uniqueID {
+    if (IsBrowserCameraProcess() && BrowserCameraDeviceAvailable()) {
+        DebugLog(@"resolving browser device %@ to SimDeck Camera", uniqueID);
+        return (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice];
+    }
+    AVCaptureDevice *device = [self sd_deviceWithUniqueID:uniqueID];
+    if (device || !IsBrowserCameraProcess() || !OpenSharedCamera()) return device;
+
+    for (AVCaptureDevice *candidate in [self sd_devicesWithMediaType:AVMediaTypeVideo]) {
+        if ([candidate.uniqueID isEqualToString:uniqueID]) return candidate;
+    }
+    return nil;
+}
+
 - (NSString *)sd_browserLocalizedName {
     NSString *value = [self sd_browserLocalizedName];
     return value.length > 0 ? value : @"SimDeck Camera";
@@ -1136,7 +1282,85 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
     return value.length > 0 ? value : @"SimDeck";
 }
 
+- (AVCaptureDevicePosition)sd_browserPosition {
+    AVCaptureDevicePosition value = [self sd_browserPosition];
+    return value == AVCaptureDevicePositionUnspecified ? AVCaptureDevicePositionFront : value;
+}
+
+- (AVCaptureDeviceType)sd_browserDeviceType {
+    AVCaptureDeviceType value = [self sd_browserDeviceType];
+    return value.length > 0 ? value : AVCaptureDeviceTypeBuiltInWideAngleCamera;
+}
+
+- (BOOL)sd_browserIsConnected {
+    return OpenSharedCamera() || [self sd_browserIsConnected];
+}
+
+- (BOOL)sd_browserIsSuspended {
+    return OpenSharedCamera() ? NO : [self sd_browserIsSuspended];
+}
+
+- (NSArray<AVCaptureDeviceFormat *> *)sd_browserFormats {
+    if (OpenSharedCamera()) {
+        DebugLog(@"using SimDeck format for %@", NSStringFromClass(self.class));
+        return @[ [SimDeckCameraFormat sharedFormat] ];
+    }
+    return [self sd_browserFormats];
+}
+
+- (AVCaptureDeviceFormat *)sd_browserActiveFormat {
+    if (!OpenSharedCamera()) return [self sd_browserActiveFormat];
+    AVCaptureDeviceFormat *format = objc_getAssociatedObject(self, &kBrowserActiveFormatKey);
+    return format ?: [SimDeckCameraFormat sharedFormat];
+}
+
+- (void)sd_browserSetActiveFormat:(AVCaptureDeviceFormat *)format {
+    if (!OpenSharedCamera()) {
+        [self sd_browserSetActiveFormat:format];
+        return;
+    }
+    objc_setAssociatedObject(self, &kBrowserActiveFormatKey, format, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+- (CMTime)sd_browserActiveVideoMinFrameDuration {
+    return OpenSharedCamera() ? CMTimeMake(1, 30) : [self sd_browserActiveVideoMinFrameDuration];
+}
+
+- (void)sd_browserSetActiveVideoMinFrameDuration:(CMTime)duration {
+    if (!OpenSharedCamera()) [self sd_browserSetActiveVideoMinFrameDuration:duration];
+}
+
+- (CMTime)sd_browserActiveVideoMaxFrameDuration {
+    return OpenSharedCamera() ? CMTimeMake(1, 30) : [self sd_browserActiveVideoMaxFrameDuration];
+}
+
+- (void)sd_browserSetActiveVideoMaxFrameDuration:(CMTime)duration {
+    if (!OpenSharedCamera()) [self sd_browserSetActiveVideoMaxFrameDuration:duration];
+}
+
+- (BOOL)sd_browserLockForConfiguration:(NSError **)outError {
+    if (!OpenSharedCamera()) return [self sd_browserLockForConfiguration:outError];
+    if (outError) *outError = nil;
+    return YES;
+}
+
+- (void)sd_browserUnlockForConfiguration {
+    if (!OpenSharedCamera()) [self sd_browserUnlockForConfiguration];
+}
+
+- (CGFloat)sd_browserVideoZoomFactor {
+    return OpenSharedCamera() ? 1.0 : [self sd_browserVideoZoomFactor];
+}
+
+- (void)sd_browserSetVideoZoomFactor:(CGFloat)factor {
+    if (!OpenSharedCamera()) [self sd_browserSetVideoZoomFactor:factor];
+}
+
 + (AVCaptureDevice *)sd_defaultDeviceWithMediaType:(AVMediaType)mediaType {
+    if (IsBrowserCameraProcess() && IsVideoMediaType(mediaType) && BrowserCameraDeviceAvailable()) {
+        DebugLog(@"providing default SimDeck camera");
+        return (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice];
+    }
     AVCaptureDevice *device = [self sd_defaultDeviceWithMediaType:mediaType];
     if (device || !IsVideoMediaType(mediaType) || !OpenSharedCamera()) return device;
     return (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice];
@@ -1145,23 +1369,36 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
 + (AVCaptureDevice *)sd_defaultDeviceWithDeviceType:(AVCaptureDeviceType)deviceType
                                           mediaType:(AVMediaType)mediaType
                                            position:(AVCaptureDevicePosition)position {
+    if (IsBrowserCameraProcess() && IsVideoMediaType(mediaType) && BrowserCameraDeviceAvailable()) {
+        DebugLog(@"providing typed default SimDeck camera");
+        return (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice];
+    }
     AVCaptureDevice *device = [self sd_defaultDeviceWithDeviceType:deviceType mediaType:mediaType position:position];
     if (device || !IsVideoMediaType(mediaType) || !OpenSharedCamera()) return device;
     return (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice];
 }
 
 + (NSArray<AVCaptureDevice *> *)sd_devicesWithMediaType:(AVMediaType)mediaType {
+    if (IsBrowserCameraProcess() && IsVideoMediaType(mediaType) && BrowserCameraDeviceAvailable()) {
+        DebugLog(@"providing SimDeck camera device list");
+        return @[ (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice] ];
+    }
     NSArray *devices = [self sd_devicesWithMediaType:mediaType];
     if (devices.count > 0 || !IsVideoMediaType(mediaType)) return devices;
     return OpenSharedCamera() ? @[ (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice] ] : @[];
 }
 
 + (AVAuthorizationStatus)sd_authorizationStatusForMediaType:(AVMediaType)mediaType {
+    if (IsBrowserCameraProcess()) return [self sd_authorizationStatusForMediaType:mediaType];
     if (IsVideoMediaType(mediaType)) return AVAuthorizationStatusAuthorized;
     return [self sd_authorizationStatusForMediaType:mediaType];
 }
 
 + (void)sd_requestAccessForMediaType:(AVMediaType)mediaType completionHandler:(void (^)(BOOL granted))handler {
+    if (IsBrowserCameraProcess()) {
+        [self sd_requestAccessForMediaType:mediaType completionHandler:handler];
+        return;
+    }
     if (IsVideoMediaType(mediaType)) {
         if (handler) dispatch_async(dispatch_get_main_queue(), ^{ handler(YES); });
         return;
@@ -1173,10 +1410,31 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
 
 @implementation AVCaptureDeviceDiscoverySession (SimDeckCamera)
 
++ (instancetype)sd_discoverySessionWithDeviceTypes:(NSArray<AVCaptureDeviceType> *)deviceTypes
+                                           mediaType:(AVMediaType)mediaType
+                                            position:(AVCaptureDevicePosition)position {
+    if (IsBrowserCameraProcess() && IsVideoMediaType(mediaType) && BrowserCameraDeviceAvailable()) {
+        DebugLog(@"providing SimDeck camera discovery session");
+        return (id)[SimDeckCameraDiscoverySession sharedSession];
+    }
+    return [self sd_discoverySessionWithDeviceTypes:deviceTypes mediaType:mediaType position:position];
+}
+
 - (NSArray<AVCaptureDevice *> *)sd_devices {
     NSArray *devices = [self sd_devices];
-    if (devices.count > 0) return devices;
-    return OpenSharedCamera() ? @[ (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice] ] : @[];
+    if (devices.count > 0) {
+        for (AVCaptureDevice *device in devices) {
+            DebugLog(@"discovered %@ id=%@ name=%@ position=%ld connected=%d formats=%lu",
+                     NSStringFromClass(device.class),
+                     device.uniqueID,
+                     device.localizedName,
+                     (long)device.position,
+                     device.isConnected,
+                     (unsigned long)device.formats.count);
+        }
+        return devices;
+    }
+    return BrowserCameraDeviceAvailable() ? @[ (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice] ] : @[];
 }
 
 @end
@@ -1184,7 +1442,7 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
 @implementation AVCaptureDeviceInput (SimDeckCamera)
 
 + (instancetype)sd_deviceInputWithDevice:(AVCaptureDevice *)device error:(NSError **)outError {
-    if ([device isKindOfClass:SimDeckCameraDevice.class]) {
+    if (ShouldUseSimDeckInput(device)) {
         if (outError) *outError = nil;
         return (id)SimDeckFakeInput();
     }
@@ -1197,7 +1455,7 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
 }
 
 - (instancetype)sd_initWithDevice:(AVCaptureDevice *)device error:(NSError **)outError {
-    if ([device isKindOfClass:SimDeckCameraDevice.class]) {
+    if (ShouldUseSimDeckInput(device)) {
         if (outError) *outError = nil;
         return (id)SimDeckFakeInput();
     }
@@ -1648,24 +1906,60 @@ static void InstallBrowserCameraDeviceMetadataHooks(void) {
     InstallSubclassFallback(cls, @selector(uniqueID), @selector(sd_browserUniqueID));
     InstallSubclassFallback(cls, @selector(modelID), @selector(sd_browserModelID));
     InstallSubclassFallback(cls, @selector(manufacturer), @selector(sd_browserManufacturer));
+    InstallSubclassFallback(cls, @selector(position), @selector(sd_browserPosition));
+    InstallSubclassFallback(cls, @selector(deviceType), @selector(sd_browserDeviceType));
+    InstallSubclassFallback(cls, @selector(isConnected), @selector(sd_browserIsConnected));
+    InstallSubclassFallback(cls, @selector(isSuspended), @selector(sd_browserIsSuspended));
+    InstallSubclassFallback(cls, @selector(formats), @selector(sd_browserFormats));
+    InstallSubclassFallback(cls, @selector(activeFormat), @selector(sd_browserActiveFormat));
+    InstallSubclassFallback(cls, @selector(setActiveFormat:), @selector(sd_browserSetActiveFormat:));
+    InstallSubclassFallback(cls, @selector(activeVideoMinFrameDuration), @selector(sd_browserActiveVideoMinFrameDuration));
+    InstallSubclassFallback(cls, @selector(setActiveVideoMinFrameDuration:), @selector(sd_browserSetActiveVideoMinFrameDuration:));
+    InstallSubclassFallback(cls, @selector(activeVideoMaxFrameDuration), @selector(sd_browserActiveVideoMaxFrameDuration));
+    InstallSubclassFallback(cls, @selector(setActiveVideoMaxFrameDuration:), @selector(sd_browserSetActiveVideoMaxFrameDuration:));
+    InstallSubclassFallback(cls, @selector(lockForConfiguration:), @selector(sd_browserLockForConfiguration:));
+    InstallSubclassFallback(cls, @selector(unlockForConfiguration), @selector(sd_browserUnlockForConfiguration));
+    InstallSubclassFallback(cls, @selector(videoZoomFactor), @selector(sd_browserVideoZoomFactor));
+    InstallSubclassFallback(cls, @selector(setVideoZoomFactor:), @selector(sd_browserSetVideoZoomFactor:));
 }
 
 __attribute__((constructor))
 static void SimDeckCameraInstall(void) {
     @autoreleasepool {
         if (!ShouldInstallForCurrentProcess()) return;
+        if (IsBrowserUIProcess()) {
+            ExchangeClass(AVCaptureDevice.class, @selector(defaultDeviceWithMediaType:), @selector(sd_defaultDeviceWithMediaType:));
+            ExchangeClass(AVCaptureDevice.class, @selector(defaultDeviceWithDeviceType:mediaType:position:), @selector(sd_defaultDeviceWithDeviceType:mediaType:position:));
+            ExchangeClass(AVCaptureDevice.class, @selector(deviceWithUniqueID:), @selector(sd_deviceWithUniqueID:));
+            ExchangeClass(AVCaptureDevice.class, @selector(devicesWithMediaType:), @selector(sd_devicesWithMediaType:));
+            ExchangeClass(AVCaptureDevice.class, @selector(setUserPreferredCamera:), @selector(sd_setUserPreferredCamera:));
+            ExchangeClass(AVCaptureDevice.class, @selector(setSystemPreferredCamera:), @selector(sd_setSystemPreferredCamera:));
+            ExchangeClass(AVCaptureDeviceDiscoverySession.class,
+                          @selector(discoverySessionWithDeviceTypes:mediaType:position:),
+                          @selector(sd_discoverySessionWithDeviceTypes:mediaType:position:));
+            DebugLog(@"installed browser device enumeration hooks");
+            return;
+        }
         gSessions = [[NSMutableArray alloc] init];
         gVideoOutputs = [[NSMutableArray alloc] init];
         gPreviewLayers = [[NSHashTable weakObjectsHashTable] retain];
         gHookedVideoOutputClasses = [[NSMutableSet alloc] init];
         OpenSharedCamera();
-        if (IsBrowserCameraHostProcess()) InstallBrowserCameraDeviceMetadataHooks();
+        if (IsBrowserCameraProcess()) InstallBrowserCameraDeviceMetadataHooks();
 
         ExchangeClass(AVCaptureDevice.class, @selector(defaultDeviceWithMediaType:), @selector(sd_defaultDeviceWithMediaType:));
         ExchangeClass(AVCaptureDevice.class, @selector(defaultDeviceWithDeviceType:mediaType:position:), @selector(sd_defaultDeviceWithDeviceType:mediaType:position:));
+        ExchangeClass(AVCaptureDevice.class, @selector(deviceWithUniqueID:), @selector(sd_deviceWithUniqueID:));
         ExchangeClass(AVCaptureDevice.class, @selector(devicesWithMediaType:), @selector(sd_devicesWithMediaType:));
         ExchangeClass(AVCaptureDevice.class, @selector(authorizationStatusForMediaType:), @selector(sd_authorizationStatusForMediaType:));
         ExchangeClass(AVCaptureDevice.class, @selector(requestAccessForMediaType:completionHandler:), @selector(sd_requestAccessForMediaType:completionHandler:));
+        if (IsBrowserCameraProcess()) {
+            ExchangeClass(AVCaptureDevice.class, @selector(setUserPreferredCamera:), @selector(sd_setUserPreferredCamera:));
+            ExchangeClass(AVCaptureDevice.class, @selector(setSystemPreferredCamera:), @selector(sd_setSystemPreferredCamera:));
+        }
+        ExchangeClass(AVCaptureDeviceDiscoverySession.class,
+                      @selector(discoverySessionWithDeviceTypes:mediaType:position:),
+                      @selector(sd_discoverySessionWithDeviceTypes:mediaType:position:));
         ExchangeInstance(AVCaptureDeviceDiscoverySession.class, @selector(devices), @selector(sd_devices));
 
         ExchangeClass(AVCaptureDeviceInput.class, @selector(deviceInputWithDevice:error:), @selector(sd_deviceInputWithDevice:error:));

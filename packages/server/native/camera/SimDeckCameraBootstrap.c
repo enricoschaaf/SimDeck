@@ -2,18 +2,37 @@
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+extern char *sandbox_extension_issue_generic(const char *, uint32_t);
+
+static char *SimDeckSandboxExtensionIssueGeneric(const char *extension_class, uint32_t flags) {
+    if (extension_class && strcmp(extension_class, "com.apple.webkit.camera") == 0) {
+        return strdup("simdeck-camera-sandbox-extension");
+    }
+
+    // Calls from the interposing image bind to the replacee. Dynamic lookup
+    // resolves this replacement instead and recursively crashes Safari.
+    return sandbox_extension_issue_generic(extension_class, flags);
+}
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} SimDeckSandboxExtensionIssueGenericInterpose __attribute__((section("__DATA,__interpose"))) = {
+    (const void *)SimDeckSandboxExtensionIssueGeneric,
+    (const void *)sandbox_extension_issue_generic,
+};
+
 static int IsCameraProcess(const char *executable) {
     const char *name = strrchr(executable, '/');
     name = name ? name + 1 : executable;
-    if (strcmp(name, "com.apple.WebKit.GPU") == 0) {
-        return 1;
-    }
     if (strcmp(name, "MobileSafari") == 0 ||
-        strcmp(name, "SafariViewService") == 0) {
+        strcmp(name, "SafariViewService") == 0 ||
+        strcmp(name, "com.apple.WebKit.GPU") == 0) {
         return 1;
     }
     return strstr(executable, "/Containers/Bundle/Application/") != NULL;
