@@ -1089,17 +1089,42 @@ static NSDictionary *StatusPayload(SimDeckCameraContext *context, BOOL ok, NSStr
 static int OpenSharedMemory(SimDeckCameraContext *context) {
     if (!context->shmName) return -1;
     context->mappedSize = (size_t)SimDeckCameraBufferSize();
-    int fd = shm_open(context->shmName, O_CREAT | O_RDWR, 0644);
+    BOOL created = NO;
+    int fd = shm_open(context->shmName, O_CREAT | O_EXCL | O_RDWR, 0644);
+    if (fd >= 0) {
+        created = YES;
+    } else if (errno == EEXIST) {
+        fd = shm_open(context->shmName, O_RDWR, 0);
+    }
     if (fd < 0) {
         perror("shm_open");
         return -1;
     }
     struct stat existing = {0};
-    BOOL reuseConsumerState = fstat(fd, &existing) == 0 &&
+    if (fstat(fd, &existing) != 0) {
+        perror("fstat");
+        close(fd);
+        return -1;
+    }
+    if (!created && existing.st_size < (off_t)context->mappedSize) {
+        close(fd);
+        if (shm_unlink(context->shmName) != 0) {
+            perror("shm_unlink");
+            return -1;
+        }
+        fd = shm_open(context->shmName, O_CREAT | O_EXCL | O_RDWR, 0644);
+        if (fd < 0) {
+            perror("shm_open");
+            return -1;
+        }
+        created = YES;
+    }
+    BOOL reuseConsumerState = !created &&
                               existing.st_size >= (off_t)SIMDECK_CAMERA_HEADER_SIZE;
-    if (ftruncate(fd, (off_t)context->mappedSize) != 0) {
+    if (created && ftruncate(fd, (off_t)context->mappedSize) != 0) {
         perror("ftruncate");
         close(fd);
+        shm_unlink(context->shmName);
         return -1;
     }
     void *mapped = mmap(NULL, context->mappedSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
