@@ -573,12 +573,14 @@ async function runBrowserBenchmark() {
       "window.__simdeckCameraBenchmark.stop()",
       true,
     );
+    const stoppedCameraStatus = await waitForCameraTransportIdle(simulatorUDID);
     assertOptimizedCameraStatus(cameraStatus);
     return {
       transport: "webrtc-h264",
       source: { width: 1280, height: 720, framesPerSecond: 30 },
       started,
       stopped,
+      stoppedCameraStatus,
       sampleDurationMs: Date.now() - sampleStartedAt,
       firstBrowserSample,
       finalBrowserSample,
@@ -727,6 +729,28 @@ async function waitForCameraStatus(udid, predicate, timeoutMs) {
   throw new Error(
     `Timed out waiting for camera status on ${udid}: ${JSON.stringify(status)}`,
   );
+}
+
+async function waitForCameraTransportIdle(udid) {
+  await waitForCameraStatus(
+    udid,
+    (status) => status.webRtcCamera?.connected !== true,
+    10_000,
+  );
+  await sleep(500);
+  const first = simdeckJson(["camera", "status", udid]);
+  await sleep(500);
+  const second = simdeckJson(["camera", "status", udid]);
+  if (
+    second.webRtcCamera?.connected === true ||
+    second.frames !== first.frames ||
+    second.publishedFrames !== first.publishedFrames
+  ) {
+    throw new Error(
+      `browser camera continued publishing after stop: ${JSON.stringify({ first, second })}`,
+    );
+  }
+  return second;
 }
 
 function cameraFixturePid() {

@@ -164,60 +164,6 @@ export function CameraSimulationModal({
   }, [benchmarkMode, selectedSimulator?.isBooted, udid]);
 
   useEffect(() => {
-    if (!selectedSimulator?.isBooted || !udid) {
-      return;
-    }
-    let cancelled = false;
-    const resume = async () => {
-      try {
-        let nextStatus = await fetchCameraStatus(udid);
-        if (cancelled) {
-          return;
-        }
-        setStatus(nextStatus);
-        if (!nextStatus.alive || nextStatus.source !== "camera") {
-          return;
-        }
-        setSourceMode("camera");
-        if (nextStatus.mirror !== CAMERA_MIRROR) {
-          nextStatus = await switchCameraSimulationSource(udid, {
-            mirror: CAMERA_MIRROR,
-            source: { kind: "camera" },
-          });
-          if (cancelled) {
-            return;
-          }
-          setStatus(nextStatus);
-        }
-        if (
-          cameraFeedRef.current ||
-          !(await cameraPermissionWasGranted()) ||
-          cancelled
-        ) {
-          return;
-        }
-        setCameraAccess("granted");
-        const stream = await cameraStream();
-        if (cancelled) {
-          for (const track of stream.getTracks()) {
-            track.stop();
-          }
-          return;
-        }
-        await startCurrentCameraFeed(stream);
-      } catch (resumeError) {
-        if (!cancelled) {
-          setError(cameraAccessError(resumeError));
-        }
-      }
-    };
-    void resume();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedSimulator?.isBooted, udid]);
-
-  useEffect(() => {
     if (!open || sourceMode !== "camera" || !navigator.mediaDevices) {
       return;
     }
@@ -760,27 +706,6 @@ function cameraBenchmarkOptions() {
     height: numeric("cameraBenchmarkHeight"),
     width: numeric("cameraBenchmarkWidth"),
   };
-}
-
-async function cameraPermissionWasGranted(): Promise<boolean> {
-  try {
-    const permission = await navigator.permissions?.query({
-      name: "camera" as PermissionName,
-    });
-    if (permission) {
-      return permission.state === "granted";
-    }
-  } catch {
-    // Browsers without camera permission queries expose device labels after a grant.
-  }
-  try {
-    return (await navigator.mediaDevices.enumerateDevices()).some(
-      (device) =>
-        device.kind === "videoinput" && device.label.trim().length > 0,
-    );
-  } catch {
-    return false;
-  }
 }
 
 function looksLikeVideo(value: string): boolean {

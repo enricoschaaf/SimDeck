@@ -540,6 +540,7 @@ export function AppShell({
 }: AppShellProps = {}) {
   configureSimDeckClient({ apiRoot });
   const embedded = readEmbeddedQueryParam();
+  const benchmarkCamera = cameraBenchmarkMode();
   const resolvedFixedSimulatorUDID =
     fixedSimulatorUDID ?? (embedded ? (readDeviceQueryParam() ?? null) : null);
   const simulatorSelectionHidden = hideSimulatorSelection || embedded;
@@ -4042,16 +4043,19 @@ export function AppShell({
         open={newSimulatorOpen && !simulatorSelectionHidden}
         selectedSimulator={selectedSimulator}
       />
-      <CameraSimulationModal
-        onClose={() => setCameraSimulationOpen(false)}
-        open={cameraSimulationOpen && cameraBenchmarkMode()}
-        selectedSimulator={selectedSimulator}
-      />
-      <CameraSettingsModal
-        camera={automaticCamera}
-        onClose={() => setCameraSimulationOpen(false)}
-        open={cameraSimulationOpen && !cameraBenchmarkMode()}
-      />
+      {benchmarkCamera ? (
+        <CameraSimulationModal
+          onClose={() => setCameraSimulationOpen(false)}
+          open={cameraSimulationOpen}
+          selectedSimulator={selectedSimulator}
+        />
+      ) : (
+        <CameraSettingsModal
+          camera={automaticCamera}
+          onClose={() => setCameraSimulationOpen(false)}
+          open={cameraSimulationOpen}
+        />
+      )}
       <CameraRecoveryBanner camera={automaticCamera} />
       <DeepLinkModal
         onClose={() => setDeepLinkOpen(false)}

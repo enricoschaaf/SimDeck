@@ -9,6 +9,7 @@ import {
 
 describe("automatic camera lifecycle", () => {
   it("does not prompt after reload unless camera permission is already granted", () => {
+    expect(cameraLifecycleAction(null, 0, "granted")).toBe("none");
     expect(cameraLifecycleAction(null, 1, "granted")).toBe("start");
     expect(cameraLifecycleAction(null, 1, "prompt")).toBe("wait");
     expect(cameraLifecycleAction(null, 1, "unsupported")).toBe("wait");

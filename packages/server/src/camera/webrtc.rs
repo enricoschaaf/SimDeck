@@ -149,6 +149,24 @@ impl CameraWebRtcMetrics {
     }
 }
 
+fn apply_data_channel_message(
+    message: CameraDataChannelMessage,
+    metrics: &CameraWebRtcMetrics,
+    cancelled: &AtomicBool,
+) -> bool {
+    match message {
+        CameraDataChannelMessage::Telemetry { stats } => {
+            *metrics.browser.lock().unwrap() = Some(stats);
+            false
+        }
+        CameraDataChannelMessage::Stopping => {
+            cancelled.store(true, Ordering::Release);
+            metrics.connected.store(false, Ordering::Relaxed);
+            true
+        }
+    }
+}
+
 fn update_atomic_maximum(target: &AtomicU64, value: u64) {
     let mut previous = target.load(Ordering::Relaxed);
     while value > previous {
@@ -219,28 +237,47 @@ pub async fn create_answer(
 
     let data_udid = udid.clone();
     let data_metrics = metrics.clone();
+    let data_cancelled = cancelled.clone();
+    let data_peer_connection = peer_connection.clone();
     peer_connection.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
         let data_udid = data_udid.clone();
         let data_metrics = data_metrics.clone();
+        let data_cancelled = data_cancelled.clone();
+        let data_peer_connection = data_peer_connection.clone();
         Box::pin(async move {
             if channel.label() != CAMERA_DATA_CHANNEL_LABEL {
                 return;
             }
             let message_metrics = data_metrics.clone();
             let message_udid = data_udid.clone();
+            let message_cancelled = data_cancelled.clone();
+            let message_peer_connection = data_peer_connection.clone();
             channel.on_message(Box::new(move |message: DataChannelMessage| {
                 let data_metrics = message_metrics.clone();
                 let data_udid = message_udid.clone();
+                let data_cancelled = message_cancelled.clone();
+                let data_peer_connection = message_peer_connection.clone();
                 Box::pin(async move {
                     let Ok(text) = std::str::from_utf8(&message.data) else {
                         warn!("Invalid camera telemetry bytes for {data_udid}");
                         return;
                     };
                     match serde_json::from_str::<CameraDataChannelMessage>(text) {
-                        Ok(CameraDataChannelMessage::Telemetry { stats }) => {
-                            *data_metrics.browser.lock().unwrap() = Some(stats);
+                        Ok(message) => {
+                            if apply_data_channel_message(
+                                message,
+                                &data_metrics,
+                                &data_cancelled,
+                            ) {
+                                tokio::spawn(async move {
+                                    if let Err(err) = data_peer_connection.close().await {
+                                        warn!(
+                                            "Unable to close camera WebRTC peer for {data_udid}: {err}"
+                                        );
+                                    }
+                                });
+                            }
                         }
-                        Ok(CameraDataChannelMessage::Stopping) => {}
                         Err(err) => warn!("Invalid camera telemetry for {data_udid}: {err}"),
                     }
                 })
@@ -860,8 +897,12 @@ impl RtpReorderBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::{H264FrameAssembler, RtpReorderBuffer};
+    use super::{
+        apply_data_channel_message, CameraDataChannelMessage, CameraWebRtcMetrics,
+        H264FrameAssembler, RtpReorderBuffer,
+    };
     use bytes::Bytes;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use webrtc::rtp::header::Header;
     use webrtc::rtp::packet::Packet;
 
@@ -875,6 +916,20 @@ mod tests {
             },
             payload: Bytes::copy_from_slice(payload),
         }
+    }
+
+    #[test]
+    fn stopping_message_marks_camera_session_disconnected_and_cancelled() {
+        let metrics = CameraWebRtcMetrics::default();
+        metrics.connected.store(true, Ordering::Relaxed);
+        let cancelled = AtomicBool::new(false);
+
+        let close_peer =
+            apply_data_channel_message(CameraDataChannelMessage::Stopping, &metrics, &cancelled);
+
+        assert!(close_peer);
+        assert!(!metrics.connected.load(Ordering::Relaxed));
+        assert!(cancelled.load(Ordering::Acquire));
     }
 
     #[test]
