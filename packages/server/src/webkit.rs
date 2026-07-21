@@ -13,7 +13,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::process::Command;
 use tokio::sync::{Notify, RwLock};
-use tokio::time::{sleep, timeout, Instant};
+use tokio::time::{sleep, sleep_until, timeout, Instant};
 use tracing::{debug, warn};
 
 const WEBINSPECTORD_SOCKET_NAME: &str = "com.apple.webinspectord_sim.socket";
@@ -26,6 +26,8 @@ const WEBKIT_IO_TIMEOUT: Duration = Duration::from_secs(4);
 const WEBKIT_SOCKET_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBKIT_DISCOVERY_RECONNECT_DELAY: Duration = Duration::from_millis(500);
 const WEBKIT_CAMERA_OVERRIDE_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+const WEBKIT_EXTERNAL_CAMERA_OVERRIDE_OUTER_ID_START: u64 = 8_000_000_000_000_000;
+const WEBKIT_EXTERNAL_CAMERA_OVERRIDE_INNER_ID_START: u64 = 8_500_000_000_000_000;
 
 static WEBKIT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 static WEBKIT_DISCOVERY_MONITORS: OnceLock<Mutex<HashMap<String, Arc<WebKitDiscoveryMonitor>>>> =
@@ -581,11 +583,20 @@ async fn hold_camera_override_session(udid: &str, target_id: &str) -> Result<(),
         &sender_id,
     )
     .await?;
+    let mut outer_id = 1;
+    send_target_enable(
+        &mut inspector_writer,
+        &connection_id,
+        &app_id,
+        page_id,
+        &sender_id,
+        &mut outer_id,
+    )
+    .await?;
     let initial_messages =
         wait_for_webkit_socket_setup(&mut inspector_reader, &app_id, page_id, &sender_id).await?;
 
     let mut protocol_target_ids = HashSet::new();
-    let mut outer_id = 1;
     let mut inner_id = 1;
     for message in initial_messages {
         apply_camera_override_protocol_message(
@@ -610,18 +621,16 @@ async fn hold_camera_override_session(udid: &str, target_id: &str) -> Result<(),
                     break;
                 }
                 if Instant::now() >= next_refresh {
-                    for protocol_target_id in protocol_target_ids.clone() {
-                        send_mock_capture_override(
-                            &mut inspector_writer,
-                            &connection_id,
-                            &app_id,
-                            page_id,
-                            &sender_id,
-                            &protocol_target_id,
-                            &mut outer_id,
-                            &mut inner_id,
-                        ).await?;
-                    }
+                    refresh_camera_overrides(
+                        &mut inspector_writer,
+                        &connection_id,
+                        &app_id,
+                        page_id,
+                        &sender_id,
+                        &protocol_target_ids,
+                        &mut outer_id,
+                        &mut inner_id,
+                    ).await?;
                     next_refresh = Instant::now() + WEBKIT_CAMERA_OVERRIDE_REFRESH_INTERVAL;
                 }
             }
@@ -661,6 +670,59 @@ async fn hold_camera_override_session(udid: &str, target_id: &str) -> Result<(),
         &sender_id,
     )
     .await;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_target_enable<W: AsyncWrite + Unpin>(
+    inspector_writer: &mut W,
+    connection_id: &str,
+    app_id: &str,
+    page_id: u64,
+    sender_id: &str,
+    outer_id: &mut u64,
+) -> Result<(), AppError> {
+    let payload = serde_json::json!({
+        "id": *outer_id,
+        "method": "Target.enable",
+    })
+    .to_string();
+    *outer_id += 1;
+    send_forward_socket_data(
+        inspector_writer,
+        connection_id,
+        app_id,
+        page_id,
+        sender_id,
+        payload.as_bytes(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn refresh_camera_overrides<W: AsyncWrite + Unpin>(
+    inspector_writer: &mut W,
+    connection_id: &str,
+    app_id: &str,
+    page_id: u64,
+    sender_id: &str,
+    protocol_target_ids: &HashSet<String>,
+    outer_id: &mut u64,
+    inner_id: &mut u64,
+) -> Result<(), AppError> {
+    for protocol_target_id in protocol_target_ids {
+        send_mock_capture_override(
+            inspector_writer,
+            connection_id,
+            app_id,
+            page_id,
+            sender_id,
+            protocol_target_id,
+            outer_id,
+            inner_id,
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -874,19 +936,58 @@ async fn attach_websocket_inner(
         &sender_id,
     )
     .await?;
+    let mut outer_id = WEBKIT_EXTERNAL_CAMERA_OVERRIDE_OUTER_ID_START;
+    send_target_enable(
+        &mut inspector_writer,
+        &connection_id,
+        &app_id,
+        page_id,
+        &sender_id,
+        &mut outer_id,
+    )
+    .await?;
     let initial_messages =
         wait_for_webkit_socket_setup(&mut inspector_reader, &app_id, page_id, &sender_id).await?;
 
+    let mut protocol_target_ids = HashSet::new();
+    let mut inner_id = WEBKIT_EXTERNAL_CAMERA_OVERRIDE_INNER_ID_START;
     let (mut client_writer, mut client_reader) = socket.split();
     for message in initial_messages {
+        apply_camera_override_protocol_message(
+            &mut inspector_writer,
+            &connection_id,
+            &app_id,
+            page_id,
+            &sender_id,
+            &message,
+            &mut protocol_target_ids,
+            &mut outer_id,
+            &mut inner_id,
+        )
+        .await?;
         client_writer
             .send(Message::Text(message.into()))
             .await
             .map_err(|error| AppError::internal(format!("WebSocket send failed: {error}")))?;
     }
     let mut closed_cleanly = false;
+    let mut next_camera_override_refresh = Instant::now() + WEBKIT_CAMERA_OVERRIDE_REFRESH_INTERVAL;
     loop {
         tokio::select! {
+            _ = sleep_until(next_camera_override_refresh) => {
+                refresh_camera_overrides(
+                    &mut inspector_writer,
+                    &connection_id,
+                    &app_id,
+                    page_id,
+                    &sender_id,
+                    &protocol_target_ids,
+                    &mut outer_id,
+                    &mut inner_id,
+                ).await?;
+                next_camera_override_refresh =
+                    Instant::now() + WEBKIT_CAMERA_OVERRIDE_REFRESH_INTERVAL;
+            }
             client_message = client_reader.next() => {
                 match client_message {
                     Some(Ok(Message::Text(text))) => {
@@ -925,6 +1026,17 @@ async fn attach_websocket_inner(
                         if string_value(&message.args, "WIRDestinationKey").as_deref() == Some(sender_id.as_str()) {
                             if let Some(data) = data_value(&message.args, "WIRMessageDataKey") {
                                 let text = String::from_utf8(data).unwrap_or_default();
+                                apply_camera_override_protocol_message(
+                                    &mut inspector_writer,
+                                    &connection_id,
+                                    &app_id,
+                                    page_id,
+                                    &sender_id,
+                                    &text,
+                                    &mut protocol_target_ids,
+                                    &mut outer_id,
+                                    &mut inner_id,
+                                ).await?;
                                 client_writer
                                     .send(Message::Text(text.into()))
                                     .await
@@ -2201,6 +2313,79 @@ mod tests {
             camera_protocol_target_change(r#"{"id":1,"result":{}}"#),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn camera_override_survives_probe_teardown_for_an_external_inspector_target() {
+        let (mut inspector_writer, mut inspector_reader) = tokio::io::duplex(16 * 1024);
+        let mut protocol_target_ids = HashSet::new();
+        let mut outer_id = WEBKIT_EXTERNAL_CAMERA_OVERRIDE_OUTER_ID_START;
+        let mut inner_id = WEBKIT_EXTERNAL_CAMERA_OVERRIDE_INNER_ID_START;
+        let created =
+            r#"{"method":"Target.targetCreated","params":{"targetInfo":{"targetId":"page-2"}}}"#;
+
+        send_target_enable(
+            &mut inspector_writer,
+            "connection",
+            "application",
+            42,
+            "sender",
+            &mut outer_id,
+        )
+        .await
+        .unwrap();
+        let packet = read_packet(&mut inspector_reader).await.unwrap();
+        let message = parse_rpc_message(&packet).unwrap();
+        let payload = data_value(&message.args, "WIRSocketDataKey").unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(payload["method"], "Target.enable");
+
+        apply_camera_override_protocol_message(
+            &mut inspector_writer,
+            "connection",
+            "application",
+            42,
+            "sender",
+            created,
+            &mut protocol_target_ids,
+            &mut outer_id,
+            &mut inner_id,
+        )
+        .await
+        .unwrap();
+
+        let packet = read_packet(&mut inspector_reader).await.unwrap();
+        let message = parse_rpc_message(&packet).unwrap();
+        assert_eq!(message.selector, "_rpc_forwardSocketData:");
+        let payload = data_value(&message.args, "WIRSocketDataKey").unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(
+            payload["id"],
+            WEBKIT_EXTERNAL_CAMERA_OVERRIDE_OUTER_ID_START + 1
+        );
+        assert_eq!(payload["params"]["targetId"], "page-2");
+
+        refresh_camera_overrides(
+            &mut inspector_writer,
+            "connection",
+            "application",
+            42,
+            "sender",
+            &protocol_target_ids,
+            &mut outer_id,
+            &mut inner_id,
+        )
+        .await
+        .unwrap();
+        let packet = read_packet(&mut inspector_reader).await.unwrap();
+        let message = parse_rpc_message(&packet).unwrap();
+        let payload = data_value(&message.args, "WIRSocketDataKey").unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(
+            payload["id"],
+            WEBKIT_EXTERNAL_CAMERA_OVERRIDE_OUTER_ID_START + 2
+        );
+        assert_eq!(payload["params"]["targetId"], "page-2");
     }
 
     #[test]

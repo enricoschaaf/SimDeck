@@ -79,6 +79,7 @@
     "test:integration:cli:verbose": "SIMDECK_INTEGRATION_VERBOSE=1 SIMDECK_INTEGRATION_SHOW_SIMULATOR=1 node scripts/integration/cli.mjs",
     "test:integration:service": "node scripts/integration/service-restart.mjs",
     "test:integration:camera": "node scripts/integration/camera.mjs",
+    "test:integration:webkit-camera": "node scripts/integration/webkit-camera.mjs",
     "test:integration:fixture": "node scripts/integration/prebuild-fixture.mjs",
     "test:integration:js-api": "node scripts/integration/js-api.mjs",
     "test:integration:webrtc": "node scripts/integration/webrtc.mjs",
