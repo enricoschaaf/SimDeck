@@ -697,11 +697,14 @@ export function AppShell({
     };
     const events = ["keydown", "pointerdown", "touchstart", "wheel"] as const;
     for (const event of events) {
-      window.addEventListener(event, reportActivity, { passive: true });
+      window.addEventListener(event, reportActivity, {
+        capture: true,
+        passive: true,
+      });
     }
     return () => {
       for (const event of events) {
-        window.removeEventListener(event, reportActivity);
+        window.removeEventListener(event, reportActivity, true);
       }
     };
   }, []);
