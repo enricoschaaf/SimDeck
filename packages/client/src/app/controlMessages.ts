@@ -36,6 +36,7 @@ export interface TransferProgressEvent {
 export interface CameraConsumerStateEvent {
   type: "camera.consumer-state";
   activeConsumers: number;
+  cameraProcessId: number;
   consumerRevision: number;
   framesConsumed: number;
   framesPublished: number;
@@ -77,6 +78,7 @@ export function parseControlServerEvent(
   if (value.type === "camera.consumer-state") {
     if (
       typeof value.activeConsumers !== "number" ||
+      typeof value.cameraProcessId !== "number" ||
       typeof value.consumerRevision !== "number" ||
       typeof value.framesConsumed !== "number" ||
       typeof value.framesPublished !== "number" ||

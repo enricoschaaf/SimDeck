@@ -11,6 +11,7 @@ import {
 } from "./cameraTransport";
 
 const CAMERA_DEVICE_STORAGE_KEY = "simdeck.camera.deviceId";
+const CAMERA_IDLE_GRACE_MS = 2_000;
 
 export type AutomaticCameraPhase =
   | "idle"
@@ -38,7 +39,7 @@ type CameraPermissionState = PermissionState | "unsupported";
 export type CameraLifecycleAction =
   | "none"
   | "start"
-  | "stop"
+  | "defer-stop"
   | "wait"
   | "blocked";
 
@@ -48,7 +49,7 @@ export function cameraLifecycleAction(
   permission: CameraPermissionState,
 ): CameraLifecycleAction {
   if (activeConsumers === 0) {
-    return previousConsumers && previousConsumers > 0 ? "stop" : "none";
+    return previousConsumers && previousConsumers > 0 ? "defer-stop" : "none";
   }
   if (previousConsumers === null) {
     return permission === "granted" ? "start" : "wait";
@@ -62,14 +63,14 @@ export function cameraLifecycleAction(
 export function shouldReconnectCameraFeed(
   previousConsumers: number | null,
   activeConsumers: number,
-  previousRevision: number | null,
-  consumerRevision: number,
+  previousCameraProcessId: number | null,
+  cameraProcessId: number,
 ): boolean {
   return (
     activeConsumers > 0 &&
-    previousConsumers === activeConsumers &&
-    previousRevision !== null &&
-    previousRevision !== consumerRevision
+    previousConsumers !== null &&
+    previousCameraProcessId !== null &&
+    previousCameraProcessId !== cameraProcessId
   );
 }
 
@@ -90,12 +91,21 @@ export function useAutomaticCamera({
   const feedRef = useRef<CameraFeed | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const consumerCountRef = useRef<number | null>(null);
-  const consumerRevisionRef = useRef<number | null>(null);
+  const cameraProcessIdRef = useRef<number | null>(null);
   const activeConsumerCountRef = useRef(0);
+  const cameraDemandedRef = useRef(false);
+  const cameraStartingRef = useRef(false);
+  const stopTimerRef = useRef<number | null>(null);
   const requestGenerationRef = useRef(0);
   const selectedUdidRef = useRef(udid);
 
   const stopLocalCamera = useCallback(() => {
+    if (stopTimerRef.current !== null) {
+      window.clearTimeout(stopTimerRef.current);
+      stopTimerRef.current = null;
+    }
+    cameraDemandedRef.current = false;
+    cameraStartingRef.current = false;
     requestGenerationRef.current += 1;
     feedRef.current?.stop();
     feedRef.current = null;
@@ -104,6 +114,26 @@ export function useAutomaticCamera({
     }
     streamRef.current = null;
     setStats(null);
+  }, []);
+
+  const scheduleLocalCameraStop = useCallback(() => {
+    if (stopTimerRef.current !== null) {
+      window.clearTimeout(stopTimerRef.current);
+    }
+    stopTimerRef.current = window.setTimeout(() => {
+      stopTimerRef.current = null;
+      stopLocalCamera();
+      setError("");
+      setPhase("idle");
+    }, CAMERA_IDLE_GRACE_MS);
+  }, [stopLocalCamera]);
+
+  const retainLocalCamera = useCallback(() => {
+    if (stopTimerRef.current !== null) {
+      window.clearTimeout(stopTimerRef.current);
+      stopTimerRef.current = null;
+    }
+    cameraDemandedRef.current = true;
   }, []);
 
   const refreshDevices = useCallback(async () => {
@@ -119,18 +149,27 @@ export function useAutomaticCamera({
 
   const startLocalCamera = useCallback(
     async (allowPermissionPrompt: boolean) => {
-      if (!enabled || !udid || activeConsumerCountRef.current === 0) {
+      if (
+        !enabled ||
+        !udid ||
+        !cameraDemandedRef.current ||
+        cameraStartingRef.current ||
+        feedRef.current
+      ) {
         return;
       }
+      cameraStartingRef.current = true;
       const generation = ++requestGenerationRef.current;
       setError("");
 
       const permission = await queryCameraPermission();
       if (!allowPermissionPrompt && permission !== "granted") {
+        cameraStartingRef.current = false;
         setPhase("waiting");
         return;
       }
       if (permission === "denied") {
+        cameraStartingRef.current = false;
         setPhase("blocked");
         setError(cameraRecoveryMessage());
         return;
@@ -147,9 +186,10 @@ export function useAutomaticCamera({
         });
         if (
           requestGenerationRef.current !== generation ||
-          activeConsumerCountRef.current === 0 ||
+          !cameraDemandedRef.current ||
           selectedUdidRef.current !== udid
         ) {
+          cameraStartingRef.current = false;
           stopStream(stream);
           return;
         }
@@ -166,13 +206,15 @@ export function useAutomaticCamera({
         });
         if (
           requestGenerationRef.current !== generation ||
-          activeConsumerCountRef.current === 0 ||
+          !cameraDemandedRef.current ||
           selectedUdidRef.current !== udid
         ) {
+          cameraStartingRef.current = false;
           feed.stop();
           stopStream(stream);
           return;
         }
+        cameraStartingRef.current = false;
         feedRef.current = feed;
         setPhase("streaming");
       } catch (cameraError) {
@@ -182,6 +224,7 @@ export function useAutomaticCamera({
         if (requestGenerationRef.current !== generation) {
           return;
         }
+        cameraStartingRef.current = false;
         const denied = isCameraPermissionError(cameraError);
         setPhase(denied ? "blocked" : "error");
         setError(
@@ -203,7 +246,7 @@ export function useAutomaticCamera({
     stopLocalCamera();
     selectedUdidRef.current = udid;
     consumerCountRef.current = null;
-    consumerRevisionRef.current = null;
+    cameraProcessIdRef.current = null;
     activeConsumerCountRef.current = 0;
     setError("");
     setPhase("idle");
@@ -214,22 +257,23 @@ export function useAutomaticCamera({
       enabled && consumerState?.udid === udid
         ? consumerState.activeConsumers
         : 0;
-    const nextRevision =
+    const nextCameraProcessId =
       enabled && consumerState?.udid === udid
-        ? consumerState.consumerRevision
+        ? consumerState.cameraProcessId
         : 0;
     const previousCount = consumerCountRef.current;
-    const previousRevision = consumerRevisionRef.current;
+    const previousCameraProcessId = cameraProcessIdRef.current;
     consumerCountRef.current = nextCount;
-    consumerRevisionRef.current = nextRevision;
+    cameraProcessIdRef.current = nextCameraProcessId;
     activeConsumerCountRef.current = nextCount;
 
     if (nextCount === 0) {
-      stopLocalCamera();
-      setError("");
-      setPhase("idle");
+      if (previousCount !== null && previousCount > 0) {
+        scheduleLocalCameraStop();
+      }
       return;
     }
+    retainLocalCamera();
     if (previousCount === null) {
       void startLocalCamera(false);
       return;
@@ -242,18 +286,22 @@ export function useAutomaticCamera({
       shouldReconnectCameraFeed(
         previousCount,
         nextCount,
-        previousRevision,
-        nextRevision,
+        previousCameraProcessId,
+        nextCameraProcessId,
       )
     ) {
       stopLocalCamera();
+      retainLocalCamera();
       void startLocalCamera(true);
     }
   }, [
     consumerState?.activeConsumers,
+    consumerState?.cameraProcessId,
     consumerState?.consumerRevision,
     consumerState?.udid,
     enabled,
+    retainLocalCamera,
+    scheduleLocalCameraStop,
     startLocalCamera,
     stopLocalCamera,
     udid,
@@ -263,8 +311,9 @@ export function useAutomaticCamera({
 
   const retry = useCallback(() => {
     stopLocalCamera();
+    retainLocalCamera();
     void startLocalCamera(true);
-  }, [startLocalCamera, stopLocalCamera]);
+  }, [retainLocalCamera, startLocalCamera, stopLocalCamera]);
 
   const selectCamera = useCallback(
     (nextCameraId: string) => {
@@ -272,10 +321,11 @@ export function useAutomaticCamera({
       storeCameraId(nextCameraId);
       if (activeConsumerCountRef.current > 0) {
         stopLocalCamera();
+        retainLocalCamera();
         setPhase("idle");
       }
     },
-    [stopLocalCamera],
+    [retainLocalCamera, stopLocalCamera],
   );
 
   useEffect(() => {

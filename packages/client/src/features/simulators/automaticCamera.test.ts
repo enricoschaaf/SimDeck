@@ -19,18 +19,18 @@ describe("automatic camera lifecycle", () => {
     expect(cameraLifecycleAction(0, 1, "prompt")).toBe("start");
     expect(cameraLifecycleAction(1, 2, "granted")).toBe("none");
     expect(cameraLifecycleAction(2, 1, "granted")).toBe("none");
-    expect(cameraLifecycleAction(1, 0, "granted")).toBe("stop");
+    expect(cameraLifecycleAction(1, 0, "granted")).toBe("defer-stop");
   });
 
   it("reports denied permission without trying capture again", () => {
     expect(cameraLifecycleAction(0, 1, "denied")).toBe("blocked");
   });
 
-  it("reconnects a demanded feed when the camera service generation changes", () => {
-    expect(shouldReconnectCameraFeed(1, 1, 8, 9)).toBe(true);
-    expect(shouldReconnectCameraFeed(1, 2, 8, 9)).toBe(false);
-    expect(shouldReconnectCameraFeed(null, 1, null, 9)).toBe(false);
-    expect(shouldReconnectCameraFeed(1, 1, 9, 9)).toBe(false);
+  it("keeps the feed across consumer churn and reconnects after a camera service restart", () => {
+    expect(shouldReconnectCameraFeed(1, 1, 812, 812)).toBe(false);
+    expect(shouldReconnectCameraFeed(1, 2, 812, 812)).toBe(false);
+    expect(shouldReconnectCameraFeed(1, 1, 812, 913)).toBe(true);
+    expect(shouldReconnectCameraFeed(null, 1, null, 913)).toBe(false);
   });
 });
 

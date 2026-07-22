@@ -3854,6 +3854,7 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
     camera_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_camera_revision = None;
     let mut last_active_consumers = None;
+    let mut last_camera_process_id = None;
     let mut last_camera_published_frames = None;
     let mut last_camera_consumed_frames = None;
     state
@@ -3940,6 +3941,10 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
                     .get("consumerRevision")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
+                let camera_process_id = status
+                    .get("processId")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 let published_frames = status
                     .get("publishedFrames")
                     .and_then(Value::as_u64)
@@ -3950,12 +3955,14 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
                     .unwrap_or(0);
                 if last_camera_revision == Some(revision) &&
                     last_active_consumers == Some(active_consumers) &&
+                    last_camera_process_id == Some(camera_process_id) &&
                     last_camera_published_frames == Some(published_frames) &&
                     last_camera_consumed_frames == Some(consumed_frames) {
                     continue;
                 }
                 last_camera_revision = Some(revision);
                 last_active_consumers = Some(active_consumers);
+                last_camera_process_id = Some(camera_process_id);
                 last_camera_published_frames = Some(published_frames);
                 last_camera_consumed_frames = Some(consumed_frames);
                 let webcam_connected = status
@@ -3967,6 +3974,7 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
                     "type": "camera.consumer-state",
                     "udid": udid,
                     "activeConsumers": active_consumers,
+                    "cameraProcessId": camera_process_id,
                     "consumerRevision": revision,
                     "webcamState": if webcam_connected {
                         "streaming"
