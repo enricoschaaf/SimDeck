@@ -177,10 +177,45 @@ fn update_atomic_maximum(target: &AtomicU64, value: u64) {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CameraWebRtcAttempt {
+    client_id: String,
+    generation: u64,
+}
+
 #[derive(Default)]
 struct CameraWebRtcRegistry {
-    latest_client_ids: HashMap<String, String>,
+    latest_attempts: HashMap<String, CameraWebRtcAttempt>,
+    next_generation: u64,
     sessions: HashMap<String, Arc<CameraWebRtcSession>>,
+}
+
+impl CameraWebRtcRegistry {
+    fn begin_attempt(&mut self, udid: &str, client_id: String) -> CameraWebRtcAttempt {
+        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        let attempt = CameraWebRtcAttempt {
+            client_id,
+            generation: self.next_generation,
+        };
+        self.latest_attempts
+            .insert(udid.to_owned(), attempt.clone());
+        attempt
+    }
+
+    fn is_current_attempt(&self, udid: &str, attempt: &CameraWebRtcAttempt) -> bool {
+        self.latest_attempts
+            .get(udid)
+            .is_some_and(|latest| latest == attempt)
+    }
+
+    fn clear_attempt_if_current(&mut self, udid: &str, attempt: &CameraWebRtcAttempt) -> bool {
+        if !self.is_current_attempt(udid, attempt) {
+            return false;
+        }
+        self.latest_attempts.remove(udid);
+        self.sessions.remove(udid);
+        true
+    }
 }
 
 static CAMERA_WEBRTC_REGISTRY: OnceLock<Mutex<CameraWebRtcRegistry>> = OnceLock::new();
@@ -205,7 +240,7 @@ pub async fn create_answer(
             "This browser did not offer H.264 camera video.",
         ));
     }
-    begin_attempt(&udid, &client_id);
+    let attempt = registry().lock().unwrap().begin_attempt(&udid, client_id);
 
     let mut media_engine = MediaEngine::default();
     for (index, sdp_fmtp_line) in H264_FMTP_LINES.iter().enumerate() {
@@ -334,13 +369,24 @@ pub async fn create_answer(
 
     let state_metrics = metrics.clone();
     let state_udid = udid.clone();
+    let state_attempt = attempt.clone();
     peer_connection.on_peer_connection_state_change(Box::new(move |state| {
         let state_metrics = state_metrics.clone();
         let state_udid = state_udid.clone();
+        let state_attempt = state_attempt.clone();
         Box::pin(async move {
             let connected = state == RTCPeerConnectionState::Connected;
             state_metrics.connected.store(connected, Ordering::Relaxed);
             info!("Camera WebRTC peer state for {state_udid}: {state}");
+            if matches!(
+                state,
+                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+            ) {
+                registry()
+                    .lock()
+                    .unwrap()
+                    .clear_attempt_if_current(&state_udid, &state_attempt);
+            }
         })
     }));
 
@@ -392,7 +438,7 @@ pub async fn create_answer(
     });
     let previous = {
         let mut registry = registry().lock().unwrap();
-        if !is_current_attempt(&registry, &udid, &client_id) {
+        if !registry.is_current_attempt(&udid, &attempt) {
             None
         } else {
             Some(registry.sessions.insert(udid.clone(), session.clone()))
@@ -418,7 +464,7 @@ pub async fn create_answer(
 pub async fn stop(udid: &str) {
     let session = {
         let mut registry = registry().lock().unwrap();
-        registry.latest_client_ids.remove(udid);
+        registry.latest_attempts.remove(udid);
         registry.sessions.remove(udid)
     };
     if let Some(session) = session {
@@ -462,21 +508,6 @@ pub fn enrich_status(udid: &str, object: &mut Map<String, Value>) {
 
 fn registry() -> &'static Mutex<CameraWebRtcRegistry> {
     CAMERA_WEBRTC_REGISTRY.get_or_init(|| Mutex::new(CameraWebRtcRegistry::default()))
-}
-
-fn begin_attempt(udid: &str, client_id: &str) {
-    registry()
-        .lock()
-        .unwrap()
-        .latest_client_ids
-        .insert(udid.to_owned(), client_id.to_owned());
-}
-
-fn is_current_attempt(registry: &CameraWebRtcRegistry, udid: &str, client_id: &str) -> bool {
-    registry
-        .latest_client_ids
-        .get(udid)
-        .is_some_and(|latest| latest == client_id)
 }
 
 async fn receive_h264_track(
@@ -942,8 +973,8 @@ impl RtpReorderBuffer {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_data_channel_message, is_current_attempt, CameraDataChannelMessage,
-        CameraWebRtcMetrics, CameraWebRtcRegistry, H264FrameAssembler, RtpReorderBuffer,
+        apply_data_channel_message, CameraDataChannelMessage, CameraWebRtcMetrics,
+        CameraWebRtcRegistry, H264FrameAssembler, RtpReorderBuffer,
     };
     use bytes::Bytes;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -977,17 +1008,16 @@ mod tests {
     }
 
     #[test]
-    fn stale_camera_offer_cannot_replace_the_latest_attempt() {
+    fn out_of_order_camera_offer_completion_cannot_replace_or_clear_the_latest_attempt() {
         let mut registry = CameraWebRtcRegistry::default();
-        registry
-            .latest_client_ids
-            .insert("device-a".to_owned(), "first".to_owned());
-        registry
-            .latest_client_ids
-            .insert("device-a".to_owned(), "second".to_owned());
+        let first = registry.begin_attempt("device-a", "browser".to_owned());
+        let second = registry.begin_attempt("device-a", "browser".to_owned());
 
-        assert!(!is_current_attempt(&registry, "device-a", "first"));
-        assert!(is_current_attempt(&registry, "device-a", "second"));
+        assert!(!registry.is_current_attempt("device-a", &first));
+        assert!(registry.is_current_attempt("device-a", &second));
+        assert!(!registry.clear_attempt_if_current("device-a", &first));
+        assert!(registry.is_current_attempt("device-a", &second));
+        assert!(registry.clear_attempt_if_current("device-a", &second));
     }
 
     #[test]

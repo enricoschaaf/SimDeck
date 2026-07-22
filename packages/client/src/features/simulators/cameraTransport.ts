@@ -121,7 +121,11 @@ export async function startCameraFeed({
     );
   }
 
-  const health = await fetchHealth().catch(() => null);
+  const health = await fetchHealth({ signal }).catch(() => {
+    throwIfCameraFeedAborted(signal);
+    return null;
+  });
+  throwIfCameraFeedAborted(signal);
   const peerConnection = new RTCPeerConnection({
     iceServers: health?.webRtc?.iceServers ?? [],
     iceTransportPolicy: health?.webRtc?.iceTransportPolicy ?? "all",
@@ -131,7 +135,12 @@ export async function startCameraFeed({
     { ordered: true },
   );
   let stopped = false;
+  let connectionClosed = false;
   const closeConnection = () => {
+    if (connectionClosed) {
+      return;
+    }
+    connectionClosed = true;
     controlChannel.close();
     peerConnection.close();
   };
@@ -140,6 +149,9 @@ export async function startCameraFeed({
     closeConnection();
   };
   signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) {
+    onAbort();
+  }
   const fail = (message: string) => {
     if (!stopped) {
       onError(message);
@@ -154,43 +166,55 @@ export async function startCameraFeed({
     }
   });
 
-  const sender = peerConnection.addTrack(track, stream);
-  const transceiver = peerConnection
-    .getTransceivers()
-    .find((candidate) => candidate.sender === sender);
-  if (!transceiver?.setCodecPreferences) {
-    peerConnection.close();
-    throw new Error(
-      "This browser cannot select H.264 for WebRTC camera streaming.",
-    );
-  }
-  transceiver.setCodecPreferences(codecs);
-
-  const settings = track.getSettings();
-  const inputWidth = settings.width ?? 0;
-  const inputHeight = settings.height ?? 0;
-  const maxBitrate = cameraMaxBitrate(inputWidth, inputHeight);
-  const parameters = sender.getParameters();
-  if (parameters.encodings.length === 0) {
-    parameters.encodings = [{}];
-  }
-  for (const encoding of parameters.encodings) {
-    encoding.maxBitrate = maxBitrate;
-    encoding.maxFramerate = Math.min(
-      FRAMES_PER_SECOND,
-      settings.frameRate ?? FRAMES_PER_SECOND,
-    );
-  }
-  (
-    parameters as RTCRtpSendParameters & {
-      degradationPreference: "maintain-resolution";
-    }
-  ).degradationPreference = "maintain-resolution";
-  await sender.setParameters(parameters);
-
+  let setup:
+    | { inputHeight: number; inputWidth: number; sender: RTCRtpSender }
+    | undefined;
   try {
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
+    throwIfCameraFeedAborted(signal);
+    const sender = peerConnection.addTrack(track, stream);
+    const transceiver = peerConnection
+      .getTransceivers()
+      .find((candidate) => candidate.sender === sender);
+    if (!transceiver?.setCodecPreferences) {
+      throw new Error(
+        "This browser cannot select H.264 for WebRTC camera streaming.",
+      );
+    }
+    transceiver.setCodecPreferences(codecs);
+
+    const settings = track.getSettings();
+    const inputWidth = settings.width ?? 0;
+    const inputHeight = settings.height ?? 0;
+    const maxBitrate = cameraMaxBitrate(inputWidth, inputHeight);
+    const parameters = sender.getParameters();
+    if (parameters.encodings.length === 0) {
+      parameters.encodings = [{}];
+    }
+    for (const encoding of parameters.encodings) {
+      encoding.maxBitrate = maxBitrate;
+      encoding.maxFramerate = Math.min(
+        FRAMES_PER_SECOND,
+        settings.frameRate ?? FRAMES_PER_SECOND,
+      );
+    }
+    (
+      parameters as RTCRtpSendParameters & {
+        degradationPreference: "maintain-resolution";
+      }
+    ).degradationPreference = "maintain-resolution";
+    await abortableCameraOperation(
+      () => sender.setParameters(parameters),
+      signal,
+    );
+
+    const offer = await abortableCameraOperation(
+      () => peerConnection.createOffer(),
+      signal,
+    );
+    await abortableCameraOperation(
+      () => peerConnection.setLocalDescription(offer),
+      signal,
+    );
     await waitForIceGathering(peerConnection, signal);
     throwIfCameraFeedAborted(signal);
     const localDescription = peerConnection.localDescription;
@@ -200,29 +224,42 @@ export async function startCameraFeed({
     if (!/a=rtpmap:\d+ H264\/90000/i.test(localDescription.sdp)) {
       throw new Error("The browser did not offer H.264 camera video.");
     }
-    const answer = await createCameraWebRtcAnswer(
-      udid,
-      {
-        clientId: crypto.randomUUID(),
-        sdp: localDescription.sdp,
-        type: "offer",
-      },
-      { signal },
+    const answer = await abortableCameraOperation(
+      () =>
+        createCameraWebRtcAnswer(
+          udid,
+          {
+            clientId: crypto.randomUUID(),
+            sdp: localDescription.sdp,
+            type: "offer",
+          },
+          { signal },
+        ),
+      signal,
     );
-    throwIfCameraFeedAborted(signal);
-    await peerConnection.setRemoteDescription(answer);
+    await abortableCameraOperation(
+      () => peerConnection.setRemoteDescription(answer),
+      signal,
+    );
     await waitForCameraReady(controlChannel, peerConnection, signal);
+    throwIfCameraFeedAborted(signal);
+    setup = { inputHeight, inputWidth, sender };
   } catch (error) {
+    stopped = true;
     signal?.removeEventListener("abort", onAbort);
     closeConnection();
+    if (signal?.aborted) {
+      throw cameraFeedAbortError();
+    }
     throw error;
   }
+  signal?.removeEventListener("abort", onAbort);
 
   const stats = new CameraStatsReporter(
-    sender,
+    setup.sender,
     controlChannel,
-    inputWidth,
-    inputHeight,
+    setup.inputWidth,
+    setup.inputHeight,
     onStats,
   );
   stats.start();
@@ -233,7 +270,6 @@ export async function startCameraFeed({
         return;
       }
       stopped = true;
-      signal?.removeEventListener("abort", onAbort);
       stats.stop();
       if (controlChannel.readyState === "open") {
         controlChannel.send(JSON.stringify({ event: "stopping" }));
@@ -308,9 +344,9 @@ function waitForIceGathering(
   if (peerConnection.iceGatheringState === "complete") {
     return Promise.resolve();
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let resolved = false;
-    const finish = () => {
+    const finish = (error?: Error) => {
       if (resolved) {
         return;
       }
@@ -318,8 +354,8 @@ function waitForIceGathering(
       window.clearTimeout(timeout);
       peerConnection.removeEventListener("icecandidate", onCandidate);
       peerConnection.removeEventListener("icegatheringstatechange", onState);
-      signal?.removeEventListener("abort", finish);
-      resolve();
+      signal?.removeEventListener("abort", onAbort);
+      error ? reject(error) : resolve();
     };
     const onCandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate?.type === "host") {
@@ -331,12 +367,13 @@ function waitForIceGathering(
         finish();
       }
     };
+    const onAbort = () => finish(cameraFeedAbortError());
     const timeout = window.setTimeout(finish, ICE_GATHER_TIMEOUT_MS);
     peerConnection.addEventListener("icecandidate", onCandidate);
     peerConnection.addEventListener("icegatheringstatechange", onState);
-    signal?.addEventListener("abort", finish, { once: true });
+    signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted) {
-      finish();
+      onAbort();
     }
   });
 }
@@ -349,6 +386,44 @@ function throwIfCameraFeedAborted(signal?: AbortSignal) {
   if (signal?.aborted) {
     throw cameraFeedAbortError();
   }
+}
+
+function abortableCameraOperation<T>(
+  start: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) {
+    return start();
+  }
+  throwIfCameraFeedAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (result: { error: unknown } | { value: T }) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      "error" in result ? reject(result.error) : resolve(result.value);
+    };
+    const onAbort = () => finish({ error: cameraFeedAbortError() });
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    let operation: Promise<T>;
+    try {
+      operation = start();
+    } catch (error) {
+      finish({ error });
+      return;
+    }
+    operation.then(
+      (value) => finish({ value }),
+      (error: unknown) => finish({ error }),
+    );
+  });
 }
 
 function cameraFeedAbortError(): DOMException {

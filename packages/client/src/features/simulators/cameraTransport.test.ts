@@ -1,12 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   cameraH264Codecs,
   cameraMaxBitrate,
   cameraVideoConstraints,
   isCameraFeedAbort,
+  startCameraFeed,
   videoDevices,
 } from "./cameraTransport";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("camera", () => {
   it("requests a high-resolution native camera mode", () => {
@@ -70,5 +73,107 @@ describe("camera", () => {
       true,
     );
     expect(isCameraFeedAbort(new Error("failed"))).toBe(false);
+  });
+
+  it("aborts a superseded negotiation without closing its replacement", async () => {
+    const peers: Array<{
+      close: ReturnType<typeof vi.fn>;
+      createOffer: ReturnType<typeof vi.fn>;
+    }> = [];
+    class FakePeerConnection {
+      readonly close = vi.fn();
+      readonly connectionState = "new";
+      readonly controlChannel = {
+        addEventListener: vi.fn(),
+        close: vi.fn(),
+        readyState: "connecting",
+        removeEventListener: vi.fn(),
+        send: vi.fn(),
+      };
+      readonly createOffer = vi.fn(
+        () => new Promise<RTCSessionDescriptionInit>(() => undefined),
+      );
+      readonly sender = {
+        getParameters: () => ({ encodings: [] }),
+        setParameters: vi.fn().mockResolvedValue(undefined),
+      };
+
+      constructor() {
+        peers.push(this);
+      }
+
+      addEventListener() {}
+      addTrack() {
+        return this.sender;
+      }
+      createDataChannel() {
+        return this.controlChannel;
+      }
+      getTransceivers() {
+        return [
+          {
+            sender: this.sender,
+            setCodecPreferences: vi.fn(),
+          },
+        ];
+      }
+      removeEventListener() {}
+    }
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        headers: { get: () => "application/json" },
+        json: async () => ({}),
+        ok: true,
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("RTCPeerConnection", FakePeerConnection);
+    vi.stubGlobal("RTCRtpSender", {
+      getCapabilities: () => ({
+        codecs: [
+          {
+            clockRate: 90_000,
+            mimeType: "video/H264",
+            sdpFmtpLine: "packetization-mode=1;profile-level-id=42e01f",
+          },
+        ],
+      }),
+    });
+    const stream = {
+      getVideoTracks: () => [
+        {
+          getSettings: () => ({
+            frameRate: 30,
+            height: 1_080,
+            width: 1_920,
+          }),
+        },
+      ],
+    } as unknown as MediaStream;
+    const firstController = new AbortController();
+    const first = startCameraFeed({
+      onError: vi.fn(),
+      signal: firstController.signal,
+      stream,
+      udid: "device-a",
+    });
+    await vi.waitFor(() => expect(peers[0]?.createOffer).toHaveBeenCalled());
+
+    firstController.abort();
+    await expect(first).rejects.toSatisfy(isCameraFeedAbort);
+    const secondController = new AbortController();
+    const second = startCameraFeed({
+      onError: vi.fn(),
+      signal: secondController.signal,
+      stream,
+      udid: "device-a",
+    });
+    await vi.waitFor(() => expect(peers[1]?.createOffer).toHaveBeenCalled());
+
+    expect(peers[0]?.close).toHaveBeenCalledOnce();
+    expect(peers[1]?.close).not.toHaveBeenCalled();
+    secondController.abort();
+    await expect(second).rejects.toSatisfy(isCameraFeedAbort);
   });
 });

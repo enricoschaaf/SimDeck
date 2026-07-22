@@ -67,6 +67,8 @@ export async function pairBrowser(code: string): Promise<void> {
   });
 }
 
-export async function fetchHealth(): Promise<HealthResponse> {
-  return apiRequest<HealthResponse>("/api/health");
+export async function fetchHealth(
+  options: RequestInit = {},
+): Promise<HealthResponse> {
+  return apiRequest<HealthResponse>("/api/health", options);
 }
