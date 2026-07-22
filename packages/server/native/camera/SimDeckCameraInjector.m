@@ -38,7 +38,7 @@ static CIContext *gImageContext;
 static dispatch_source_t gFrameTimer;
 static dispatch_queue_t gFrameQueue;
 static NSMutableArray<NSValue *> *gSessions;
-static NSMutableArray<NSValue *> *gVideoOutputs;
+static NSHashTable<AVCaptureVideoDataOutput *> *gVideoOutputs;
 static NSHashTable<AVSampleBufferDisplayLayer *> *gPreviewLayers;
 static NSMutableSet<NSString *> *gHookedVideoOutputClasses;
 static uint32_t gLastAppliedMirrorMode = UINT32_MAX;
@@ -146,6 +146,20 @@ static BOOL IsVideoMediaType(AVMediaType mediaType) {
     return mediaType == nil || [mediaType isEqualToString:AVMediaTypeVideo];
 }
 
+static void TrackVideoOutput(AVCaptureVideoDataOutput *output) {
+    if (!output) return;
+    @synchronized(gVideoOutputs) {
+        [gVideoOutputs addObject:output];
+    }
+}
+
+static void UntrackVideoOutput(AVCaptureOutput *output) {
+    if (!output || ![output isKindOfClass:AVCaptureVideoDataOutput.class]) return;
+    @synchronized(gVideoOutputs) {
+        [gVideoOutputs removeObject:(AVCaptureVideoDataOutput *)output];
+    }
+}
+
 static void SimDeckSetSampleBufferDelegate(AVCaptureVideoDataOutput *output,
                                            SEL selector,
                                            id<AVCaptureVideoDataOutputSampleBufferDelegate> delegate,
@@ -153,8 +167,10 @@ static void SimDeckSetSampleBufferDelegate(AVCaptureVideoDataOutput *output,
     (void)selector;
     objc_setAssociatedObject(output, &kOutputDelegateKey, delegate, OBJC_ASSOCIATION_ASSIGN);
     objc_setAssociatedObject(output, &kOutputQueueKey, sampleBufferCallbackQueue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    @synchronized(gVideoOutputs) {
-        TrackPointer(gVideoOutputs, output);
+    if (delegate) {
+        TrackVideoOutput(output);
+    } else {
+        UntrackVideoOutput(output);
     }
 }
 
@@ -757,12 +773,11 @@ static void DeliverFrame(void) {
     }
     CVPixelBufferRef bgraBuffer = NULL;
     CMSampleBufferRef bgraSample = NULL;
-    NSArray *outputs = nil;
+    NSArray<AVCaptureVideoDataOutput *> *outputs = nil;
     @synchronized(gVideoOutputs) {
-        outputs = [gVideoOutputs copy];
+        outputs = [gVideoOutputs.allObjects retain];
     }
-    for (NSValue *value in outputs) {
-        AVCaptureVideoDataOutput *output = (__bridge AVCaptureVideoDataOutput *)value.pointerValue;
+    for (AVCaptureVideoDataOutput *output in outputs) {
         OSType requested = RequestedPixelFormat(output, sourceFormat);
         if (requested == kCVPixelFormatType_32BGRA && sourceFormat != kCVPixelFormatType_32BGRA) {
             if (!bgraBuffer) {
@@ -838,9 +853,7 @@ static void AddSessionOutput(AVCaptureSession *session, AVCaptureOutput *output)
     }
     if (![outputs containsObject:output]) [outputs addObject:output];
     if ([output isKindOfClass:AVCaptureVideoDataOutput.class]) {
-        @synchronized(gVideoOutputs) {
-            TrackPointer(gVideoOutputs, output);
-        }
+        TrackVideoOutput((AVCaptureVideoDataOutput *)output);
     }
 }
 
@@ -855,17 +868,17 @@ static BOOL ShouldUseSimDeckInput(AVCaptureDevice *device) {
     return IsBrowserCameraProcess() && [device hasMediaType:AVMediaTypeVideo];
 }
 
+// A fresh input per request keeps AVFoundation's one-session-per-input
+// invariant intact across sequential getUserMedia open/stop/reopen cycles;
+// callers (WebKit) may still hold and remove the previous instance.
 static AVCaptureDeviceInput *SimDeckFakeInput(void) {
-    static AVCaptureDeviceInput *input;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        input = (AVCaptureDeviceInput *)class_createInstance(AVCaptureDeviceInput.class, 0);
-        objc_setAssociatedObject(input, &kInputFakeKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        Class deviceClass = objc_getClass("SimDeckCameraDevice");
-        id device = ((id (*)(Class, SEL))objc_msgSend)(deviceClass, @selector(sharedDevice));
-        objc_setAssociatedObject(input, &kInputDeviceKey, device, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    });
-    return input;
+    Class inputClass = objc_getClass("SimDeckCameraInput");
+    AVCaptureDeviceInput *input = (AVCaptureDeviceInput *)class_createInstance(inputClass, 0);
+    objc_setAssociatedObject(input, &kInputFakeKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    Class deviceClass = objc_getClass("SimDeckCameraDevice");
+    id device = ((id (*)(Class, SEL))objc_msgSend)(deviceClass, @selector(sharedDevice));
+    objc_setAssociatedObject(input, &kInputDeviceKey, device, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return [input autorelease];
 }
 
 static BOOL ClassIsSubclassOf(Class cls, Class parent) {
@@ -1071,6 +1084,20 @@ static void InstallVideoOutputAllocationHook(void) {
     return (AVCaptureDevice *)[SimDeckCameraDevice sharedDevice];
 }
 
+- (NSString *)description {
+    return [NSString stringWithFormat:@"<SimDeckCameraInput: %p>", (void *)self];
+}
+
+// Instances are raw-allocated; AVFoundation's dealloc would walk
+// never-initialized ivars.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wobjc-missing-super-calls"
+- (void)dealloc {
+    struct objc_super superInfo = { self, NSObject.class };
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&superInfo, @selector(dealloc));
+}
+#pragma clang diagnostic pop
+
 @end
 
 @interface SimDeckCameraConnection : AVCaptureConnection
@@ -1101,6 +1128,14 @@ static void InstallVideoOutputAllocationHook(void) {
     connection->_enabled = YES;
     return [connection autorelease];
 }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wobjc-missing-super-calls"
+- (void)dealloc {
+    struct objc_super superInfo = { self, NSObject.class };
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&superInfo, @selector(dealloc));
+}
+#pragma clang diagnostic pop
 
 - (AVCaptureOutput *)output { return _output; }
 - (NSArray<AVCaptureInputPort *> *)inputPorts { return @[]; }
@@ -1156,6 +1191,16 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
 - (instancetype)init {
     struct objc_super superInfo = { self, NSObject.class };
     return ((id (*)(struct objc_super *, SEL))objc_msgSendSuper)(&superInfo, @selector(init));
+}
+#pragma clang diagnostic pop
+
+// Instances skip AVFoundation initialization, so its dealloc must be
+// skipped too.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wobjc-missing-super-calls"
+- (void)dealloc {
+    struct objc_super superInfo = { self, NSObject.class };
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&superInfo, @selector(dealloc));
 }
 #pragma clang diagnostic pop
 
@@ -1425,7 +1470,15 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
 - (instancetype)sd_initWithDevice:(AVCaptureDevice *)device error:(NSError **)outError {
     if (ShouldUseSimDeckInput(device)) {
         if (outError) *outError = nil;
-        return (id)SimDeckFakeInput();
+        // Rebrand the caller-allocated shell instead of swapping in another
+        // instance so init ownership stays balanced and the uninitialized
+        // AVCaptureDeviceInput dealloc never runs.
+        object_setClass(self, objc_getClass("SimDeckCameraInput"));
+        objc_setAssociatedObject(self, &kInputFakeKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        Class deviceClass = objc_getClass("SimDeckCameraDevice");
+        id sharedDevice = ((id (*)(Class, SEL))objc_msgSend)(deviceClass, @selector(sharedDevice));
+        objc_setAssociatedObject(self, &kInputDeviceKey, sharedDevice, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return self;
     }
     return [self sd_initWithDevice:device error:outError];
 }
@@ -1504,6 +1557,20 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
     [self sd_addInput:input];
 }
 
+// AVCaptureSession's dealloc drains `inputs` with removeInput:. The fake
+// input only exists in the associated list, so removal must be intercepted
+// symmetrically or the drain loop never terminates and wedges WebKit's
+// capture thread for the rest of the process lifetime.
+- (void)sd_removeInput:(AVCaptureInput *)input {
+    NSMutableArray *inputs = objc_getAssociatedObject(self, &kSessionInputsKey);
+    if ([inputs containsObject:input]) {
+        [inputs removeObject:input];
+        return;
+    }
+    if (SimDeckIsFakeInput(input)) return;
+    [self sd_removeInput:input];
+}
+
 - (BOOL)sd_canAddOutput:(AVCaptureOutput *)output {
     if ([output isKindOfClass:AVCaptureVideoDataOutput.class] || [output isKindOfClass:AVCapturePhotoOutput.class]) return YES;
     return [self sd_canAddOutput:output];
@@ -1515,6 +1582,16 @@ static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output) {
         return;
     }
     [self sd_addOutput:output];
+}
+
+- (void)sd_removeOutput:(AVCaptureOutput *)output {
+    NSMutableArray *outputs = objc_getAssociatedObject(self, &kSessionOutputsKey);
+    if ([outputs containsObject:output]) {
+        UntrackVideoOutput(output);
+        [outputs removeObject:output];
+        return;
+    }
+    [self sd_removeOutput:output];
 }
 
 - (NSArray<AVCaptureInput *> *)sd_inputs {
@@ -1909,7 +1986,7 @@ static void SimDeckCameraInstall(void) {
             return;
         }
         gSessions = [[NSMutableArray alloc] init];
-        gVideoOutputs = [[NSMutableArray alloc] init];
+        gVideoOutputs = [[NSHashTable weakObjectsHashTable] retain];
         gPreviewLayers = [[NSHashTable weakObjectsHashTable] retain];
         gHookedVideoOutputClasses = [[NSMutableSet alloc] init];
         OpenSharedCamera();
@@ -1941,8 +2018,10 @@ static void SimDeckCameraInstall(void) {
 
         ExchangeInstance(AVCaptureSession.class, @selector(canAddInput:), @selector(sd_canAddInput:));
         ExchangeInstance(AVCaptureSession.class, @selector(addInput:), @selector(sd_addInput:));
+        ExchangeInstance(AVCaptureSession.class, @selector(removeInput:), @selector(sd_removeInput:));
         ExchangeInstance(AVCaptureSession.class, @selector(canAddOutput:), @selector(sd_canAddOutput:));
         ExchangeInstance(AVCaptureSession.class, @selector(addOutput:), @selector(sd_addOutput:));
+        ExchangeInstance(AVCaptureSession.class, @selector(removeOutput:), @selector(sd_removeOutput:));
         ExchangeInstance(AVCaptureSession.class, @selector(inputs), @selector(sd_inputs));
         ExchangeInstance(AVCaptureSession.class, @selector(outputs), @selector(sd_outputs));
         ExchangeInstance(AVCaptureSession.class, @selector(startRunning), @selector(sd_startRunning));

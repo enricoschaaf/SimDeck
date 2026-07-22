@@ -108,7 +108,9 @@ async function main() {
   step("wait for automatic WebKit camera override");
   await waitForWebKitTarget(fixtureUrl);
 
-  step("run permission-probe, stop, enumerate, environment capture");
+  step(
+    "run Checkout-style camera open, stop, enumerate, and exact-device reopen",
+  );
   runText(simdeck, [
     "tap",
     simulatorUDID,
@@ -118,14 +120,20 @@ async function main() {
     "10000",
   ]);
   await allowCameraPermissionIfRequested();
-  const environmentEvent = await waitForBrowserEvent(
-    "environment-open",
+  const exactReopenEvent = await waitForBrowserEvent(
+    "exact-reopen-open",
     45_000,
   );
-  await waitForBrowserEvent("video-frame", 15_000);
+  await waitForBrowserEvent("exact-reopen-frame", 15_000);
 
   const eventNames = browserEvents.map((event) => event.name);
-  for (const required of ["probe-open", "probe-stopped", "devices"]) {
+  for (const required of [
+    "probe-open",
+    "probe-stopped",
+    "devices",
+    "exact-open",
+    "exact-stopped",
+  ]) {
     if (!eventNames.includes(required)) {
       throw new Error(
         `Missing ${required} in browser lifecycle: ${JSON.stringify(browserEvents)}`,
@@ -137,13 +145,13 @@ async function main() {
     (value) => value.activeConsumers > 0 && value.deliveredFrames > 0,
     15_000,
   );
-  if (environmentEvent.settings?.facingMode !== "environment") {
+  if (!exactReopenEvent.settings?.deviceId) {
     throw new Error(
-      `WebKit did not select an environment camera: ${JSON.stringify(environmentEvent)}`,
+      `WebKit did not reopen the selected camera: ${JSON.stringify(exactReopenEvent)}`,
     );
   }
   console.log(
-    `WebKit camera lifecycle: ${JSON.stringify({ events: eventNames, environment: environmentEvent.settings, activeConsumers: status.activeConsumers, deliveredFrames: status.deliveredFrames })}`,
+    `WebKit camera lifecycle: ${JSON.stringify({ events: eventNames, exactReopen: exactReopenEvent.settings, activeConsumers: status.activeConsumers, deliveredFrames: status.deliveredFrames })}`,
   );
 }
 
@@ -208,38 +216,71 @@ function cameraFixturePage() {
       settings: track.getSettings ? track.getSettings() : {},
       capabilities: track.getCapabilities ? track.getCapabilities() : {},
     });
+    const open = async (name, constraints) => {
+      await report(name + '-request', { constraints });
+      const stream = await Promise.race([
+        navigator.mediaDevices.getUserMedia(constraints),
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error(name + ' timed out')),
+          20_000,
+        )),
+      ]);
+      await report(name + '-open', trackDetails(stream.getVideoTracks()[0]));
+      return stream;
+    };
+    const stop = async (name, stream) => {
+      stream.getTracks().forEach((track) => track.stop());
+      await report(name + '-stopped');
+    };
+    const waitForFrame = async (name, stream) => {
+      const preview = document.querySelector('#preview');
+      preview.srcObject = stream;
+      await preview.play();
+      await new Promise((resolve) => {
+        const done = () => report(name + '-frame', {
+          width: preview.videoWidth,
+          height: preview.videoHeight,
+        }).then(resolve);
+        if (preview.requestVideoFrameCallback) {
+          preview.requestVideoFrameCallback(done);
+        } else {
+          preview.addEventListener('loadeddata', done, { once: true });
+        }
+      });
+    };
     document.querySelector('#start').addEventListener('click', async () => {
       document.querySelector('#start').disabled = true;
       try {
         await report('started', { secureContext: window.isSecureContext });
-        const probe = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        await report('probe-open', trackDetails(probe.getVideoTracks()[0]));
-        probe.getTracks().forEach((track) => track.stop());
-        await report('probe-stopped');
+        const probe = await open('probe', { video: true, audio: false });
+        await stop('probe', probe);
         const devices = await navigator.mediaDevices.enumerateDevices();
+        const cameras = devices.filter((device) =>
+          device.kind === 'videoinput' && device.deviceId
+        );
         await report('devices', {
           devices: devices.map(({ deviceId, kind, label }) => ({ deviceId, kind, label })),
         });
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720, frameRate: 30, facingMode: 'environment' },
+        if (!cameras.length) throw new Error('No video device with a deviceId');
+        const target = cameras.find((device) => /simdeck/i.test(device.label)) ?? cameras[0];
+        for (const [index, camera] of cameras.entries()) {
+          const deviceProbe = await open('device-probe-' + index, {
+            video: { deviceId: camera.deviceId },
+            audio: false,
+          });
+          await stop('device-probe-' + index, deviceProbe);
+        }
+        const exact = await open('exact', {
+          video: { deviceId: { exact: target.deviceId }, width: 1280, height: 720 },
           audio: false,
         });
-        const track = stream.getVideoTracks()[0];
-        await report('environment-open', trackDetails(track));
-        const preview = document.querySelector('#preview');
-        preview.srcObject = stream;
-        await preview.play();
-        if (preview.requestVideoFrameCallback) {
-          preview.requestVideoFrameCallback(() => report('video-frame', {
-            width: preview.videoWidth,
-            height: preview.videoHeight,
-          }));
-        } else {
-          preview.addEventListener('loadeddata', () => report('video-frame', {
-            width: preview.videoWidth,
-            height: preview.videoHeight,
-          }), { once: true });
-        }
+        await waitForFrame('exact', exact);
+        await stop('exact', exact);
+        const exactReopen = await open('exact-reopen', {
+          video: { deviceId: { exact: target.deviceId } },
+          audio: false,
+        });
+        await waitForFrame('exact-reopen', exactReopen);
       } catch (error) {
         await report('error', { errorName: error.name, message: error.message });
       }
