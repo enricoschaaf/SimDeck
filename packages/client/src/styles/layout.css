@@ -13,7 +13,7 @@
   grid-template-columns: minmax(0, 1fr) 44px;
   grid-template-rows: minmax(0, 1fr);
   gap: 12px;
-  padding: 0;
+  padding: 0 12px 0 0;
   background: var(--canvas-bg);
 }
 

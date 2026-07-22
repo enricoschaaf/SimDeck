@@ -21,7 +21,7 @@ describe("embedded viewer layout", () => {
 
   it("uses one uninterrupted black canvas around the reserved controls", () => {
     expect(layoutCss).toMatch(
-      /\.app-embedded\s*{[^}]*--canvas-bg:\s*#000000;[^}]*padding:\s*0;[^}]*background:\s*var\(--canvas-bg\);/s,
+      /\.app-embedded\s*{[^}]*--canvas-bg:\s*#000000;[^}]*padding:\s*0 12px 0 0;[^}]*background:\s*var\(--canvas-bg\);/s,
     );
   });
 
