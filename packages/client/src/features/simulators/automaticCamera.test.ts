@@ -10,7 +10,7 @@ import {
 
 describe("automatic camera lifecycle", () => {
   it("keeps the webcam alive across a WebKit pre-check handoff", () => {
-    expect(CAMERA_IDLE_GRACE_MS).toBeGreaterThanOrEqual(30_000);
+    expect(CAMERA_IDLE_GRACE_MS).toBeGreaterThanOrEqual(60_000);
   });
 
   it("does not prompt after reload unless camera permission is already granted", () => {

@@ -12,7 +12,7 @@ import {
 } from "./cameraTransport";
 
 const CAMERA_DEVICE_STORAGE_KEY = "simdeck.camera.deviceId";
-export const CAMERA_IDLE_GRACE_MS = 30_000;
+export const CAMERA_IDLE_GRACE_MS = 60_000;
 
 export type AutomaticCameraPhase =
   | "idle"
