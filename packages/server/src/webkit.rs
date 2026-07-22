@@ -214,6 +214,11 @@ impl WebKitDiscoveryMonitor {
         self.discovery_from_state(state, http_origin)
     }
 
+    async fn camera_override_target_ids(&self) -> HashSet<String> {
+        let state = self.state.read().await;
+        camera_override_target_ids(&state)
+    }
+
     fn discovery_from_state(
         &self,
         state: WebKitDiscoveryState,
@@ -467,43 +472,30 @@ impl WebKitCameraOverrideMonitor {
     }
 
     async fn run(&self) {
+        let discovery_monitor = webkit_discovery_monitor(&self.udid);
+        discovery_monitor.clone().ensure_started();
         let mut sessions = HashMap::new();
         loop {
-            match discover_targets(&self.udid, None).await {
-                Ok(discovery) => {
-                    let live_targets = discovery
-                        .targets
-                        .iter()
-                        .map(|target| target.id.clone())
-                        .collect::<HashSet<_>>();
-                    sessions.retain(|target_id, task: &mut tokio::task::JoinHandle<()>| {
-                        let keep = live_targets.contains(target_id) && !task.is_finished();
-                        if !keep {
-                            task.abort();
-                        }
-                        keep
-                    });
-                    for target in discovery.targets {
-                        if sessions.contains_key(&target.id) {
-                            continue;
-                        }
-                        let udid = self.udid.clone();
-                        let target_id = target.id.clone();
-                        let task_target_id = target_id.clone();
-                        sessions.insert(
-                            target_id,
-                            tokio::spawn(async move {
-                                run_camera_override_session(&udid, &task_target_id).await;
-                            }),
-                        );
-                    }
+            let live_targets = discovery_monitor.camera_override_target_ids().await;
+            sessions.retain(|target_id, task: &mut tokio::task::JoinHandle<()>| {
+                let keep = live_targets.contains(target_id) && !task.is_finished();
+                if !keep {
+                    task.abort();
                 }
-                Err(error) => {
-                    debug!(
-                        udid = %self.udid,
-                        "Unable to discover WebKit targets for camera override: {error}"
-                    );
+                keep
+            });
+            for target_id in live_targets {
+                if sessions.contains_key(&target_id) {
+                    continue;
                 }
+                let udid = self.udid.clone();
+                let task_target_id = target_id.clone();
+                sessions.insert(
+                    target_id,
+                    tokio::spawn(async move {
+                        run_camera_override_session(&udid, &task_target_id).await;
+                    }),
+                );
             }
             sleep(WEBKIT_DISCOVERY_RECONNECT_DELAY).await;
         }
@@ -874,6 +866,14 @@ fn is_incomplete_or_transient_page(page: &WebKitPage) -> bool {
             .map(str::trim)
             .unwrap_or_default()
             .is_empty()
+}
+
+fn camera_override_target_ids(state: &WebKitDiscoveryState) -> HashSet<String> {
+    state
+        .pages
+        .values()
+        .map(|page| encode_target_id(&page.app_id, page.page_id))
+        .collect()
 }
 
 fn is_inspectable_webkit_target(target: &WebKitTarget) -> bool {
@@ -2771,6 +2771,36 @@ mod tests {
             inspector_url: "/inspector".to_owned(),
             web_socket_url: "/socket".to_owned(),
         }));
+    }
+
+    #[test]
+    fn camera_override_includes_transient_pages_before_navigation() {
+        let mut state = WebKitDiscoveryState::default();
+        for page in [
+            WebKitPage {
+                app_id: "PID:1".to_owned(),
+                page_id: 1,
+                title: None,
+                url: None,
+                connection_id: None,
+            },
+            WebKitPage {
+                app_id: "PID:1".to_owned(),
+                page_id: 2,
+                title: None,
+                url: Some("about:blank".to_owned()),
+                connection_id: None,
+            },
+        ] {
+            state
+                .pages
+                .insert((page.app_id.clone(), page.page_id), page);
+        }
+
+        assert_eq!(
+            camera_override_target_ids(&state),
+            HashSet::from([encode_target_id("PID:1", 1), encode_target_id("PID:1", 2),])
+        );
     }
 
     #[test]
