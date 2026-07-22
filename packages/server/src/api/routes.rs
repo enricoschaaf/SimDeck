@@ -3941,6 +3941,9 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
                     .get("consumerRevision")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
+                let consumer_activity_age_ms = status
+                    .get("consumerActivityAgeMs")
+                    .and_then(Value::as_u64);
                 let camera_process_id = status
                     .get("processId")
                     .and_then(Value::as_u64)
@@ -3976,6 +3979,7 @@ async fn handle_control_socket(state: AppState, udid: String, socket: WebSocket)
                     "activeConsumers": active_consumers,
                     "cameraProcessId": camera_process_id,
                     "consumerRevision": revision,
+                    "consumerActivityAgeMs": consumer_activity_age_ms,
                     "webcamState": if webcam_connected {
                         "streaming"
                     } else if active_consumers > 0 {

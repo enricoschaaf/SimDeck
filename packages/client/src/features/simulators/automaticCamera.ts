@@ -44,6 +44,28 @@ export type CameraLifecycleAction =
   | "wait"
   | "blocked";
 
+export function cameraDemandCount(
+  activeConsumers: number,
+  consumerActivityAgeMs: number | null,
+): number {
+  if (activeConsumers > 0) {
+    return activeConsumers;
+  }
+  return consumerActivityAgeMs !== null &&
+    consumerActivityAgeMs < CAMERA_IDLE_GRACE_MS
+    ? 1
+    : 0;
+}
+
+export function cameraGraceRemainingMs(
+  consumerActivityAgeMs: number | null,
+): number {
+  return Math.max(
+    0,
+    CAMERA_IDLE_GRACE_MS - (consumerActivityAgeMs ?? CAMERA_IDLE_GRACE_MS),
+  );
+}
+
 export function cameraLifecycleAction(
   previousConsumers: number | null,
   activeConsumers: number,
@@ -120,17 +142,20 @@ export function useAutomaticCamera({
     setStats(null);
   }, []);
 
-  const scheduleLocalCameraStop = useCallback(() => {
-    if (stopTimerRef.current !== null) {
-      window.clearTimeout(stopTimerRef.current);
-    }
-    stopTimerRef.current = window.setTimeout(() => {
-      stopTimerRef.current = null;
-      stopLocalCamera();
-      setError("");
-      setPhase("idle");
-    }, CAMERA_IDLE_GRACE_MS);
-  }, [stopLocalCamera]);
+  const scheduleLocalCameraStop = useCallback(
+    (delayMs = CAMERA_IDLE_GRACE_MS) => {
+      if (stopTimerRef.current !== null) {
+        window.clearTimeout(stopTimerRef.current);
+      }
+      stopTimerRef.current = window.setTimeout(() => {
+        stopTimerRef.current = null;
+        stopLocalCamera();
+        setError("");
+        setPhase("idle");
+      }, delayMs);
+    },
+    [stopLocalCamera],
+  );
 
   const retainLocalCamera = useCallback(() => {
     if (stopTimerRef.current !== null) {
@@ -280,10 +305,15 @@ export function useAutomaticCamera({
   }, [stopLocalCamera, udid]);
 
   useEffect(() => {
-    const nextCount =
+    const activeConsumers =
       enabled && consumerState?.udid === udid
         ? consumerState.activeConsumers
         : 0;
+    const consumerActivityAgeMs =
+      enabled && consumerState?.udid === udid
+        ? consumerState.consumerActivityAgeMs
+        : null;
+    const nextCount = cameraDemandCount(activeConsumers, consumerActivityAgeMs);
     const nextCameraProcessId =
       enabled && consumerState?.udid === udid
         ? consumerState.cameraProcessId
@@ -301,6 +331,9 @@ export function useAutomaticCamera({
       return;
     }
     retainLocalCamera();
+    if (activeConsumers === 0) {
+      scheduleLocalCameraStop(cameraGraceRemainingMs(consumerActivityAgeMs));
+    }
     if (previousCount === null) {
       void startLocalCamera(false);
       return;
@@ -324,6 +357,7 @@ export function useAutomaticCamera({
   }, [
     consumerState?.activeConsumers,
     consumerState?.cameraProcessId,
+    consumerState?.consumerActivityAgeMs,
     consumerState?.consumerRevision,
     consumerState?.udid,
     enabled,

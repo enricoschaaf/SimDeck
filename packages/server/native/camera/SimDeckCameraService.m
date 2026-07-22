@@ -1031,6 +1031,9 @@ static NSDictionary *StatusPayload(SimDeckCameraContext *context, BOOL ok, NSStr
             if (kill((pid_t)pid, 0) != 0 && errno == ESRCH) {
                 __atomic_store_n(&slot->count, 0, __ATOMIC_RELEASE);
                 __sync_bool_compare_and_swap(&slot->pid, pid, 0);
+                __atomic_store_n(&context->header->consumerActivityTimestampNs,
+                                 NowNs(),
+                                 __ATOMIC_RELEASE);
                 __sync_fetch_and_add(&context->header->consumerRevision, 1);
                 continue;
             }
@@ -1039,6 +1042,13 @@ static NSDictionary *StatusPayload(SimDeckCameraContext *context, BOOL ok, NSStr
         }
         payload[@"activeConsumers"] = @(activeConsumers);
         payload[@"consumerRevision"] = @(context->header->consumerRevision);
+        uint64_t activityTimestampNs = __atomic_load_n(
+            &context->header->consumerActivityTimestampNs,
+            __ATOMIC_ACQUIRE);
+        uint64_t nowNs = NowNs();
+        payload[@"consumerActivityAgeMs"] = activityTimestampNs > 0 && nowNs >= activityTimestampNs
+            ? @((nowNs - activityTimestampNs) / 1000000u)
+            : [NSNull null];
         payload[@"consumerProcesses"] = consumerProcesses;
         payload[@"surfaceGeneration"] = @(context->header->generation);
         payload[@"surfaceSlot"] = @(context->header->ringSlot);
@@ -1140,6 +1150,9 @@ static int OpenSharedMemory(SimDeckCameraContext *context) {
                          context->header->headerSize == SIMDECK_CAMERA_HEADER_SIZE;
     uint64_t generation = reuseConsumerState ? context->header->generation + 1 : 1;
     uint64_t consumerRevision = reuseConsumerState ? context->header->consumerRevision + 1 : 0;
+    uint64_t consumerActivityTimestampNs = reuseConsumerState
+        ? context->header->consumerActivityTimestampNs
+        : 0;
     SimDeckCameraConsumerSlot consumers[SIMDECK_CAMERA_CONSUMER_SLOT_COUNT] = {0};
     if (reuseConsumerState) {
         memcpy(consumers, context->header->consumers, sizeof(consumers));
@@ -1161,6 +1174,7 @@ static int OpenSharedMemory(SimDeckCameraContext *context) {
     SimDeckCameraStoreMirrorMode(context->header, SIMDECK_CAMERA_MIRROR_AUTO);
     context->header->ringSize = SIMDECK_CAMERA_SURFACE_RING_SIZE;
     context->header->consumerRevision = consumerRevision;
+    context->header->consumerActivityTimestampNs = consumerActivityTimestampNs;
     context->surfaceGeneration = generation;
     context->nextSurfaceSlot = 0;
     return 0;

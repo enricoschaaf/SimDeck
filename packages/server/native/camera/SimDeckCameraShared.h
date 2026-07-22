@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #define SIMDECK_CAMERA_MAGIC 0x4d434453u
-#define SIMDECK_CAMERA_VERSION 4u
+#define SIMDECK_CAMERA_VERSION 5u
 #define SIMDECK_CAMERA_HEADER_SIZE 4096u
 #define SIMDECK_CAMERA_SURFACE_RING_SIZE 6u
 #define SIMDECK_CAMERA_CONSUMER_SLOT_COUNT 16u
@@ -68,6 +68,7 @@ typedef struct SimDeckCameraHeader {
     volatile uint64_t deliveredFrames;
     volatile uint64_t consumerDroppedFrames;
     volatile uint64_t consumerRevision;
+    volatile uint64_t consumerActivityTimestampNs;
     SimDeckCameraConsumerSlot consumers[SIMDECK_CAMERA_CONSUMER_SLOT_COUNT];
     char sourceLabel[240];
 } SimDeckCameraHeader;

@@ -74,6 +74,10 @@ static void RegisterPreviewLayer(CALayer *layer);
 static void SendPickerCapture(UIImagePickerController *picker);
 static AVCaptureConnection *CameraConnectionForOutput(AVCaptureOutput *output);
 
+static uint64_t NowNs(void) {
+    return (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000000000.0);
+}
+
 static CFStringRef ColorPrimariesAttachment(uint32_t value) {
     switch (value) {
         case SIMDECK_CAMERA_COLOR_PRIMARIES_ITU_R_709_2:
@@ -372,6 +376,7 @@ static void RegisterCameraConsumer(void) {
     __atomic_store_n(&gHeader->consumers[gConsumerSlot].count,
                      gProcessActiveConsumers,
                      __ATOMIC_RELEASE);
+    __atomic_store_n(&gHeader->consumerActivityTimestampNs, NowNs(), __ATOMIC_RELEASE);
     __sync_fetch_and_add(&gHeader->consumerRevision, 1);
 }
 
@@ -387,6 +392,7 @@ static void UnregisterCameraConsumer(void) {
                                      0);
         gConsumerSlot = -1;
     }
+    __atomic_store_n(&gHeader->consumerActivityTimestampNs, NowNs(), __ATOMIC_RELEASE);
     __sync_fetch_and_add(&gHeader->consumerRevision, 1);
 }
 

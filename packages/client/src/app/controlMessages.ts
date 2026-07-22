@@ -37,6 +37,7 @@ export interface CameraConsumerStateEvent {
   type: "camera.consumer-state";
   activeConsumers: number;
   cameraProcessId: number;
+  consumerActivityAgeMs: number | null;
   consumerRevision: number;
   framesConsumed: number;
   framesPublished: number;
@@ -79,6 +80,8 @@ export function parseControlServerEvent(
     if (
       typeof value.activeConsumers !== "number" ||
       typeof value.cameraProcessId !== "number" ||
+      (value.consumerActivityAgeMs !== null &&
+        typeof value.consumerActivityAgeMs !== "number") ||
       typeof value.consumerRevision !== "number" ||
       typeof value.framesConsumed !== "number" ||
       typeof value.framesPublished !== "number" ||
