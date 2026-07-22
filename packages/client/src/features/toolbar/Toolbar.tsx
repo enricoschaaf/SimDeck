@@ -1,6 +1,7 @@
 import {
   BoxModelIcon as DevToolsIcon,
   CardStackIcon as AppSwitcherIcon,
+  CircleIcon as RecordIcon,
   Half2Icon as AppearanceIcon,
   HomeIcon,
   LayersIcon as HierarchyIcon,
@@ -73,6 +74,8 @@ interface ToolbarProps {
   clearAppDataBusy?: boolean;
   onClearAppData?: () => void;
   recordingActive: boolean;
+  recordingLabel: string;
+  recordingStarting: boolean;
   recordingStopping: boolean;
   remoteStream?: boolean;
   search: string;
@@ -144,6 +147,8 @@ export function Toolbar({
   onToggleSoftwareKeyboard,
   onToggleTouchOverlay,
   recordingActive,
+  recordingLabel,
+  recordingStarting,
   recordingStopping,
   remoteStream = false,
   search,
@@ -223,11 +228,8 @@ export function Toolbar({
           onToggleDebug={onToggleDebug}
           onToggleDeviceChrome={onToggleDeviceChrome}
           onToggleMenu={onToggleMenu}
-          onToggleRecording={onToggleRecording}
           onToggleSoftwareKeyboard={onToggleSoftwareKeyboard}
           onToggleTouchOverlay={onToggleTouchOverlay}
-          recordingActive={recordingActive}
-          recordingStopping={recordingStopping}
           remoteStream={remoteStream}
           selectedSimulator={selectedSimulator}
           showBootButton={showBootButton}
@@ -334,6 +336,27 @@ export function Toolbar({
                 </button>
               </>
             ) : null}
+            <button
+              aria-label={
+                recordingActive ? "Stop Recording" : "Start Recording"
+              }
+              className={`tbtn icon-btn recording-btn ${recordingActive ? "recording-active" : ""} ${recordingStopping || recordingStarting ? "recording-pending" : ""}`}
+              data-tooltip={
+                selectedSimulator.isBooted
+                  ? recordingLabel
+                  : "Boot simulator to record"
+              }
+              disabled={
+                !selectedSimulator.isBooted ||
+                captureBusy ||
+                recordingStopping ||
+                recordingStarting
+              }
+              onClick={onToggleRecording}
+              type="button"
+            >
+              {recordingActive ? <StopIcon /> : <RecordIcon />}
+            </button>
           </div>
         ) : null}
         {error ? (

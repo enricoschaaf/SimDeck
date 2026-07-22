@@ -604,6 +604,7 @@ export function AppShell({
   );
   const [screenRecording, setScreenRecording] =
     useState<ScreenRecordingState | null>(null);
+  const [recordingStarting, setRecordingStarting] = useState(false);
   const [recordingNow, setRecordingNow] = useState(Date.now());
   const [failedStreamUDIDs, setFailedStreamUDIDs] = useState<Set<string>>(
     () => new Set(),
@@ -1255,19 +1256,17 @@ export function AppShell({
         isAndroidViewport,
       )
     : "";
-  const recordingOverlayLabel = screenRecording
-    ? screenRecording.phase === "stopping"
-      ? "Finalizing recording..."
-      : `Recording ${formatElapsedRecordingTime(screenRecording.startedAt, recordingNow)}`
-    : "";
+  const recordingLabel = recordingStarting
+    ? "Starting recording…"
+    : screenRecording?.phase === "stopping"
+      ? "Stopping recording…"
+      : screenRecording
+        ? `Stop recording · ${formatElapsedRecordingTime(screenRecording.startedAt, recordingNow)}`
+        : "Start recording";
   const captureOverlayLabel = appInstallOverlayLabel
     ? appInstallOverlayLabel
-    : recordingOverlayLabel || captureStatus?.label || "";
-  const captureOverlayBusy = Boolean(
-    isInstallingApp ||
-    captureStatus?.busy ||
-    screenRecording?.phase === "stopping",
-  );
+    : captureStatus?.label || "";
+  const captureOverlayBusy = Boolean(isInstallingApp || captureStatus?.busy);
   const autoViewportOffsetY =
     viewMode === "manual" ? 0 : -zoomDockReservedHeight / 2;
   const screenAspect = screenAspectRatio(effectiveDeviceNaturalSize);
@@ -2524,7 +2523,7 @@ export function AppShell({
   }
 
   async function toggleSimulatorRecording() {
-    if (!selectedSimulator) {
+    if (!selectedSimulator || recordingStarting) {
       return;
     }
     setLocalError("");
@@ -2551,9 +2550,6 @@ export function AppShell({
           )}.mp4`,
         );
         setScreenRecording(null);
-        const successLabel = "Recording downloaded";
-        setTransientCaptureStatus(successLabel, false);
-        clearCaptureStatusLater(successLabel);
       } catch (captureError) {
         setScreenRecording(recording);
         setLocalError(
@@ -2569,12 +2565,11 @@ export function AppShell({
       setLocalError("Boot the simulator before recording.");
       return;
     }
-    setTransientCaptureStatus("Starting recording...", true);
+    setRecordingStarting(true);
     try {
       const response = await startSimulatorScreenRecording(
         selectedSimulator.udid,
       );
-      setCaptureStatus(null);
       setRecordingNow(Date.now());
       setScreenRecording({
         phase: "recording",
@@ -2584,12 +2579,13 @@ export function AppShell({
         udid: selectedSimulator.udid,
       });
     } catch (captureError) {
-      setCaptureStatus(null);
       setLocalError(
         captureError instanceof Error
           ? captureError.message
           : "Recording failed.",
       );
+    } finally {
+      setRecordingStarting(false);
     }
   }
 
@@ -3929,7 +3925,7 @@ export function AppShell({
       />
       <Toolbar
         accessibilitySkeletonMode={accessibilitySkeletonMode}
-        captureBusy={Boolean(captureStatus?.busy)}
+        captureBusy={captureOverlayBusy}
         clearAppDataBusy={coreAppDataResetBusy}
         canInstallApp={canInstallApp}
         closeMenu={() => setMenuOpen(false)}
@@ -4070,7 +4066,9 @@ export function AppShell({
           setTouchOverlayVisible((current) => !current)
         }
         onAccessibilitySkeletonModeChange={setAccessibilitySkeletonMode}
-        recordingActive={screenRecording?.phase === "recording"}
+        recordingActive={Boolean(screenRecording)}
+        recordingLabel={recordingLabel}
+        recordingStarting={recordingStarting}
         recordingStopping={screenRecording?.phase === "stopping"}
         remoteStream={remoteStream}
         search={search}

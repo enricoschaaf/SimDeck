@@ -44,11 +44,8 @@ interface SimulatorMenuProps {
   onToggleDebug: () => void;
   onToggleDeviceChrome: () => void;
   onToggleMenu: () => void;
-  onToggleRecording: () => void;
   onToggleSoftwareKeyboard: () => void;
   onToggleTouchOverlay: () => void;
-  recordingActive: boolean;
-  recordingStopping: boolean;
   remoteStream?: boolean;
   selectedSimulator: SimulatorMetadata | null;
   showBootButton: boolean;
@@ -90,11 +87,8 @@ export function SimulatorMenu({
   onToggleDebug,
   onToggleDeviceChrome,
   onToggleMenu,
-  onToggleRecording,
   onToggleSoftwareKeyboard,
   onToggleTouchOverlay,
-  recordingActive,
-  recordingStopping,
   remoteStream = false,
   selectedSimulator,
   showBootButton,
@@ -302,20 +296,6 @@ export function SimulatorMenu({
                   }}
                 >
                   Screenshot With Bezel
-                </button>
-                <button
-                  className="menu-action"
-                  disabled={captureBusy || recordingStopping}
-                  onClick={() => {
-                    onToggleRecording();
-                    onCloseMenu();
-                  }}
-                >
-                  {recordingStopping
-                    ? "Stopping Recording"
-                    : recordingActive
-                      ? "Stop Recording"
-                      : "Start Recording"}
                 </button>
                 <button
                   className="menu-action"

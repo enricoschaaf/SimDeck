@@ -157,6 +157,20 @@
   transform: scaleX(-1);
 }
 
+.recording-btn.recording-active {
+  border-color: color-mix(in srgb, var(--error) 48%, transparent);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  color: var(--error);
+}
+
+.recording-btn.recording-active:hover {
+  background: color-mix(in srgb, var(--error) 22%, transparent);
+}
+
+.recording-btn.recording-pending {
+  opacity: 0.68;
+}
+
 .state-dot {
   width: 6px;
   height: 6px;

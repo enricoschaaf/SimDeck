@@ -13,11 +13,12 @@ const toolbarSource = readFileSync(
   new URL("../features/toolbar/Toolbar.tsx", import.meta.url),
   "utf8",
 );
+const simulatorMenuSource = readFileSync(
+  new URL("../features/simulators/SimulatorMenu.tsx", import.meta.url),
+  "utf8",
+);
 const confirmationDialogSource = readFileSync(
-  new URL(
-    "../features/simulators/ConfirmationDialog.tsx",
-    import.meta.url,
-  ),
+  new URL("../features/simulators/ConfirmationDialog.tsx", import.meta.url),
   "utf8",
 );
 
@@ -71,5 +72,14 @@ describe("embedded viewer layout", () => {
     expect(layoutCss).toMatch(
       /\.app-embedded \.toolbar \.tbtn\[data-tooltip\]::after\s*{[^}]*right:\s*calc\(100% \+ 10px\);[^}]*left:\s*auto;/s,
     );
+  });
+
+  it("keeps recording controls and status outside the simulator viewport", () => {
+    expect(toolbarSource).toContain("recording-btn");
+    expect(toolbarSource).toContain("data-tooltip={");
+    expect(toolbarSource).toContain("recordingLabel");
+    expect(simulatorMenuSource).not.toContain("Start Recording");
+    expect(simulatorMenuSource).not.toContain("Stop Recording");
+    expect(appShellSource).not.toContain("recordingOverlayLabel");
   });
 });
