@@ -1101,9 +1101,11 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    send_forward_get_listing(inspector_writer, connection_id, app_id).await?;
+    send_get_connected_applications(inspector_writer, connection_id).await?;
     let deadline = Instant::now() + WEBKIT_TARGET_ATTACH_TIMEOUT;
     let mut released_connections = HashSet::new();
+    let mut application_registered = false;
+    let mut next_refresh = Instant::now() + WEBKIT_DISCOVERY_REFRESH_INTERVAL;
 
     loop {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
@@ -1119,11 +1121,40 @@ where
         let packet = match packet {
             Ok(Ok(packet)) => packet,
             Ok(Err(error)) => return Err(error),
-            Err(_) => continue,
+            Err(_) => {
+                if Instant::now() >= next_refresh {
+                    if application_registered {
+                        send_forward_get_listing(inspector_writer, connection_id, app_id).await?;
+                    } else {
+                        send_get_connected_applications(inspector_writer, connection_id).await?;
+                    }
+                    next_refresh = Instant::now() + WEBKIT_DISCOVERY_REFRESH_INTERVAL;
+                }
+                continue;
+            }
         };
 
         let message = parse_rpc_message(&packet)?;
         match message.selector.as_str() {
+            "_rpc_reportConnectedApplicationList:" => {
+                if parse_application_list(&message.args)
+                    .iter()
+                    .any(|application| application.id == app_id)
+                {
+                    application_registered = true;
+                    send_forward_get_listing(inspector_writer, connection_id, app_id).await?;
+                    next_refresh = Instant::now() + WEBKIT_DISCOVERY_REFRESH_INTERVAL;
+                }
+            }
+            "_rpc_applicationConnected:" => {
+                if parse_application(&message.args)
+                    .is_some_and(|application| application.id == app_id)
+                {
+                    application_registered = true;
+                    send_forward_get_listing(inspector_writer, connection_id, app_id).await?;
+                    next_refresh = Instant::now() + WEBKIT_DISCOVERY_REFRESH_INTERVAL;
+                }
+            }
             "_rpc_applicationSentListing:" => {
                 if string_value(&message.args, "WIRApplicationIdentifierKey").as_deref()
                     != Some(app_id)
@@ -1166,6 +1197,7 @@ where
                 )
                 .await?;
                 send_forward_get_listing(inspector_writer, connection_id, app_id).await?;
+                next_refresh = Instant::now() + WEBKIT_DISCOVERY_REFRESH_INTERVAL;
             }
             "_rpc_applicationDisconnected:" => {
                 if string_value(&message.args, "WIRApplicationIdentifierKey").as_deref()
@@ -1178,12 +1210,17 @@ where
             }
             "_rpc_reportSetup:" => {
                 send_get_connected_applications(inspector_writer, connection_id).await?;
-                send_forward_get_listing(inspector_writer, connection_id, app_id).await?;
             }
-            "_rpc_reportCurrentState:"
-            | "_rpc_reportConnectedApplicationList:"
-            | "_rpc_reportConnectedDriverList:"
-            | "_rpc_applicationUpdated:" => {}
+            "_rpc_applicationUpdated:" => {
+                if string_value(&message.args, "WIRApplicationIdentifierKey").as_deref()
+                    == Some(app_id)
+                {
+                    application_registered = true;
+                    send_forward_get_listing(inspector_writer, connection_id, app_id).await?;
+                    next_refresh = Instant::now() + WEBKIT_DISCOVERY_REFRESH_INTERVAL;
+                }
+            }
+            "_rpc_reportCurrentState:" | "_rpc_reportConnectedDriverList:" => {}
             selector => debug!("Ignoring WebKit inspector attach preflight selector {selector}."),
         }
     }
@@ -2648,6 +2685,28 @@ mod tests {
         assert!(indicate_index < setup_index);
         assert!(source.contains("_rpc_forwardIndicateWebView:"));
         assert!(source.contains("Releasing stale WebKit inspector target owner"));
+    }
+
+    #[test]
+    fn webkit_attach_registers_the_application_before_requesting_its_listing() {
+        let source = include_str!("webkit.rs");
+        let start = source
+            .find("async fn prepare_webkit_target_for_attach")
+            .expect("attach preflight should exist");
+        let end = source[start..]
+            .find("async fn wait_for_webkit_socket_setup")
+            .map(|offset| start + offset)
+            .expect("socket setup wait should follow attach preflight");
+        let preflight = &source[start..end];
+        let connected_applications_index = preflight
+            .find("send_get_connected_applications(")
+            .expect("attach should request connected applications");
+        let listing_index = preflight
+            .find("send_forward_get_listing(")
+            .expect("attach should request the target listing");
+        assert!(connected_applications_index < listing_index);
+        assert!(preflight.contains("_rpc_reportConnectedApplicationList:"));
+        assert!(preflight.contains("_rpc_applicationConnected:"));
     }
 
     #[test]

@@ -20,12 +20,10 @@ const serverUrl = new URL(
 const commandTimeoutMs = Number(
   process.env.SIMDECK_INTEGRATION_SIMCTL_TIMEOUT_MS ?? "300000",
 );
-const externalCameraOverrideResponseId = 8_000_000_000_000_000;
 const keepSimulator = process.env.SIMDECK_INTEGRATION_KEEP_SIMULATOR === "1";
 const verbose = process.env.SIMDECK_INTEGRATION_VERBOSE === "1";
 
 let simulatorUDID = "";
-let inspectorSocket = null;
 let webServer = null;
 const browserEvents = [];
 
@@ -107,13 +105,18 @@ async function main() {
   });
   simdeckJson(["launch", simulatorUDID, bundleId]);
 
-  step("attach external Web Inspector before camera capture");
-  const target = await waitForWebKitTarget(fixtureUrl);
-  const inspector = await attachInspector(target.webSocketUrl);
-  inspectorSocket = inspector.socket;
+  step("wait for automatic WebKit camera override");
+  await waitForWebKitTarget(fixtureUrl);
 
   step("run permission-probe, stop, enumerate, environment capture");
-  startBrowserCapture(inspector);
+  runText(simdeck, [
+    "tap",
+    simulatorUDID,
+    "--label",
+    "Start camera",
+    "--wait-timeout-ms",
+    "10000",
+  ]);
   await allowCameraPermissionIfRequested();
   const environmentEvent = await waitForBrowserEvent(
     "environment-open",
@@ -268,87 +271,6 @@ async function waitForWebKitTarget(fixtureUrl) {
   }
   throw new Error(
     `Timed out waiting for SFSafariViewController target: ${JSON.stringify(discovery)}`,
-  );
-}
-
-async function attachInspector(webSocketUrl) {
-  const url = new URL(webSocketUrl, serverUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(url);
-  const receivedMethods = [];
-  const opened = new Promise((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error("Timed out attaching Web Inspector.")),
-      15_000,
-    );
-    socket.addEventListener(
-      "open",
-      () => {
-        clearTimeout(timeout);
-        resolve();
-      },
-      { once: true },
-    );
-    socket.addEventListener("error", reject, { once: true });
-  });
-  const pageTargetCreated = new Promise((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error("Web Inspector did not expose its page target.")),
-      15_000,
-    );
-    const onMessage = (event) => {
-      const message = JSON.parse(event.data);
-      receivedMethods.push(message.method ?? `response:${message.id}`);
-      const targetId =
-        message.method === "Target.targetCreated"
-          ? message.params.targetInfo.targetId
-          : message.id === externalCameraOverrideResponseId && !message.error
-            ? null
-            : undefined;
-      if (targetId === undefined) {
-        return;
-      }
-      clearTimeout(timeout);
-      socket.removeEventListener("message", onMessage);
-      resolve(targetId);
-    };
-    socket.addEventListener("message", onMessage);
-  });
-  let targetId;
-  try {
-    [, targetId] = await Promise.all([opened, pageTargetCreated]);
-  } catch (error) {
-    throw new Error(
-      `${error.message} Received: ${JSON.stringify(receivedMethods)}`,
-    );
-  }
-  return { socket, targetId };
-}
-
-function startBrowserCapture(inspector) {
-  const evaluation = {
-    id: 2,
-    method: "Runtime.evaluate",
-    params: {
-      expression: "document.querySelector('#start').click()",
-      emulateUserGesture: true,
-      awaitPromise: true,
-      returnByValue: true,
-    },
-  };
-  inspector.socket.send(
-    JSON.stringify(
-      inspector.targetId
-        ? {
-            id: 1,
-            method: "Target.sendMessageToTarget",
-            params: {
-              targetId: inspector.targetId,
-              message: JSON.stringify(evaluation),
-            },
-          }
-        : evaluation,
-    ),
   );
 }
 
@@ -562,10 +484,6 @@ async function retryRunText(command, args, options) {
 }
 
 function cleanup() {
-  if (inspectorSocket) {
-    inspectorSocket.close();
-    inspectorSocket = null;
-  }
   if (webServer) {
     webServer.close();
     webServer = null;
