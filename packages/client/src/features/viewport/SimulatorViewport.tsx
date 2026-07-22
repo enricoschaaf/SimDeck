@@ -5,6 +5,7 @@ import type {
   ChromeProfile,
   SimulatorMetadata,
 } from "../../api/types";
+import { RecordingStatus } from "../recording/RecordingStatus";
 import { ZoomControls } from "../toolbar/ZoomControls";
 import { DeviceChrome } from "./DeviceChrome";
 import type { TouchIndicator, ViewMode } from "./types";
@@ -76,6 +77,7 @@ interface SimulatorViewportProps {
   onZoomIn: () => void;
   onZoomOut: () => void;
   outerCanvasRef: Ref<HTMLDivElement | null>;
+  recordingElapsed: string | null;
   rotationQuarterTurns: number;
   screenAspect: string;
   screenClassName?: string;
@@ -157,6 +159,7 @@ export function SimulatorViewport({
   onZoomIn,
   onZoomOut,
   outerCanvasRef,
+  recordingElapsed,
   rotationQuarterTurns,
   screenAspect,
   screenClassName,
@@ -329,6 +332,7 @@ export function SimulatorViewport({
           </div>
         ) : null}
       </div>
+      <RecordingStatus elapsed={recordingElapsed} />
       {filesMediaPanel}
       {devtoolsPanel}
     </div>

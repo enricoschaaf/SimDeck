@@ -4070,7 +4070,6 @@ export function AppShell({
         }
         onAccessibilitySkeletonModeChange={setAccessibilitySkeletonMode}
         recordingActive={Boolean(screenRecording)}
-        recordingElapsed={recordingElapsed}
         recordingLabel={recordingLabel}
         recordingStarting={recordingStarting}
         recordingStopping={screenRecording?.phase === "stopping"}
@@ -4263,6 +4262,7 @@ export function AppShell({
         onZoomIn={() => applyZoom(effectiveZoom * ZOOM_STEP)}
         onZoomOut={() => applyZoom(effectiveZoom / ZOOM_STEP)}
         outerCanvasRef={handleOuterCanvasRef}
+        recordingElapsed={recordingElapsed}
         rotationQuarterTurns={viewportRotationQuarterTurns}
         screenAspect={screenAspect}
         screenClassName={isAndroidViewport ? "android-screen" : undefined}

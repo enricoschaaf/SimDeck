@@ -13,6 +13,14 @@ const toolbarSource = readFileSync(
   new URL("../features/toolbar/Toolbar.tsx", import.meta.url),
   "utf8",
 );
+const viewportSource = readFileSync(
+  new URL("../features/viewport/SimulatorViewport.tsx", import.meta.url),
+  "utf8",
+);
+const recordingStatusSource = readFileSync(
+  new URL("../features/recording/RecordingStatus.tsx", import.meta.url),
+  "utf8",
+);
 const simulatorMenuSource = readFileSync(
   new URL("../features/simulators/SimulatorMenu.tsx", import.meta.url),
   "utf8",
@@ -74,15 +82,20 @@ describe("embedded viewer layout", () => {
     );
   });
 
-  it("keeps recording controls and status outside the simulator viewport", () => {
+  it("keeps the recording control in the toolbar and floats status on the page", () => {
     expect(toolbarSource).toContain("recording-btn");
     expect(toolbarSource).toContain("data-tooltip={");
     expect(toolbarSource).toContain("recordingLabel");
-    expect(toolbarSource).toContain("recordingElapsed");
-    expect(toolbarSource).toContain("recording-status");
-    expect(toolbarSource).toContain("Recording ${recordingElapsed}");
+    expect(toolbarSource).not.toContain("recording-status");
+    expect(viewportSource).toContain(
+      "<RecordingStatus elapsed={recordingElapsed} />",
+    );
+    expect(recordingStatusSource).toContain("recording-status-floating");
+    expect(recordingStatusSource).toContain("Recording ${elapsed}");
+    expect(layoutCss).toMatch(
+      /\.recording-status-floating\s*{[^}]*bottom:\s*16px;[^}]*left:\s*16px;/s,
+    );
     expect(simulatorMenuSource).not.toContain("Start Recording");
     expect(simulatorMenuSource).not.toContain("Stop Recording");
-    expect(appShellSource).not.toContain("recordingOverlayLabel");
   });
 });
