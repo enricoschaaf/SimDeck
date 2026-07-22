@@ -15,7 +15,7 @@ describe("embedded viewer layout", () => {
       /\.app-embedded \.main\s*{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;/s,
     );
     expect(layoutCss).toMatch(
-      /\.app-embedded \.toolbar\s*{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;/s,
+      /\.app-embedded \.toolbar\s*{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;[^}]*align-self:\s*start;[^}]*margin-top:\s*12px;/s,
     );
   });
 

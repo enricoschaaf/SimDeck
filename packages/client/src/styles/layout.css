@@ -21,13 +21,14 @@
   position: relative;
   grid-column: 2;
   grid-row: 1;
-  align-self: center;
+  align-self: start;
   justify-self: end;
   flex-direction: column;
   width: 44px;
   max-width: none;
   height: auto;
   max-height: calc(100dvh - 24px);
+  margin-top: 12px;
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: 10px;
