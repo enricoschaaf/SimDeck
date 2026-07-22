@@ -1,4 +1,4 @@
-import { Cross2Icon } from "@radix-ui/react-icons";
+import { X as CloseIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 export function DialogHeader({
@@ -20,7 +20,7 @@ export function DialogHeader({
         title="Close"
         type="button"
       >
-        <Cross2Icon />
+        <CloseIcon />
       </button>
     </div>
   );

@@ -1,3 +1,9 @@
+import {
+  ChartNoAxesColumnIncreasing as PerformanceIcon,
+  ListTree as InspectorIcon,
+  MousePointer2 as PickerIcon,
+  SquareTerminal as ConsoleIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, MouseEvent, ReactNode } from "react";
 
@@ -453,66 +459,6 @@ export function AccessibilityInspector({
         }}
       />
     </aside>
-  );
-}
-
-function PickerIcon() {
-  return (
-    <svg fill="none" height="16" viewBox="0 0 16 16" width="16">
-      <path
-        d="M3.2 2.7 12.6 6l-4.1 1.4-1.7 4.4z"
-        stroke="currentColor"
-        strokeLinejoin="round"
-        strokeWidth="1.4"
-      />
-      <path
-        d="m8.1 7.5 3 3"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth="1.4"
-      />
-    </svg>
-  );
-}
-
-function InspectorIcon() {
-  return (
-    <svg fill="none" height="16" viewBox="0 0 16 16" width="16">
-      <path
-        d="M3 3h10v10H3zM5.5 6h5M5.5 8h5M5.5 10h3"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.35"
-      />
-    </svg>
-  );
-}
-
-function ConsoleIcon() {
-  return (
-    <svg fill="none" height="16" viewBox="0 0 16 16" width="16">
-      <path
-        d="m4 5 3 3-3 3M8.5 11h3.5"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.5"
-      />
-    </svg>
-  );
-}
-
-function PerformanceIcon() {
-  return (
-    <svg fill="none" height="16" viewBox="0 0 16 16" width="16">
-      <path
-        d="M2.5 11.5h11M3.5 10V6.5M6.5 10V3.5M9.5 10V7.5M12.5 10V5"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth="1.45"
-      />
-    </svg>
   );
 }
 

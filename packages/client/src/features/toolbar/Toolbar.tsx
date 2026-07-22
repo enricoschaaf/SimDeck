@@ -1,16 +1,16 @@
 import {
-  BoxModelIcon as DevToolsIcon,
-  CardStackIcon as AppSwitcherIcon,
-  CircleIcon as RecordIcon,
-  Half2Icon as AppearanceIcon,
-  HomeIcon,
-  LayersIcon as HierarchyIcon,
-  Link2Icon as OpenUrlIcon,
-  PlayIcon,
-  RotateCounterClockwiseIcon as RotateLeftIcon,
-  StopIcon,
-  TrashIcon,
-} from "@radix-ui/react-icons";
+  Circle as RecordIcon,
+  Contrast as AppearanceIcon,
+  House as HomeIcon,
+  Layers3 as HierarchyIcon,
+  Link2 as OpenUrlIcon,
+  PanelsTopLeft as AppSwitcherIcon,
+  Play as PlayIcon,
+  RotateCcw as RotateLeftIcon,
+  Square as StopIcon,
+  SquareTerminal as DevToolsIcon,
+  Trash2 as TrashIcon,
+} from "lucide-react";
 import { useEffect, useState, type RefObject } from "react";
 
 import type { SimulatorMetadata } from "../../api/types";

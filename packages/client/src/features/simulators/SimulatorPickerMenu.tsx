@@ -1,4 +1,4 @@
-import { PlusIcon } from "@radix-ui/react-icons";
+import { Plus as PlusIcon } from "lucide-react";
 import type { RefObject } from "react";
 
 import type { SimulatorMetadata } from "../../api/types";

@@ -1,4 +1,4 @@
-import { MixerHorizontalIcon as MenuIcon } from "@radix-ui/react-icons";
+import { SlidersHorizontal as MenuIcon } from "lucide-react";
 import type { RefObject } from "react";
 
 import type { SimulatorMetadata } from "../../api/types";

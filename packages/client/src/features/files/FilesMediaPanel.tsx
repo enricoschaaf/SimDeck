@@ -1,13 +1,13 @@
 import {
-  ArchiveIcon as FolderIcon,
-  Cross2Icon,
-  DownloadIcon,
-  FileIcon,
-  ImageIcon,
-  PlusIcon,
-  TrashIcon,
-  UploadIcon,
-} from "@radix-ui/react-icons";
+  Download as DownloadIcon,
+  File as FileIcon,
+  Folder as FolderIcon,
+  Image as ImageIcon,
+  Plus as PlusIcon,
+  Trash2 as TrashIcon,
+  Upload as UploadIcon,
+  X as CloseIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -271,7 +271,7 @@ export function FilesMediaPanel({
           onClick={onClose}
           type="button"
         >
-          <Cross2Icon />
+          <CloseIcon />
         </button>
       </header>
       <div className="files-media-tabs" role="tablist">

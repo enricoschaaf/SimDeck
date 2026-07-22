@@ -1,8 +1,8 @@
 import {
-  Cross2Icon,
-  HomeIcon as RadixHomeIcon,
-  ReloadIcon,
-} from "@radix-ui/react-icons";
+  House as HomeIcon,
+  RefreshCw as ReloadIcon,
+  X as CloseIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
@@ -923,7 +923,7 @@ export function DevToolsPanel({
           title="DevTools Home"
           type="button"
         >
-          <RadixHomeIcon />
+          <HomeIcon />
         </button>
         <select
           aria-label="DevTools Target"
@@ -975,7 +975,7 @@ export function DevToolsPanel({
           title="Close DevTools"
           type="button"
         >
-          <Cross2Icon />
+          <CloseIcon />
         </button>
       </div>
 
