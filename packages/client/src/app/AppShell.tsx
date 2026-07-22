@@ -90,6 +90,7 @@ import {
   CameraSettingsModal,
 } from "../features/simulators/CameraSettingsModal";
 import { useAutomaticCamera } from "../features/simulators/automaticCamera";
+import { ConfirmationDialog } from "../features/simulators/ConfirmationDialog";
 import { DeepLinkModal } from "../features/simulators/DeepLinkModal";
 import { NewSimulatorModal } from "../features/simulators/NewSimulatorModal";
 import { nextViewportWheelPanState } from "../features/viewport/viewportWheel";
@@ -596,6 +597,8 @@ export function AppShell({
     useState<ControlServerEvent | null>(null);
   const [localError, setLocalError] = useState("");
   const [coreAppDataResetBusy, setCoreAppDataResetBusy] = useState(false);
+  const [coreAppDataResetConfirmOpen, setCoreAppDataResetConfirmOpen] =
+    useState(false);
   const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(
     null,
   );
@@ -3961,12 +3964,7 @@ export function AppShell({
                 if (coreAppDataResetBusy) {
                   return;
                 }
-                setLocalError("");
-                setCoreAppDataResetBusy(true);
-                window.parent.postMessage(
-                  { type: "simdeck:reset-app-data" },
-                  "*",
-                );
+                setCoreAppDataResetConfirmOpen(true);
               }
             : undefined
         }
@@ -4099,6 +4097,19 @@ export function AppShell({
         )}
         touchOverlayVisible={touchOverlayVisible}
         devToolsVisible={devToolsVisible}
+      />
+      <ConfirmationDialog
+        confirmLabel="Clear data"
+        description="This clears the app's data, app groups, and simulator keychain. The app will be stopped and will not reopen automatically."
+        onCancel={() => setCoreAppDataResetConfirmOpen(false)}
+        onConfirm={() => {
+          setCoreAppDataResetConfirmOpen(false);
+          setLocalError("");
+          setCoreAppDataResetBusy(true);
+          window.parent.postMessage({ type: "simdeck:reset-app-data" }, "*");
+        }}
+        open={coreAppDataResetConfirmOpen}
+        title="Clear app data?"
       />
       <NewSimulatorModal
         onClose={() => setNewSimulatorOpen(false)}

@@ -128,12 +128,14 @@ export function SimulatorMenu({
   return (
     <div className="menu-wrap" ref={menuRef}>
       <button
+        aria-label="Simulator settings"
         className={`tbtn ${menuOpen ? "active" : ""}`}
+        data-tooltip="Simulator settings"
         onClick={(event) => {
           event.stopPropagation();
           onToggleMenu();
         }}
-        title="Open menu"
+        type="button"
       >
         <MenuIcon />
       </button>

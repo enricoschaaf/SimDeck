@@ -63,6 +63,18 @@
   border-radius: 7px;
 }
 
+.app-embedded .toolbar .tbtn[data-tooltip]::after {
+  top: 50%;
+  right: calc(100% + 10px);
+  left: auto;
+  transform: translate(4px, -50%);
+}
+
+.app-embedded .toolbar .tbtn[data-tooltip]:hover::after,
+.app-embedded .toolbar .tbtn[data-tooltip]:focus-visible::after {
+  transform: translate(0, -50%);
+}
+
 .app-embedded .toolbar .menu-popover {
   top: 0;
   right: calc(100% + 10px);
@@ -417,5 +429,18 @@
     left: 8px;
     width: auto;
     max-height: calc(100dvh - 68px);
+  }
+
+  .app-embedded .toolbar .tbtn[data-tooltip]::after {
+    top: auto;
+    right: auto;
+    bottom: calc(100% + 10px);
+    left: 50%;
+    transform: translate(-50%, 4px);
+  }
+
+  .app-embedded .toolbar .tbtn[data-tooltip]:hover::after,
+  .app-embedded .toolbar .tbtn[data-tooltip]:focus-visible::after {
+    transform: translate(-50%, 0);
   }
 }

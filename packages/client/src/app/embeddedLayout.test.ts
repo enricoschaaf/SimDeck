@@ -13,6 +13,13 @@ const toolbarSource = readFileSync(
   new URL("../features/toolbar/Toolbar.tsx", import.meta.url),
   "utf8",
 );
+const confirmationDialogSource = readFileSync(
+  new URL(
+    "../features/simulators/ConfirmationDialog.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 describe("embedded viewer layout", () => {
   it("reserves a right-side column for controls outside the viewport", () => {
@@ -55,5 +62,14 @@ describe("embedded viewer layout", () => {
     expect(appShellSource).toContain('{ type: "simdeck:reset-app-data" }');
     expect(toolbarSource).toContain('aria-label="Clear app data"');
     expect(toolbarSource).toContain("<TrashIcon />");
+    expect(toolbarSource).toContain('data-tooltip="Developer tools"');
+    expect(confirmationDialogSource).toContain('role="alertdialog"');
+    expect(confirmationDialogSource).toContain("autoFocus");
+  });
+
+  it("places embedded toolbar tooltips beside the controls", () => {
+    expect(layoutCss).toMatch(
+      /\.app-embedded \.toolbar \.tbtn\[data-tooltip\]::after\s*{[^}]*right:\s*calc\(100% \+ 10px\);[^}]*left:\s*auto;/s,
+    );
   });
 });

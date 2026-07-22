@@ -189,8 +189,8 @@ export function Toolbar({
         <button
           aria-label="Toggle View Hierarchy"
           className={`tbtn icon-btn ${hierarchyVisible ? "active" : ""}`}
+          data-tooltip="View hierarchy"
           onClick={onToggleHierarchy}
-          title="Toggle View Hierarchy"
           type="button"
         >
           <HierarchyIcon />
@@ -266,8 +266,8 @@ export function Toolbar({
               <button
                 aria-label="Boot"
                 className="tbtn icon-btn accent"
+                data-tooltip="Boot"
                 onClick={onBoot}
-                title="Boot"
               >
                 <PlayIcon />
               </button>
@@ -276,8 +276,8 @@ export function Toolbar({
               <button
                 aria-label="Stop"
                 className="tbtn icon-btn"
+                data-tooltip="Stop"
                 onClick={onShutdown}
-                title="Stop"
               >
                 <StopIcon />
               </button>
@@ -285,32 +285,32 @@ export function Toolbar({
             <button
               aria-label="Open URL"
               className="tbtn icon-btn toolbar-mobile-hidden"
+              data-tooltip="Open URL"
               onClick={onOpenUrlPrompt}
-              title="Open URL"
             >
               <OpenUrlIcon />
             </button>
             <button
               aria-label="Home"
               className="tbtn icon-btn toolbar-mobile-hidden"
+              data-tooltip="Home"
               onClick={onHome}
-              title="Home"
             >
               <HomeIcon />
             </button>
             <button
               aria-label="App Switcher"
               className="tbtn icon-btn toolbar-mobile-hidden"
+              data-tooltip="App switcher"
               onClick={onOpenAppSwitcher}
-              title="App Switcher"
             >
               <AppSwitcherIcon />
             </button>
             <button
               aria-label="Toggle Appearance"
               className="tbtn icon-btn toolbar-mobile-hidden"
+              data-tooltip="Appearance"
               onClick={onToggleAppearance}
-              title="Toggle Appearance"
             >
               <AppearanceIcon />
             </button>
@@ -319,16 +319,16 @@ export function Toolbar({
                 <button
                   aria-label="Rotate Left"
                   className="tbtn icon-btn toolbar-mobile-hidden toolbar-wide-hidden"
+                  data-tooltip="Rotate left"
                   onClick={onRotateLeft}
-                  title="Rotate Left"
                 >
                   <RotateLeftIcon />
                 </button>
                 <button
                   aria-label="Rotate Right"
                   className="tbtn icon-btn toolbar-mobile-hidden"
+                  data-tooltip="Rotate right"
                   onClick={onRotateRight}
-                  title="Rotate Right"
                 >
                   <RotateLeftIcon className="rotate-right-icon" />
                 </button>
@@ -349,8 +349,8 @@ export function Toolbar({
         <button
           aria-label="Toggle DevTools"
           className={`tbtn icon-btn ${devToolsVisible ? "active" : ""}`}
+          data-tooltip="Developer tools"
           onClick={onToggleDevTools}
-          title="Toggle DevTools"
           type="button"
         >
           <DevToolsIcon />
@@ -359,9 +359,11 @@ export function Toolbar({
           <button
             aria-label="Clear app data"
             className="tbtn icon-btn"
+            data-tooltip={
+              clearAppDataBusy ? "Clearing app data…" : "Clear app data"
+            }
             disabled={clearAppDataBusy}
             onClick={onClearAppData}
-            title={clearAppDataBusy ? "Clearing app data…" : "Clear app data"}
             type="button"
           >
             <TrashIcon />
