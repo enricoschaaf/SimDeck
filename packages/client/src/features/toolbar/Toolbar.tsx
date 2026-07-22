@@ -8,6 +8,7 @@ import {
   PlayIcon,
   RotateCounterClockwiseIcon as RotateLeftIcon,
   StopIcon,
+  TrashIcon,
 } from "@radix-ui/react-icons";
 import { useEffect, useState, type RefObject } from "react";
 
@@ -69,6 +70,8 @@ interface ToolbarProps {
   onToggleSoftwareKeyboard: () => void;
   onToggleTouchOverlay: () => void;
   captureBusy: boolean;
+  clearAppDataBusy?: boolean;
+  onClearAppData?: () => void;
   recordingActive: boolean;
   recordingStopping: boolean;
   remoteStream?: boolean;
@@ -92,6 +95,7 @@ interface ToolbarProps {
 export function Toolbar({
   accessibilitySkeletonMode,
   captureBusy,
+  clearAppDataBusy = false,
   closeSimulatorMenu,
   closeMenu,
   debugVisible,
@@ -111,6 +115,7 @@ export function Toolbar({
   onCaptureScreenshot,
   onCaptureScreenshotWithBezel,
   onChangeSearch,
+  onClearAppData,
   onDismissKeyboard,
   onHome,
   onInstallAppPrompt,
@@ -350,6 +355,18 @@ export function Toolbar({
         >
           <DevToolsIcon />
         </button>
+        {onClearAppData ? (
+          <button
+            aria-label="Clear app data"
+            className="tbtn icon-btn"
+            disabled={clearAppDataBusy}
+            onClick={onClearAppData}
+            title={clearAppDataBusy ? "Clearing app data…" : "Clear app data"}
+            type="button"
+          >
+            <TrashIcon />
+          </button>
+        ) : null}
       </div>
     </header>
   );

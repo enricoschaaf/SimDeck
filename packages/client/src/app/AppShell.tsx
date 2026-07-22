@@ -540,6 +540,7 @@ export function AppShell({
 }: AppShellProps = {}) {
   configureSimDeckClient({ apiRoot });
   const embedded = readEmbeddedQueryParam();
+  const coreAppDataResetAvailable = readCoreAppDataResetQueryParam();
   const benchmarkCamera = cameraBenchmarkMode();
   const resolvedFixedSimulatorUDID =
     fixedSimulatorUDID ?? (embedded ? (readDeviceQueryParam() ?? null) : null);
@@ -594,6 +595,7 @@ export function AppShell({
   const [filesMediaEvent, setFilesMediaEvent] =
     useState<ControlServerEvent | null>(null);
   const [localError, setLocalError] = useState("");
+  const [coreAppDataResetBusy, setCoreAppDataResetBusy] = useState(false);
   const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(
     null,
   );
@@ -715,6 +717,26 @@ export function AppShell({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!coreAppDataResetAvailable || window.parent === window) {
+      return;
+    }
+    const handleResetResult = (event: MessageEvent) => {
+      if (
+        event.source !== window.parent ||
+        event.data?.type !== "simdeck:reset-app-data-result"
+      ) {
+        return;
+      }
+      setCoreAppDataResetBusy(false);
+      if (!event.data.ok) {
+        setLocalError("Could not clear app data.");
+      }
+    };
+    window.addEventListener("message", handleResetResult);
+    return () => window.removeEventListener("message", handleResetResult);
+  }, [coreAppDataResetAvailable]);
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const simulatorMenuRef = useRef<HTMLDivElement | null>(null);
@@ -3905,6 +3927,7 @@ export function AppShell({
       <Toolbar
         accessibilitySkeletonMode={accessibilitySkeletonMode}
         captureBusy={Boolean(captureStatus?.busy)}
+        clearAppDataBusy={coreAppDataResetBusy}
         canInstallApp={canInstallApp}
         closeMenu={() => setMenuOpen(false)}
         closeSimulatorMenu={() => setSimulatorMenuOpen(false)}
@@ -3932,6 +3955,21 @@ export function AppShell({
           void downloadSimulatorScreenshot(true);
         }}
         onChangeSearch={setSearch}
+        onClearAppData={
+          coreAppDataResetAvailable
+            ? () => {
+                if (coreAppDataResetBusy) {
+                  return;
+                }
+                setLocalError("");
+                setCoreAppDataResetBusy(true);
+                window.parent.postMessage(
+                  { type: "simdeck:reset-app-data" },
+                  "*",
+                );
+              }
+            : undefined
+        }
         onDismissKeyboard={() => {
           if (!selectedSimulator) {
             return;
@@ -4362,6 +4400,16 @@ function readEmbeddedQueryParam(): boolean {
     return false;
   }
   return new URLSearchParams(window.location.search).get("embedded") === "1";
+}
+
+function readCoreAppDataResetQueryParam(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return (
+    readEmbeddedQueryParam() &&
+    new URLSearchParams(window.location.search).get("coreAppDataReset") === "1"
+  );
 }
 
 function isStreamAttachFailure(message: string): boolean {

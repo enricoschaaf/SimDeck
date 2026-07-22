@@ -5,6 +5,14 @@ const layoutCss = readFileSync(
   new URL("../styles/layout.css", import.meta.url),
   "utf8",
 );
+const appShellSource = readFileSync(
+  new URL("./AppShell.tsx", import.meta.url),
+  "utf8",
+);
+const toolbarSource = readFileSync(
+  new URL("../features/toolbar/Toolbar.tsx", import.meta.url),
+  "utf8",
+);
 
 describe("embedded viewer layout", () => {
   it("reserves a right-side column for controls outside the viewport", () => {
@@ -40,5 +48,12 @@ describe("embedded viewer layout", () => {
     );
     expect(layoutCss).toContain(".webkit-panel {");
     expect(layoutCss).toContain(".hierarchy-panel {");
+  });
+
+  it("exposes Core app-data reset as an embedded sidebar action", () => {
+    expect(appShellSource).toContain('get("coreAppDataReset") === "1"');
+    expect(appShellSource).toContain('{ type: "simdeck:reset-app-data" }');
+    expect(toolbarSource).toContain('aria-label="Clear app data"');
+    expect(toolbarSource).toContain("<TrashIcon />");
   });
 });
