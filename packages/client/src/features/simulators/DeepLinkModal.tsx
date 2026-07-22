@@ -227,9 +227,6 @@ export function DeepLinkModal({
           ) : null}
         </div>
         <div className="new-sim-actions deep-link-actions">
-          <span className="deep-link-target">
-            {selectedSimulator?.name ?? "No simulator selected"}
-          </span>
           <span className="new-sim-action-spacer" />
           <button className="new-sim-button" onClick={onClose} type="button">
             Done

@@ -1,5 +1,4 @@
 import {
-  Circle as RecordIcon,
   Contrast as AppearanceIcon,
   House as HomeIcon,
   Layers3 as HierarchyIcon,
@@ -10,6 +9,7 @@ import {
   Square as StopIcon,
   SquareTerminal as DevToolsIcon,
   Trash2 as TrashIcon,
+  Video as RecordIcon,
 } from "lucide-react";
 import { useEffect, useState, type RefObject } from "react";
 
@@ -74,6 +74,7 @@ interface ToolbarProps {
   clearAppDataBusy?: boolean;
   onClearAppData?: () => void;
   recordingActive: boolean;
+  recordingElapsed: string | null;
   recordingLabel: string;
   recordingStarting: boolean;
   recordingStopping: boolean;
@@ -147,6 +148,7 @@ export function Toolbar({
   onToggleSoftwareKeyboard,
   onToggleTouchOverlay,
   recordingActive,
+  recordingElapsed,
   recordingLabel,
   recordingStarting,
   recordingStopping,
@@ -357,6 +359,16 @@ export function Toolbar({
             >
               {recordingActive ? <StopIcon /> : <RecordIcon />}
             </button>
+            {recordingActive && recordingElapsed ? (
+              <output
+                aria-label={`Recording ${recordingElapsed}`}
+                aria-live="off"
+                className="recording-status"
+              >
+                <span aria-hidden="true" className="recording-status-dot" />
+                <span>{recordingElapsed}</span>
+              </output>
+            ) : null}
           </div>
         ) : null}
         {error ? (

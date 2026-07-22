@@ -45,6 +45,16 @@
   gap: 3px;
 }
 
+.app-embedded .recording-status {
+  flex-direction: column;
+  gap: 3px;
+  min-width: 30px;
+  width: 30px;
+  height: auto;
+  padding: 5px 0;
+  font-size: 9px;
+}
+
 .app-embedded .toolbar-left,
 .app-embedded .toolbar-right {
   flex: 0 0 auto;
@@ -412,6 +422,16 @@
   .app-embedded .toolbar-actions {
     flex-direction: row;
     width: auto;
+  }
+
+  .app-embedded .recording-status {
+    flex-direction: row;
+    gap: 5px;
+    width: auto;
+    min-width: 48px;
+    height: 24px;
+    padding: 0 7px;
+    font-size: 10px;
   }
 
   .app-embedded .toolbar-right {

@@ -78,6 +78,9 @@ describe("embedded viewer layout", () => {
     expect(toolbarSource).toContain("recording-btn");
     expect(toolbarSource).toContain("data-tooltip={");
     expect(toolbarSource).toContain("recordingLabel");
+    expect(toolbarSource).toContain("recordingElapsed");
+    expect(toolbarSource).toContain("recording-status");
+    expect(toolbarSource).toContain("Recording ${recordingElapsed}");
     expect(simulatorMenuSource).not.toContain("Start Recording");
     expect(simulatorMenuSource).not.toContain("Stop Recording");
     expect(appShellSource).not.toContain("recordingOverlayLabel");

@@ -425,7 +425,7 @@ function formatElapsedRecordingTime(startedAt: number, now: number): string {
   const elapsedSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = elapsedSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function simulatorDisplaySize(
@@ -1263,6 +1263,9 @@ export function AppShell({
       : screenRecording
         ? `Stop recording · ${formatElapsedRecordingTime(screenRecording.startedAt, recordingNow)}`
         : "Start recording";
+  const recordingElapsed = screenRecording
+    ? formatElapsedRecordingTime(screenRecording.startedAt, recordingNow)
+    : null;
   const captureOverlayLabel = appInstallOverlayLabel
     ? appInstallOverlayLabel
     : captureStatus?.label || "";
@@ -4067,6 +4070,7 @@ export function AppShell({
         }
         onAccessibilitySkeletonModeChange={setAccessibilitySkeletonMode}
         recordingActive={Boolean(screenRecording)}
+        recordingElapsed={recordingElapsed}
         recordingLabel={recordingLabel}
         recordingStarting={recordingStarting}
         recordingStopping={screenRecording?.phase === "stopping"}
