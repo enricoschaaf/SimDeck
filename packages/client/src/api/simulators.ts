@@ -232,10 +232,11 @@ export async function stopCameraSimulation(
 export async function createCameraWebRtcAnswer(
   udid: string,
   offer: { clientId: string; sdp: string; type: "offer" },
+  options: RequestInit = {},
 ): Promise<RTCSessionDescriptionInit> {
   return apiRequest<RTCSessionDescriptionInit>(
     `/api/simulators/${encodeURIComponent(udid)}/camera/webrtc`,
-    { body: JSON.stringify(offer), method: "POST" },
+    { ...options, body: JSON.stringify(offer), method: "POST" },
   );
 }
 

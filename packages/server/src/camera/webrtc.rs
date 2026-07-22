@@ -40,7 +40,7 @@ const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024 - 6;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CameraWebRtcOffer {
-    pub client_id: Option<String>,
+    pub client_id: String,
     pub sdp: String,
     #[serde(rename = "type")]
     pub kind: String,
@@ -177,8 +177,13 @@ fn update_atomic_maximum(target: &AtomicU64, value: u64) {
     }
 }
 
-static CAMERA_WEBRTC_SESSIONS: OnceLock<Mutex<HashMap<String, Arc<CameraWebRtcSession>>>> =
-    OnceLock::new();
+#[derive(Default)]
+struct CameraWebRtcRegistry {
+    latest_client_ids: HashMap<String, String>,
+    sessions: HashMap<String, Arc<CameraWebRtcSession>>,
+}
+
+static CAMERA_WEBRTC_REGISTRY: OnceLock<Mutex<CameraWebRtcRegistry>> = OnceLock::new();
 
 pub async fn create_answer(
     udid: String,
@@ -189,11 +194,18 @@ pub async fn create_answer(
             "Camera WebRTC payload must include type `offer`.",
         ));
     }
+    let client_id = payload.client_id.trim().to_owned();
+    if client_id.is_empty() {
+        return Err(AppError::bad_request(
+            "Camera WebRTC payload must include clientId.",
+        ));
+    }
     if !payload.sdp.to_ascii_lowercase().contains("h264/90000") {
         return Err(AppError::bad_request(
             "This browser did not offer H.264 camera video.",
         ));
     }
+    begin_attempt(&udid, &client_id);
 
     let mut media_engine = MediaEngine::default();
     for (index, sdp_fmtp_line) in H264_FMTP_LINES.iter().enumerate() {
@@ -374,17 +386,29 @@ pub async fn create_answer(
     }
 
     let session = Arc::new(CameraWebRtcSession {
-        cancelled,
-        peer_connection,
+        cancelled: cancelled.clone(),
+        peer_connection: peer_connection.clone(),
         metrics,
     });
-    let previous = sessions().lock().unwrap().insert(udid, session);
+    let previous = {
+        let mut registry = registry().lock().unwrap();
+        if !is_current_attempt(&registry, &udid, &client_id) {
+            None
+        } else {
+            Some(registry.sessions.insert(udid.clone(), session.clone()))
+        }
+    };
+    let Some(previous) = previous else {
+        cancelled.store(true, Ordering::Release);
+        let _ = peer_connection.close().await;
+        return Err(AppError::conflict(
+            "Camera WebRTC offer was superseded by a newer request.",
+        ));
+    };
     if let Some(previous) = previous {
         previous.cancelled.store(true, Ordering::Release);
         let _ = previous.peer_connection.close().await;
     }
-    let _ = payload.client_id;
-
     Ok(CameraWebRtcAnswer {
         sdp: local_description.sdp,
         kind: "answer".to_owned(),
@@ -392,7 +416,11 @@ pub async fn create_answer(
 }
 
 pub async fn stop(udid: &str) {
-    let session = sessions().lock().unwrap().remove(udid);
+    let session = {
+        let mut registry = registry().lock().unwrap();
+        registry.latest_client_ids.remove(udid);
+        registry.sessions.remove(udid)
+    };
     if let Some(session) = session {
         session.cancelled.store(true, Ordering::Release);
         let _ = session.peer_connection.close().await;
@@ -400,9 +428,10 @@ pub async fn stop(udid: &str) {
 }
 
 pub fn enrich_status(udid: &str, object: &mut Map<String, Value>) {
-    let metrics = sessions()
+    let metrics = registry()
         .lock()
         .unwrap()
+        .sessions
         .get(udid)
         .map(|session| session.metrics.clone());
     let Some(metrics) = metrics else {
@@ -431,8 +460,23 @@ pub fn enrich_status(udid: &str, object: &mut Map<String, Value>) {
     );
 }
 
-fn sessions() -> &'static Mutex<HashMap<String, Arc<CameraWebRtcSession>>> {
-    CAMERA_WEBRTC_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+fn registry() -> &'static Mutex<CameraWebRtcRegistry> {
+    CAMERA_WEBRTC_REGISTRY.get_or_init(|| Mutex::new(CameraWebRtcRegistry::default()))
+}
+
+fn begin_attempt(udid: &str, client_id: &str) {
+    registry()
+        .lock()
+        .unwrap()
+        .latest_client_ids
+        .insert(udid.to_owned(), client_id.to_owned());
+}
+
+fn is_current_attempt(registry: &CameraWebRtcRegistry, udid: &str, client_id: &str) -> bool {
+    registry
+        .latest_client_ids
+        .get(udid)
+        .is_some_and(|latest| latest == client_id)
 }
 
 async fn receive_h264_track(
@@ -898,8 +942,8 @@ impl RtpReorderBuffer {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_data_channel_message, CameraDataChannelMessage, CameraWebRtcMetrics,
-        H264FrameAssembler, RtpReorderBuffer,
+        apply_data_channel_message, is_current_attempt, CameraDataChannelMessage,
+        CameraWebRtcMetrics, CameraWebRtcRegistry, H264FrameAssembler, RtpReorderBuffer,
     };
     use bytes::Bytes;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -930,6 +974,20 @@ mod tests {
         assert!(close_peer);
         assert!(!metrics.connected.load(Ordering::Relaxed));
         assert!(cancelled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn stale_camera_offer_cannot_replace_the_latest_attempt() {
+        let mut registry = CameraWebRtcRegistry::default();
+        registry
+            .latest_client_ids
+            .insert("device-a".to_owned(), "first".to_owned());
+        registry
+            .latest_client_ids
+            .insert("device-a".to_owned(), "second".to_owned());
+
+        assert!(!is_current_attempt(&registry, "device-a", "first"));
+        assert!(is_current_attempt(&registry, "device-a", "second"));
     }
 
     #[test]

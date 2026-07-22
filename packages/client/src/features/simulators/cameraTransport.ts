@@ -95,14 +95,17 @@ export function cameraH264Codecs(
 export async function startCameraFeed({
   onError,
   onStats,
+  signal,
   stream,
   udid,
 }: {
   onError: (message: string) => void;
   onStats?: (stats: CameraStats) => void;
+  signal?: AbortSignal;
   stream: MediaStream;
   udid: string;
 }): Promise<CameraFeed> {
+  throwIfCameraFeedAborted(signal);
   const track = stream.getVideoTracks()[0];
   if (!track) {
     throw new Error("The selected camera did not provide a video track.");
@@ -128,6 +131,15 @@ export async function startCameraFeed({
     { ordered: true },
   );
   let stopped = false;
+  const closeConnection = () => {
+    controlChannel.close();
+    peerConnection.close();
+  };
+  const onAbort = () => {
+    stopped = true;
+    closeConnection();
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
   const fail = (message: string) => {
     if (!stopped) {
       onError(message);
@@ -179,7 +191,8 @@ export async function startCameraFeed({
   try {
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
-    await waitForIceGathering(peerConnection);
+    await waitForIceGathering(peerConnection, signal);
+    throwIfCameraFeedAborted(signal);
     const localDescription = peerConnection.localDescription;
     if (!localDescription?.sdp) {
       throw new Error("The browser did not create a camera WebRTC offer.");
@@ -187,16 +200,21 @@ export async function startCameraFeed({
     if (!/a=rtpmap:\d+ H264\/90000/i.test(localDescription.sdp)) {
       throw new Error("The browser did not offer H.264 camera video.");
     }
-    const answer = await createCameraWebRtcAnswer(udid, {
-      clientId: crypto.randomUUID(),
-      sdp: localDescription.sdp,
-      type: "offer",
-    });
+    const answer = await createCameraWebRtcAnswer(
+      udid,
+      {
+        clientId: crypto.randomUUID(),
+        sdp: localDescription.sdp,
+        type: "offer",
+      },
+      { signal },
+    );
+    throwIfCameraFeedAborted(signal);
     await peerConnection.setRemoteDescription(answer);
-    await waitForCameraReady(controlChannel, peerConnection);
+    await waitForCameraReady(controlChannel, peerConnection, signal);
   } catch (error) {
-    controlChannel.close();
-    peerConnection.close();
+    signal?.removeEventListener("abort", onAbort);
+    closeConnection();
     throw error;
   }
 
@@ -215,6 +233,7 @@ export async function startCameraFeed({
         return;
       }
       stopped = true;
+      signal?.removeEventListener("abort", onAbort);
       stats.stop();
       if (controlChannel.readyState === "open") {
         controlChannel.send(JSON.stringify({ event: "stopping" }));
@@ -233,6 +252,7 @@ export function cameraMaxBitrate(width: number, height: number): number {
 async function waitForCameraReady(
   channel: RTCDataChannel,
   peerConnection: RTCPeerConnection,
+  signal?: AbortSignal,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -244,6 +264,7 @@ async function waitForCameraReady(
       window.clearTimeout(timeout);
       channel.removeEventListener("message", onMessage);
       peerConnection.removeEventListener("connectionstatechange", onState);
+      signal?.removeEventListener("abort", onAbort);
       error ? reject(error) : resolve();
     };
     const onMessage = (event: MessageEvent) => {
@@ -266,16 +287,24 @@ async function waitForCameraReady(
         finish(new Error("Camera WebRTC connection failed."));
       }
     };
+    const onAbort = () => finish(cameraFeedAbortError());
     const timeout = window.setTimeout(
       () => finish(new Error("Camera WebRTC connection timed out.")),
       CONNECTION_TIMEOUT_MS,
     );
     channel.addEventListener("message", onMessage);
     peerConnection.addEventListener("connectionstatechange", onState);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+    }
   });
 }
 
-function waitForIceGathering(peerConnection: RTCPeerConnection): Promise<void> {
+function waitForIceGathering(
+  peerConnection: RTCPeerConnection,
+  signal?: AbortSignal,
+): Promise<void> {
   if (peerConnection.iceGatheringState === "complete") {
     return Promise.resolve();
   }
@@ -289,6 +318,7 @@ function waitForIceGathering(peerConnection: RTCPeerConnection): Promise<void> {
       window.clearTimeout(timeout);
       peerConnection.removeEventListener("icecandidate", onCandidate);
       peerConnection.removeEventListener("icegatheringstatechange", onState);
+      signal?.removeEventListener("abort", finish);
       resolve();
     };
     const onCandidate = (event: RTCPeerConnectionIceEvent) => {
@@ -304,7 +334,25 @@ function waitForIceGathering(peerConnection: RTCPeerConnection): Promise<void> {
     const timeout = window.setTimeout(finish, ICE_GATHER_TIMEOUT_MS);
     peerConnection.addEventListener("icecandidate", onCandidate);
     peerConnection.addEventListener("icegatheringstatechange", onState);
+    signal?.addEventListener("abort", finish, { once: true });
+    if (signal?.aborted) {
+      finish();
+    }
   });
+}
+
+export function isCameraFeedAbort(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function throwIfCameraFeedAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw cameraFeedAbortError();
+  }
+}
+
+function cameraFeedAbortError(): DOMException {
+  return new DOMException("Camera WebRTC setup was cancelled.", "AbortError");
 }
 
 class CameraStatsReporter {

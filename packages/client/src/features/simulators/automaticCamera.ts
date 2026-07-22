@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CameraConsumerStateEvent } from "../../app/controlMessages";
 import {
   cameraVideoConstraints,
+  isCameraFeedAbort,
   startCameraFeed,
   videoDevices,
   type CameraDevice,
@@ -95,6 +96,7 @@ export function useAutomaticCamera({
   const activeConsumerCountRef = useRef(0);
   const cameraDemandedRef = useRef(false);
   const cameraStartingRef = useRef(false);
+  const setupAbortRef = useRef<AbortController | null>(null);
   const stopTimerRef = useRef<number | null>(null);
   const requestGenerationRef = useRef(0);
   const selectedUdidRef = useRef(udid);
@@ -106,6 +108,8 @@ export function useAutomaticCamera({
     }
     cameraDemandedRef.current = false;
     cameraStartingRef.current = false;
+    setupAbortRef.current?.abort();
+    setupAbortRef.current = null;
     requestGenerationRef.current += 1;
     feedRef.current?.stop();
     feedRef.current = null;
@@ -159,17 +163,32 @@ export function useAutomaticCamera({
         return;
       }
       cameraStartingRef.current = true;
+      const setupAbort = new AbortController();
+      setupAbortRef.current = setupAbort;
+      const releaseSetup = () => {
+        if (setupAbortRef.current === setupAbort) {
+          setupAbortRef.current = null;
+        }
+      };
       const generation = ++requestGenerationRef.current;
       setError("");
 
       const permission = await queryCameraPermission();
+      if (
+        requestGenerationRef.current !== generation ||
+        setupAbort.signal.aborted
+      ) {
+        return;
+      }
       if (!allowPermissionPrompt && permission !== "granted") {
         cameraStartingRef.current = false;
+        releaseSetup();
         setPhase("waiting");
         return;
       }
       if (permission === "denied") {
         cameraStartingRef.current = false;
+        releaseSetup();
         setPhase("blocked");
         setError(cameraRecoveryMessage());
         return;
@@ -190,6 +209,7 @@ export function useAutomaticCamera({
           selectedUdidRef.current !== udid
         ) {
           cameraStartingRef.current = false;
+          releaseSetup();
           stopStream(stream);
           return;
         }
@@ -201,6 +221,7 @@ export function useAutomaticCamera({
             setPhase("error");
           },
           onStats: setStats,
+          signal: setupAbort.signal,
           stream,
           udid,
         });
@@ -210,11 +231,13 @@ export function useAutomaticCamera({
           selectedUdidRef.current !== udid
         ) {
           cameraStartingRef.current = false;
+          releaseSetup();
           feed.stop();
           stopStream(stream);
           return;
         }
         cameraStartingRef.current = false;
+        releaseSetup();
         feedRef.current = feed;
         setPhase("streaming");
       } catch (cameraError) {
@@ -225,6 +248,10 @@ export function useAutomaticCamera({
           return;
         }
         cameraStartingRef.current = false;
+        releaseSetup();
+        if (isCameraFeedAbort(cameraError)) {
+          return;
+        }
         const denied = isCameraPermissionError(cameraError);
         setPhase(denied ? "blocked" : "error");
         setError(

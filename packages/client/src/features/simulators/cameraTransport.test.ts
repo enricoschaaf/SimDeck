@@ -4,6 +4,7 @@ import {
   cameraH264Codecs,
   cameraMaxBitrate,
   cameraVideoConstraints,
+  isCameraFeedAbort,
   videoDevices,
 } from "./cameraTransport";
 
@@ -62,5 +63,12 @@ describe("camera", () => {
     expect(cameraMaxBitrate(640, 480)).toBe(4_000_000);
     expect(cameraMaxBitrate(1_920, 1_080)).toBe(16_588_800);
     expect(cameraMaxBitrate(3_840, 2_160)).toBe(20_000_000);
+  });
+
+  it("recognizes an aborted camera negotiation", () => {
+    expect(isCameraFeedAbort(new DOMException("cancelled", "AbortError"))).toBe(
+      true,
+    );
+    expect(isCameraFeedAbort(new Error("failed"))).toBe(false);
   });
 });
