@@ -26,6 +26,8 @@ const WEBKIT_IO_TIMEOUT: Duration = Duration::from_secs(4);
 const WEBKIT_SOCKET_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBKIT_DISCOVERY_RECONNECT_DELAY: Duration = Duration::from_millis(500);
 const WEBKIT_CAMERA_OVERRIDE_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+const WEBKIT_AUTOMATIC_CAMERA_OVERRIDE_OUTER_ID_START: u64 = 7_000_000_000_000_000;
+const WEBKIT_AUTOMATIC_CAMERA_OVERRIDE_INNER_ID_START: u64 = 7_500_000_000_000_000;
 const WEBKIT_EXTERNAL_CAMERA_OVERRIDE_OUTER_ID_START: u64 = 8_000_000_000_000_000;
 const WEBKIT_EXTERNAL_CAMERA_OVERRIDE_INNER_ID_START: u64 = 8_500_000_000_000_000;
 
@@ -583,7 +585,7 @@ async fn hold_camera_override_session(udid: &str, target_id: &str) -> Result<(),
         &sender_id,
     )
     .await?;
-    let mut outer_id = 1;
+    let mut outer_id = WEBKIT_AUTOMATIC_CAMERA_OVERRIDE_OUTER_ID_START;
     send_direct_mock_capture_override(
         &mut inspector_writer,
         &connection_id,
@@ -595,9 +597,18 @@ async fn hold_camera_override_session(udid: &str, target_id: &str) -> Result<(),
     .await?;
     let initial_messages =
         wait_for_webkit_socket_setup(&mut inspector_reader, &app_id, page_id, &sender_id).await?;
+    send_direct_mock_capture_override(
+        &mut inspector_writer,
+        &connection_id,
+        &app_id,
+        page_id,
+        &sender_id,
+        &mut outer_id,
+    )
+    .await?;
 
     let mut protocol_target_ids = HashSet::new();
-    let mut inner_id = 1;
+    let mut inner_id = WEBKIT_AUTOMATIC_CAMERA_OVERRIDE_INNER_ID_START;
     for message in initial_messages {
         apply_camera_override_protocol_message(
             &mut inspector_writer,
@@ -714,6 +725,15 @@ async fn refresh_camera_overrides<W: AsyncWrite + Unpin>(
     outer_id: &mut u64,
     inner_id: &mut u64,
 ) -> Result<(), AppError> {
+    send_direct_mock_capture_override(
+        inspector_writer,
+        connection_id,
+        app_id,
+        page_id,
+        sender_id,
+        outer_id,
+    )
+    .await?;
     for protocol_target_id in protocol_target_ids {
         send_mock_capture_override(
             inspector_writer,
@@ -2391,7 +2411,51 @@ mod tests {
             payload["id"],
             WEBKIT_EXTERNAL_CAMERA_OVERRIDE_OUTER_ID_START + 2
         );
+        assert_eq!(payload["method"], "Page.overrideSetting");
+        assert_eq!(payload["params"]["setting"], "MockCaptureDevicesEnabled");
+        assert_eq!(payload["params"]["value"], false);
+
+        let packet = read_packet(&mut inspector_reader).await.unwrap();
+        let message = parse_rpc_message(&packet).unwrap();
+        let payload = data_value(&message.args, "WIRSocketDataKey").unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(
+            payload["id"],
+            WEBKIT_EXTERNAL_CAMERA_OVERRIDE_OUTER_ID_START + 3
+        );
         assert_eq!(payload["params"]["targetId"], "page-2");
+    }
+
+    #[tokio::test]
+    async fn camera_override_refreshes_the_direct_page_without_nested_targets() {
+        let (mut inspector_writer, mut inspector_reader) = tokio::io::duplex(16 * 1024);
+        let mut outer_id = WEBKIT_AUTOMATIC_CAMERA_OVERRIDE_OUTER_ID_START;
+        let mut inner_id = WEBKIT_AUTOMATIC_CAMERA_OVERRIDE_INNER_ID_START;
+
+        refresh_camera_overrides(
+            &mut inspector_writer,
+            "connection",
+            "application",
+            42,
+            "sender",
+            &HashSet::new(),
+            &mut outer_id,
+            &mut inner_id,
+        )
+        .await
+        .unwrap();
+
+        let packet = read_packet(&mut inspector_reader).await.unwrap();
+        let message = parse_rpc_message(&packet).unwrap();
+        let payload = data_value(&message.args, "WIRSocketDataKey").unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(
+            payload["id"],
+            WEBKIT_AUTOMATIC_CAMERA_OVERRIDE_OUTER_ID_START
+        );
+        assert_eq!(payload["method"], "Page.overrideSetting");
+        assert_eq!(payload["params"]["setting"], "MockCaptureDevicesEnabled");
+        assert_eq!(payload["params"]["value"], false);
     }
 
     #[test]
