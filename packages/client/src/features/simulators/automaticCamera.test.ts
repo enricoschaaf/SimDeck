@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CAMERA_IDLE_GRACE_MS,
   cameraLifecycleAction,
   cameraPolicyAllowsCapture,
   queryCameraPermission,
@@ -8,6 +9,10 @@ import {
 } from "./automaticCamera";
 
 describe("automatic camera lifecycle", () => {
+  it("keeps the webcam alive across a WebKit pre-check handoff", () => {
+    expect(CAMERA_IDLE_GRACE_MS).toBeGreaterThanOrEqual(30_000);
+  });
+
   it("does not prompt after reload unless camera permission is already granted", () => {
     expect(cameraLifecycleAction(null, 0, "granted")).toBe("none");
     expect(cameraLifecycleAction(null, 1, "granted")).toBe("start");
