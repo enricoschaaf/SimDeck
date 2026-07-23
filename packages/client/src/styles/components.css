@@ -19,6 +19,14 @@
   background: var(--surface-hover);
 }
 
+/* Lucide icons default to 24px; toolbars size them explicitly so buttons
+   stay compact. Container rules below may override (e.g. main toolbar 18px). */
+.tbtn svg,
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 .tbtn.active {
   background: var(--surface-hover);
 }
