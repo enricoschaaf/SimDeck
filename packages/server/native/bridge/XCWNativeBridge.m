@@ -673,17 +673,18 @@ xcw_native_owned_bytes xcw_native_screen_recording_mp4(const char *udid, double 
     }
 }
 
-char *xcw_native_start_screen_recording(const char *udid, char **error_message) {
+bool xcw_native_start_screen_recording(const char *udid, const char *recording_id, char **error_message) {
     @autoreleasepool {
         XCWSimctl *simctl = [[XCWSimctl alloc] init];
         NSError *error = nil;
-        NSString *recordingID = [simctl startScreenRecordingForSimulatorUDID:XCWStringFromCString(udid)
-                                                                       error:&error];
-        if (recordingID == nil) {
+        BOOL started = [simctl startScreenRecordingForSimulatorUDID:XCWStringFromCString(udid)
+                                                       recordingID:XCWStringFromCString(recording_id)
+                                                             error:&error];
+        if (!started) {
             XCWSetErrorMessage(error_message, error);
-            return NULL;
+            return false;
         }
-        return XCWCopyCString(recordingID);
+        return true;
     }
 }
 

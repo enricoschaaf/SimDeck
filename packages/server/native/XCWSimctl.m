@@ -951,23 +951,31 @@ static NSString *XCWRuntimeDisplayName(NSDictionary *runtime, NSString *runtimeI
     return nil;
 }
 
-- (nullable NSString *)startScreenRecordingForSimulatorUDID:(NSString *)udid
-                                                      error:(NSError * _Nullable __autoreleasing *)error {
-    if (udid.length == 0) {
+- (BOOL)startScreenRecordingForSimulatorUDID:(NSString *)udid
+                                 recordingID:(NSString *)recordingID
+                                       error:(NSError * _Nullable __autoreleasing *)error {
+    NSString *trimmedID = XCWTrimmedString(recordingID ?: @"");
+    if (udid.length == 0 || trimmedID.length == 0) {
         if (error != NULL) {
-            *error = [self.class errorWithDescription:@"Screen recording requires a simulator UDID." code:34];
+            *error = [self.class errorWithDescription:@"Screen recording requires a simulator UDID and recording ID." code:34];
         }
-        return nil;
+        return NO;
     }
 
     NSMutableDictionary<NSString *, XCWScreenRecordingSession *> *sessions = XCWScreenRecordingSessions();
     @synchronized(sessions) {
+        if (sessions[trimmedID] != nil) {
+            if (error != NULL) {
+                *error = [self.class errorWithDescription:@"That screen recording ID is already active." code:34];
+            }
+            return NO;
+        }
         for (XCWScreenRecordingSession *session in sessions.objectEnumerator) {
             if ([session.udid isEqualToString:udid]) {
                 if (error != NULL) {
                     *error = [self.class errorWithDescription:@"A screen recording is already in progress for this simulator." code:34];
                 }
-                return nil;
+                return NO;
             }
         }
     }
@@ -977,11 +985,11 @@ static NSString *XCWRuntimeDisplayName(NSDictionary *runtime, NSString *runtimeI
     NSString *simctlPath = XCWResolveSimctlPath(error);
     if (simctlPath.length == 0) {
         [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-        return nil;
+        return NO;
     }
 
     XCWScreenRecordingSession *session = [[XCWScreenRecordingSession alloc] init];
-    session.identifier = NSUUID.UUID.UUIDString;
+    session.identifier = trimmedID;
     session.udid = udid;
     session.path = path;
     session.stdoutData = [NSMutableData data];
@@ -1043,7 +1051,7 @@ static NSString *XCWRuntimeDisplayName(NSDictionary *runtime, NSString *runtimeI
         if (error != NULL) {
             *error = launchError ?: [self.class errorWithDescription:@"Unable to launch simulator screen recording." code:34];
         }
-        return nil;
+        return NO;
     }
 
     NSDate *startDeadline = [NSDate dateWithTimeIntervalSinceNow:10.0];
@@ -1072,13 +1080,13 @@ static NSString *XCWRuntimeDisplayName(NSDictionary *runtime, NSString *runtimeI
             }
             *error = [self.class errorWithDescription:details code:34];
         }
-        return nil;
+        return NO;
     }
 
     @synchronized(sessions) {
         sessions[session.identifier] = session;
     }
-    return session.identifier;
+    return YES;
 }
 
 - (nullable NSData *)stopScreenRecordingWithID:(NSString *)recordingID

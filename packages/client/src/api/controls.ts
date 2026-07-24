@@ -174,9 +174,11 @@ export function recordSimulatorScreen(
 export function startSimulatorScreenRecording(
   udid: string,
 ): Promise<ScreenRecordingStartResponse> {
+  const recordingId = globalThis.crypto.randomUUID();
   return apiRequest<ScreenRecordingStartResponse>(
     `/api/simulators/${encodeURIComponent(udid)}/screen-recording/start`,
     {
+      body: JSON.stringify({ recordingId }),
       method: "POST",
     },
   );

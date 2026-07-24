@@ -522,6 +522,12 @@ struct ScreenRecordingPayload {
     seconds: Option<f64>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartScreenRecordingPayload {
+    recording_id: String,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateSimulatorPayload {
@@ -3499,17 +3505,30 @@ async fn screen_recording(
 async fn start_screen_recording(
     State(state): State<AppState>,
     Path(udid): Path<String>,
+    Json(payload): Json<StartScreenRecordingPayload>,
 ) -> Result<Json<Value>, AppError> {
     if android::is_android_id(&udid) {
         return Err(AppError::bad_request(
             "Screen recording is currently supported for iOS simulators only.",
         ));
     }
-    let recording_id =
-        run_bridge_action(state, move |bridge| bridge.start_screen_recording(&udid)).await?;
+    let recording_id = payload.recording_id.trim().to_string();
+    if recording_id.is_empty()
+        || recording_id.len() > 120
+        || !recording_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(AppError::bad_request("Invalid screen recording ID."));
+    }
+    let response_recording_id = recording_id.clone();
+    run_bridge_action(state, move |bridge| {
+        bridge.start_screen_recording(&udid, &recording_id)
+    })
+    .await?;
     Ok(Json(json_value!({
         "ok": true,
-        "recordingId": recording_id,
+        "recordingId": response_recording_id,
     })))
 }
 

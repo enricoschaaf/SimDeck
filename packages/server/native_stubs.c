@@ -252,10 +252,13 @@ xcw_native_owned_bytes xcw_native_screen_recording_mp4(
   return xcw_empty_bytes(error_message);
 }
 
-char *xcw_native_start_screen_recording(const char *udid, char **error_message) {
+bool xcw_native_start_screen_recording(const char *udid,
+                                       const char *recording_id,
+                                       char **error_message) {
   (void)udid;
+  (void)recording_id;
   xcw_unsupported(error_message);
-  return NULL;
+  return false;
 }
 
 xcw_native_owned_bytes xcw_native_stop_screen_recording(

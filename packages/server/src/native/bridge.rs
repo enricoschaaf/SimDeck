@@ -550,14 +550,19 @@ impl NativeBridge {
         }
     }
 
-    pub fn start_screen_recording(&self, udid: &str) -> Result<String, AppError> {
+    pub fn start_screen_recording(&self, udid: &str, recording_id: &str) -> Result<(), AppError> {
         let udid = CString::new(udid).map_err(|e| AppError::bad_request(e.to_string()))?;
-        let recording_id = unsafe {
+        let recording_id =
+            CString::new(recording_id).map_err(|e| AppError::bad_request(e.to_string()))?;
+        unsafe {
             let mut error = ptr::null_mut();
-            let raw = ffi::xcw_native_start_screen_recording(udid.as_ptr(), &mut error);
-            string_from_raw(raw, error)?
-        };
-        Ok(recording_id)
+            let ok = ffi::xcw_native_start_screen_recording(
+                udid.as_ptr(),
+                recording_id.as_ptr(),
+                &mut error,
+            );
+            bool_result(ok, error)
+        }
     }
 
     pub fn stop_screen_recording(&self, recording_id: &str) -> Result<Vec<u8>, AppError> {
